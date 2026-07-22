@@ -1,0 +1,53 @@
+{
+  "name": "@homespunapps/cli",
+  "version": "1.4.2",
+  "description": "Command-line client for the Homespun relay: create apps, inspect state, send and watch events.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "homespun",
+    "cli",
+    "agent",
+    "relay",
+    "human-in-the-loop"
+  ],
+  "homepage": "https://docs.homespun.dev",
+  "bugs": {
+    "url": "https://github.com/homespunapps/homespun/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "homespun": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@homespunapps/core": "^1.4.2",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homespunapps/homespun.git",
+    "directory": "packages/cli"
+  }
+}

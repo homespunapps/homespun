@@ -1,0 +1,62 @@
+{
+  "name": "@homespunapps/mcp",
+  "mcpName": "io.github.aerolalit/homespun",
+  "version": "1.4.2",
+  "description": "Model Context Protocol (stdio) server for Homespun: lets any MCP client (Claude Desktop, Cursor, …) hand a human a rich interactive UI by URL and get structured data back.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "homespun",
+    "mcp",
+    "model-context-protocol",
+    "agent",
+    "relay",
+    "human-in-the-loop"
+  ],
+  "homepage": "https://docs.homespun.dev",
+  "bugs": {
+    "url": "https://github.com/homespunapps/homespun/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "homespun-mcp": "dist/index.js"
+  },
+  "exports": {
+    "./tools": "./dist/tools.js",
+    "./guide": "./dist/guide.js",
+    "./capabilities": "./dist/capabilities.js",
+    "./server": "./dist/server.js"
+  },
+  "files": [
+    "dist",
+    "server.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "@homespunapps/core": "^1.4.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homespunapps/homespun.git",
+    "directory": "packages/mcp"
+  }
+}

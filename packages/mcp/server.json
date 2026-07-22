@@ -1,0 +1,45 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.aerolalit/homespun",
+  "title": "Homespun",
+  "description": "Hand a human a rich interactive UI by URL and get structured data back, from any MCP client.",
+  "version": "1.4.2",
+  "websiteUrl": "https://homespun.dev",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@homespunapps/mcp",
+      "version": "1.4.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "HOMESPUN_API_KEY",
+          "description": "Homespun agent API key. If unset, the server auto-registers a fresh agent against the relay on first use and saves the key to the shared CLI store (~/.config/homespun/config.json).",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "HOMESPUN_URL",
+          "description": "Homespun relay base URL. Defaults to the hosted relay https://homespun.dev; set this to point at a different relay.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "HOMESPUN_AGENT_NAME",
+          "description": "Display name for the auto-registered agent on the relay.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "HOMESPUN_REGISTER_SECRET",
+          "description": "Registration secret, required only for relays running REGISTRATION_MODE=secret.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

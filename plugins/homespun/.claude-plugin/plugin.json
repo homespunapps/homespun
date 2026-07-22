@@ -1,0 +1,12 @@
+{
+  "name": "homespun",
+  "version": "0.0.1",
+  "description": "Hand a human a rich interactive UI by URL, then collect a structured answer back, or show them a view-only report or dashboard. Bundles the `homespun` agent skill, which drives the `homespun` CLI.",
+  "author": {
+    "name": "aerolalit",
+    "url": "https://github.com/aerolalit"
+  },
+  "homepage": "https://homespun.dev",
+  "keywords": ["app", "agent", "human-in-the-loop", "relay", "skill"],
+  "skills": ["./skills/homespun"]
+}

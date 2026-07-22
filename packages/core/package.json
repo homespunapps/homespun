@@ -1,0 +1,58 @@
+{
+  "name": "@homespunapps/core",
+  "version": "1.4.2",
+  "description": "Homespun relay client: typed HTTP + WebSocket operations against a Homespun relay. Framework-free.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "homespun",
+    "agent",
+    "websocket",
+    "relay",
+    "human-in-the-loop"
+  ],
+  "homepage": "https://docs.homespun.dev",
+  "bugs": {
+    "url": "https://github.com/homespunapps/homespun/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "ws": "^8.21.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homespunapps/homespun.git",
+    "directory": "packages/core"
+  }
+}
