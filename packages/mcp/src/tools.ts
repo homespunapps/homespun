@@ -813,11 +813,17 @@ const communityShape = {
     .array(
       z.object({
         kind: z
-          .enum(["config", "seed-data", "connect", "note"])
+          .enum(["config", "seed-data", "connect", "note", "upload"])
           .describe(
-            "config = set a value; connect = wire up an external data source; seed-data = review/replace captured starter data; note = a plain instruction.",
+            "config = set a value; upload = an install-time file/image the app stores as an attachment id; connect = wire up an external data source; seed-data = review/replace captured starter data; note = a plain instruction.",
           ),
         label: z.string().describe("Short step label (<= 80 chars)."),
+        key: z
+          .string()
+          .optional()
+          .describe(
+            "The settings-collection field this answer is written into (letters, digits, '_', up to 64 chars). Required for an 'upload' step, optional for a 'config' step, not allowed on the others. Must name a declared top-level field of the manifest's x-homespun-manifest.settingsCollection; an 'upload' target must be a string-typed field.",
+          ),
         description: z
           .string()
           .optional()
@@ -848,7 +854,7 @@ const communityShape = {
     )
     .optional()
     .describe(
-      "publish only. Ordered typed setup steps an installing agent follows after install (up to 20). Read back via get_submission and rendered on the template detail page.",
+      "publish only. Ordered typed setup steps an installing agent follows after install (up to 20). A 'config'/'upload' step may carry a `key` naming a field of the manifest's settingsCollection that its install-time answer is written into. Read back via get_submission and rendered on the template detail page.",
     ),
   derived_from_snapshot_id: z
     .string()

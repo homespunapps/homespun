@@ -1933,7 +1933,7 @@ export interface AppFeedPage {
  * public detail page). The relay validates + normalizes on publish.
  */
 export interface CommunitySetupStep {
-  kind: "config" | "seed-data" | "connect" | "note";
+  kind: "config" | "seed-data" | "connect" | "note" | "upload";
   label: string;
   description?: string;
   required?: boolean;
@@ -1941,6 +1941,13 @@ export interface CommunitySetupStep {
   default?: string;
   choices?: string[];
   valueHint?: string;
+  /**
+   * The settings-collection field this step's answer is written into
+   * (install-config programme). Required for an `upload` step, optional for a
+   * `config` step, and not allowed on the other kinds. Field-key identifier
+   * (letters, digits, '_', up to 64 chars).
+   */
+  key?: string;
 }
 
 export interface PublishCommunityTemplateRequest {
