@@ -873,9 +873,13 @@ export class HomespunClient {
   // (humanId/createdAt), matching packages/relay/src/http/routes/app-members.ts
   // exactly rather than the usual snake_case convention.
   //
-  // Template `install`/`uninstall` is intentionally NOT wrapped here — that
-  // route is `requireHuman` (human login cookie only), not agent-key
-  // authorizable, so it has no place on this agent-facing client.
+  // Community template install IS agent-key authorizable and wrapped below
+  // (getCommunityConfigContract + installCommunityTemplate): the calling agent
+  // installs a community template for its OWNING human, who becomes the app's
+  // installer/owner, reusing the SAME core install path as the human web form.
+  // Trials, keep, and the first-party app `uninstall` stay human-only web flows
+  // (a countdown banner and a confirm page have no agent-key equivalent), so
+  // those remain intentionally unwrapped here.
   // -------------------------------------------------------------------------
 
   /**
@@ -1361,6 +1365,51 @@ export class HomespunClient {
     );
     if (!r.ok) this.fail(r);
     return this.asObject<CommunitySubmissionDetail>(r);
+  }
+
+  // -------------------------------------------------------------------------
+  // Agent-key community install (install-config programme, PR 4). Both act AS
+  // the calling agent's owning human, who becomes the installed app's owner. A
+  // `ref` is a namespaced `<handle>/<slug>` OR a community snapshot id;
+  // encodeURIComponent keeps a namespaced ref one path segment on the wire.
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /v1/community/templates/:ref/config-contract: the install-time config
+   * contract for an installable template (its settings collection + the ordered
+   * keyed config/upload steps). Use it to discover what a template needs and to
+   * pre-upload files for `upload` steps (POST /v1/attachments) before install.
+   */
+  async getCommunityConfigContract(
+    ref: string,
+  ): Promise<CommunityConfigContract> {
+    const r = await this.call(
+      "GET",
+      `/v1/community/templates/${encodeURIComponent(ref)}/config-contract`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<CommunityConfigContract>(r);
+  }
+
+  /**
+   * POST /v1/community/templates/:ref/install: install a community template for
+   * the calling agent's owning human. `config` is `{ [stepKey]: value }` where a
+   * `config` step's value is a string and an `upload` step's value is an
+   * attachment id the agent pre-uploaded (agent-scoped) via `uploadBlob()` /
+   * `uploadBlobInline()`; the relay re-points it to the new app on install.
+   * Installs always create; returns the new app's id, slug, and url.
+   */
+  async installCommunityTemplate(
+    ref: string,
+    config?: Record<string, unknown>,
+  ): Promise<CommunityInstallResult> {
+    const r = await this.call(
+      "POST",
+      `/v1/community/templates/${encodeURIComponent(ref)}/install`,
+      config !== undefined ? { config } : {},
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<CommunityInstallResult>(r);
   }
 
   // -------------------------------------------------------------------------
@@ -1948,6 +1997,65 @@ export interface CommunitySetupStep {
    * (letters, digits, '_', up to 64 chars).
    */
   key?: string;
+  /**
+   * The manifest `ingest` rule this step wires up (D7). Allowed ONLY on a
+   * `connect` step, optional there. Publish rejects a name the manifest does
+   * not declare. After install, the installer pastes that rule's freshly
+   * provisioned hook URL into the external service.
+   */
+  ingestRule?: string;
+}
+
+/**
+ * One keyed config/upload step in a template's install-time config contract
+ * (install-config programme, PR 4). Field names are the wire shape (snake_case
+ * `value_hint`). An `upload` step's answer is an attachment id string.
+ */
+export interface CommunityConfigStep {
+  key: string;
+  kind: "config" | "upload";
+  label: string;
+  description?: string;
+  required: boolean;
+  secret: boolean;
+  choices?: string[];
+  default?: string;
+  value_hint?: string;
+}
+
+/**
+ * One `connect` step in a template's contract that wires up an INBOUND hook:
+ * after install, the app's own freshly provisioned hook URL for `ingest_rule`
+ * has to be pasted into the external service the step describes. Read the URLs
+ * from `GET /v1/apps/:app_id/ingest-hooks` once the install returns.
+ */
+export interface CommunityConnectStep {
+  label: string;
+  description?: string;
+  ingest_rule: string;
+  /** Collection the hook writes into, or null when the rule went missing. */
+  collection: string | null;
+  mode: "append" | "upsert" | null;
+}
+
+/** The install-time config contract for an installable community template. */
+export interface CommunityConfigContract {
+  snapshot_id: string;
+  name: string;
+  slug: string | null;
+  /** The manifest's declared settings collection, or null when none. */
+  settings_collection: string | null;
+  /** Ordered keyed config/upload steps; empty when the template needs none. */
+  config_steps: CommunityConfigStep[];
+  /** Ordered connect steps that name an ingest rule; empty when none. */
+  connect_steps: CommunityConnectStep[];
+}
+
+/** Result of an agent-key community install (installs always create). */
+export interface CommunityInstallResult {
+  app_id: string;
+  slug: string;
+  url: string;
 }
 
 export interface PublishCommunityTemplateRequest {
@@ -2103,6 +2211,27 @@ export interface CommunitySubmissionDetail extends CommunitySubmissionSummary {
    * the template declares no steps.
    */
   setup_steps: CommunitySetupStep[] | null;
+  /**
+   * Every external destination the manifest declares (D6 disclosure): outbound
+   * webhook targets, the app's fetch allowance and its framing allowance,
+   * deduplicated and HOSTS ONLY, so a reviewer sees where the app can send
+   * data without reading the raw manifest. Empty when it talks to nothing
+   * outside Homespun.
+   */
+  external_destinations: CommunityExternalDestination[];
+}
+
+/** One disclosed external destination on a submission (D6). */
+export interface CommunityExternalDestination {
+  /** `webhook` = the relay POSTs row data there; `fetch` / `embed` = the app's
+   *  own page may call or frame it. */
+  kind: "webhook" | "embed" | "fetch";
+  /** Destination host, or null when the manifest alone cannot name it. */
+  host: string | null;
+  /** Settings field an install-time webhook target is read from. */
+  fromSetting?: string;
+  /** Stored connection a relative webhook target resolves against. */
+  viaConnection?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,16 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.aerolalit/homespun",
+  "name": "dev.homespun/homespun",
   "title": "Homespun",
   "description": "Hand a human a rich interactive UI by URL and get structured data back, from any MCP client.",
-  "version": "1.4.2",
-  "websiteUrl": "https://homespun.dev",
+  "version": "1.4.3",
+  "websiteUrl": "https://docs.homespun.dev",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@homespunapps/mcp",
-      "version": "1.4.2",
+      "version": "1.4.3",
       "transport": {
         "type": "stdio"
       },
@@ -41,5 +41,10 @@
         }
       ]
     }
-  ]
+  ],
+  "repository": {
+    "url": "https://github.com/homespunapps/homespun",
+    "source": "github",
+    "subfolder": "packages/mcp"
+  }
 }

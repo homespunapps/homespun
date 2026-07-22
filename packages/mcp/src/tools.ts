@@ -750,6 +750,8 @@ const communityShape = {
   action: z
     .enum([
       "publish",
+      "get_config_contract",
+      "install",
       "list_pending",
       "get_submission",
       "approve",
@@ -757,7 +759,19 @@ const communityShape = {
       "set_trust_level",
     ])
     .describe(
-      "publish: publish one of YOUR apps as a community template (app_id; optional title/description/category/tags). PRIVACY: publishing makes the template content AND the captured seed rows (the LIVE rows of every seedOnInstall collection, captured at publish time) PUBLIC to every platform user once approved. Do NOT publish an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private): seed data must be example-only. Pass attest_example_only:true to attest you have checked this. The capture (html + manifest + seed rows) lands PENDING review, installable by its returned direct link but not listed until approved; an ESTABLISHED publisher is fast-tracked (the response's expedited/auto_approved tell you which). list_pending / get_submission / approve / reject / set_trust_level are RELAY-OPERATOR-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').",
+      "publish: publish one of YOUR apps as a community template (app_id; optional title/description/category/tags). PRIVACY: publishing makes the template content AND the captured seed rows (the LIVE rows of every seedOnInstall collection, captured at publish time) PUBLIC to every platform user once approved. Do NOT publish an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private): seed data must be example-only. Pass attest_example_only:true to attest you have checked this. The capture (html + manifest + seed rows) lands PENDING review, installable by its returned direct link but not listed until approved; an ESTABLISHED publisher is fast-tracked (the response's expedited/auto_approved tell you which). get_config_contract: read a template's install-time config contract by `ref` (a namespaced '<handle>/<slug>' or a snapshot id): its settings_collection, ordered config_steps (each with key/kind/required/secret/choices/default), and connect_steps (inbound hooks the app receives on). An 'upload' step wants a file; pre-upload it with the attachments tool (scope agent) and pass its attachment id. After installing a template with connect_steps, run the `ingest` tool's list action on the new app_id to read its freshly provisioned hook URLs, and wire each into the external service. install: install a template by `ref` for YOU (your owning human becomes the owner). Pass `config` as { stepKey: value } from the contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. A required step you omit is rejected. Returns the new app's id, slug, and url; installs always create a fresh private copy. list_pending / get_submission / approve / reject / set_trust_level are RELAY-OPERATOR-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows plus external_destinations, the hosts it can send data to or pull data from, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').",
+    ),
+  ref: z
+    .string()
+    .optional()
+    .describe(
+      "get_config_contract/install only. The template to read or install: a namespaced '<handle>/<slug>' or a community snapshot id.",
+    ),
+  config: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "install only. The install-time answers as { stepKey: value } from the config contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. Omit for a template with no config steps.",
     ),
   app_id: z
     .string()
@@ -850,11 +864,17 @@ const communityShape = {
           .string()
           .optional()
           .describe("Optional format hint (<= 120 chars)."),
+        ingestRule: z
+          .string()
+          .optional()
+          .describe(
+            "The manifest `ingest` rule this step wires up. Allowed ONLY on a 'connect' step, optional there; publish rejects a name x-homespun-manifest.ingest does not declare. Each install mints that rule its OWN hook URL, which the installer pastes into the external service.",
+          ),
       }),
     )
     .optional()
     .describe(
-      "publish only. Ordered typed setup steps an installing agent follows after install (up to 20). A 'config'/'upload' step may carry a `key` naming a field of the manifest's settingsCollection that its install-time answer is written into. Read back via get_submission and rendered on the template detail page.",
+      "publish only. Ordered typed setup steps an installing agent follows after install (up to 20). A 'config'/'upload' step may carry a `key` naming a field of the manifest's settingsCollection that its install-time answer is written into; a 'connect' step may carry an `ingestRule` naming a manifest ingest rule it wires up. Read back via get_submission and rendered on the template detail page.",
     ),
   derived_from_snapshot_id: z
     .string()
@@ -1987,7 +2007,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "community",
     description:
-      "Publish an app you own as a COMMUNITY TEMPLATE, and (relay operators only) review submissions. ONE tool with an `action` enum: publish | list_pending | get_submission | approve | reject. publish captures your live app (html + manifest + the seed rows of its seedOnInstall collections + listing metadata) into a PENDING template - installable by the returned direct link but NOT listed in the public gallery until an operator approves it; you must have a verified email and at most a few pending submissions at once. PRIVACY: an approved template's content AND its captured seed rows become PUBLIC to every platform user, so never publish an app whose seedOnInstall collections hold real personal data - seed data must be example-only. Pass attest_example_only:true to attest you checked this. Optionally give the template a per-publisher `slug` (namespaced id <your-handle>/<slug>) and a semver `version` (default 1.0.0): a republish under the same slug must bump the version. The review actions are limited to the relay's configured community reviewers: list_pending (the queue), get_submission (a submission's full content by snapshot_id), approve (list it in the gallery; a re-publish supersedes your app's prior approved version), reject (with a required note that lands in the publisher's app feed).",
+      "Publish an app you own as a COMMUNITY TEMPLATE, install a template into your own account, and (relay operators only) review submissions. ONE tool with an `action` enum: publish | get_config_contract | install | list_pending | get_submission | approve | reject | set_trust_level. publish captures your live app (html + manifest + the seed rows of its seedOnInstall collections + listing metadata) into a PENDING template - installable by the returned direct link but NOT listed in the public gallery until an operator approves it; you must have a verified email and at most a few pending submissions at once. PRIVACY: an approved template's content AND its captured seed rows become PUBLIC to every platform user, so never publish an app whose seedOnInstall collections hold real personal data - seed data must be example-only. Pass attest_example_only:true to attest you checked this. Optionally give the template a per-publisher `slug` (namespaced id <your-handle>/<slug>) and a semver `version` (default 1.0.0): a republish under the same slug must bump the version. get_config_contract reads what a template needs at install (its settings collection + ordered config/upload steps) by `ref`; install creates a fresh PRIVATE copy of a template for YOUR owning human, passing the answers as `config` (a 'config' value is a string, an 'upload' value is a pre-uploaded attachment id from the attachments tool). The review actions are limited to the relay's configured community reviewers: list_pending (the queue), get_submission (a submission's full content by snapshot_id), approve (list it in the gallery; a re-publish supersedes your app's prior approved version), reject (with a required note that lands in the publisher's app feed).",
     inputSchema: communityShape,
     // Consolidated tool: read actions (list_pending/get_submission) + mutating
     // ones (publish/approve/reject). Hint reflects the most-privileged action.
@@ -2025,6 +2045,27 @@ export const TOOLS: ToolDef[] = [
                 derivedFromSnapshotId: str(args, "derived_from_snapshot_id"),
                 attestExampleOnly: bool(args, "attest_example_only"),
               }),
+            );
+          }
+          case "get_config_contract": {
+            const ref = str(args, "ref");
+            if (ref === undefined) {
+              return invalidArgs("get_config_contract requires `ref`");
+            }
+            return jsonResult(await client.getCommunityConfigContract(ref));
+          }
+          case "install": {
+            const ref = str(args, "ref");
+            if (ref === undefined) {
+              return invalidArgs("install requires `ref`");
+            }
+            const cfg = args["config"];
+            const config =
+              cfg !== null && typeof cfg === "object" && !Array.isArray(cfg)
+                ? (cfg as Record<string, unknown>)
+                : undefined;
+            return jsonResult(
+              await client.installCommunityTemplate(ref, config),
             );
           }
           case "list_pending": {
