@@ -970,6 +970,51 @@ export class HomespunClient {
   }
 
   // -------------------------------------------------------------------------
+  // Collection retention override (issue #956). The author declares default
+  // retention in the manifest; this lets the OWNER tighten or loosen it per
+  // collection at runtime, without a redeploy. Effective retention is per-axis
+  // `override ?? authorDefault`; clearing an axis (null) reverts it to the
+  // author default.
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /v1/apps/:id/collections/:name/retention returns the collection's
+   * effective retention (the bounds in force), the author default, the raw owner
+   * override, and how many live rows those bounds would prune on the next sweep.
+   */
+  async getCollectionRetention(
+    appId: string,
+    collection: string,
+  ): Promise<CollectionRetentionView> {
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/collections/${encodeURIComponent(collection)}/retention`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<CollectionRetentionView>(r);
+  }
+
+  /**
+   * PATCH /v1/apps/:id/collections/:name/retention sets or clears the owner
+   * retention override, per axis. A number sets that axis's override; `null`
+   * clears it (reverts to the author default); omit an axis to leave it
+   * unchanged. Returns the new effective retention plus the would-prune count.
+   */
+  async setCollectionRetention(
+    appId: string,
+    collection: string,
+    override: { maxRows?: number | null; maxAgeDays?: number | null },
+  ): Promise<CollectionRetentionView> {
+    const r = await this.call(
+      "PATCH",
+      `/v1/apps/${encodeURIComponent(appId)}/collections/${encodeURIComponent(collection)}/retention`,
+      override,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<CollectionRetentionView>(r);
+  }
+
+  // -------------------------------------------------------------------------
   // Inbound catch-hooks (inbound-webhooks PR 3). Read + rotate the smallest
   // surface an agent needs: list an app's declared hooks with their full secret
   // URL (so the agent can tell its owner the exact URL to paste into an external
@@ -1008,6 +1053,56 @@ export class HomespunClient {
     );
     if (!r.ok) this.fail(r);
     return this.asObject<{ hook: { name: string; url: string } }>(r);
+  }
+
+  /**
+   * PUT /v1/apps/:id/ingest-hooks/:name/signing-secret provisions or rotates a
+   * hook's SIGNING secret (opt-in webhook signature verification, issue #935,
+   * shipped dark: nothing verifies a signature yet). This is a DIFFERENT secret
+   * from the URL secret rotateIngestHook rotates: it is what a provider (GitHub,
+   * Stripe, ...) HMACs the request body with.
+   *
+   * Omit `secret` to have the relay MINT one (`ihk_...`): the response includes
+   * the value ONCE (paste it into the provider). Pass `secret` to store a
+   * provider-generated value verbatim: the value is never echoed back, only the
+   * fingerprint. A rotation keeps the previous secret valid for `graceSeconds`
+   * (default 3600, max 86400) so deliveries verify while you update the provider.
+   */
+  async setIngestSigningSecret(
+    appId: string,
+    name: string,
+    opts: { secret?: string; graceSeconds?: number } = {},
+  ): Promise<{ secret?: string; fingerprint: string; setAt: string }> {
+    const body: { secret?: string; graceSeconds?: number } = {};
+    if (opts.secret !== undefined) body.secret = opts.secret;
+    if (opts.graceSeconds !== undefined) body.graceSeconds = opts.graceSeconds;
+    const r = await this.call(
+      "PUT",
+      `/v1/apps/${encodeURIComponent(appId)}/ingest-hooks/${encodeURIComponent(name)}/signing-secret`,
+      body,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{
+      secret?: string;
+      fingerprint: string;
+      setAt: string;
+    }>(r);
+  }
+
+  /**
+   * DELETE /v1/apps/:id/ingest-hooks/:name/signing-secret clears a hook's
+   * signing secret (current + previous + grace window). Idempotent.
+   */
+  async clearIngestSigningSecret(
+    appId: string,
+    name: string,
+  ): Promise<{ ok: boolean }> {
+    const r = await this.call(
+      "DELETE",
+      `/v1/apps/${encodeURIComponent(appId)}/ingest-hooks/${encodeURIComponent(name)}/signing-secret`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ ok: boolean }>(r);
   }
 
   // -------------------------------------------------------------------------
@@ -1753,6 +1848,25 @@ export interface AppMember {
  * handshake) are null when the hook's rule has left the manifest (disabledAt
  * set). `deliveries` are per-status counts of the hook's inbound journal.
  */
+/** One retention axis pair, either bound null when unset. */
+export interface RetentionAxes {
+  maxRows: number | null;
+  maxAgeDays: number | null;
+}
+
+/**
+ * A collection's retention picture (issue #956): the EFFECTIVE bounds in force
+ * (per-axis `override ?? authorDefault`), the AUTHOR default declared in the
+ * manifest, the raw owner OVERRIDE, and `wouldPrune`, how many live rows the
+ * effective bounds would prune on the next sweep.
+ */
+export interface CollectionRetentionView {
+  effective: RetentionAxes;
+  authorDefault: RetentionAxes;
+  override: RetentionAxes;
+  wouldPrune: number;
+}
+
 export interface IngestHookInfo {
   name: string;
   url: string;
@@ -1762,6 +1876,20 @@ export interface IngestHookInfo {
   handshake: string | null;
   disabledAt: string | null;
   createdAt: string;
+  /**
+   * Opt-in signature verification state (issue #935), shipped dark. `configured`
+   * is true when a signing secret is set; `fingerprint` identifies WHICH one
+   * (plaintext-derived, matches the value in the provider's settings) without
+   * ever exposing it; `previousUntil` is set during a rotation's grace window.
+   */
+  signingSecret: {
+    configured: boolean;
+    fingerprint: string | null;
+    setAt: string | null;
+    previousUntil: string | null;
+  };
+  /** Placeholder for the D3 manifest `verify` grammar; always null for now. */
+  verify: null;
   deliveries: {
     accepted: number;
     failed: number;

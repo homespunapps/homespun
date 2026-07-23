@@ -176,11 +176,34 @@ describe("help catalog", () => {
   it("builds a usage line that starts with the command it documents", () => {
     for (const noun of allNouns()) {
       for (const v of noun.verbs) {
-        const expected = ["homespun", noun.noun, v.verb]
-          .filter(Boolean)
-          .join(" ");
+        // A verbLast noun (data) puts its common positionals before the verb:
+        // `homespun data <app> <collection> list`. Every other noun is
+        // verb-first: `homespun apps watch <app>`.
+        const expected = noun.verbLast
+          ? ["homespun", noun.noun, noun.commonPositionals, v.verb]
+              .filter(Boolean)
+              .join(" ")
+          : ["homespun", noun.noun, v.verb].filter(Boolean).join(" ");
         expect(usageLine(noun, v).startsWith(expected)).toBe(true);
       }
+    }
+  });
+
+  it("documents the data verb LAST, matching its parser grammar (#907)", () => {
+    // Regression pin: data's parser reads `homespun data <app> <collection>
+    // <verb>` (commands/data.ts, verb at positionals[2]). The help once
+    // rendered it verb-first, so the documented form failed with
+    // "unknown verb '<collection>'". Every data usage line must place the
+    // verb after <app> <collection>, never immediately after "data".
+    const data = allNouns().find((n) => n.noun === "data");
+    expect(data?.verbLast).toBe(true);
+    for (const v of data!.verbs) {
+      const line = usageLine(data!, v);
+      expect(
+        line.startsWith(`homespun data <app> <collection> ${v.verb}`),
+      ).toBe(true);
+      // And never the broken verb-first shape.
+      expect(line.startsWith(`homespun data ${v.verb} `)).toBe(false);
     }
   });
 

@@ -1,6 +1,6 @@
 # @homespunapps/mcp
 
-A thin **stdio [Model Context Protocol](https://modelcontextprotocol.io) server** for [Homespun](https://homespun.dev). It lets any MCP client (Claude Desktop, Cursor, Windsurf, Cline, your own host) hand a human a rich interactive UI by URL and get structured data back: forms, approvals, pickers, surveys, dashboards, diff/doc review, multi-step wizards.
+A thin **stdio [Model Context Protocol](https://modelcontextprotocol.io) server** for [Homespun](https://homespun.dev). It lets any MCP client (Claude Desktop, Cursor, Windsurf, Cline, your own host) deploy a real multi-user web app in one call and keep operating its data afterwards: hosting on its own URL, magic-link identity, a shared realtime database with per-role permissions, email notifications and file attachments, all included.
 
 It is a wrapper, not a reimplementation: all relay I/O goes through [`@homespunapps/core`](https://www.npmjs.com/package/@homespunapps/core), and config is shared with the [`homespun` CLI](https://www.npmjs.com/package/@homespunapps/cli) (`~/.config/homespun/config.json`) — so the CLI and this server use the **same agent identity**.
 

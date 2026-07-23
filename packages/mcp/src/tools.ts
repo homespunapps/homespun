@@ -512,16 +512,28 @@ const membersShape = {
 
 const ingestShape = {
   action: z
-    .enum(["list", "rotate"])
+    .enum(["list", "rotate", "set_signing_secret", "clear_signing_secret"])
     .describe(
-      "list: the app's inbound catch-hooks, each with its full secret URL, current rule (collection/mode/wake/handshake), and per-status delivery counts (app_id). rotate: mint a fresh secret for one hook and return its new URL once, invalidating the old URL immediately (app_id+name).",
+      "list: the app's inbound catch-hooks, each with its full secret URL, current rule (collection/mode/wake/handshake), and per-status delivery counts (app_id). rotate: mint a fresh URL secret for one hook and return its new URL once, invalidating the old URL immediately (app_id+name). set_signing_secret: provision or rotate a hook's OPT-IN signing secret, distinct from the URL secret (it is what a provider HMACs the body with); omit `secret` to mint one (returned ONCE) or pass `secret` to store a provider-generated value verbatim (never echoed) (app_id+name). clear_signing_secret: remove a hook's signing secret (app_id+name).",
     ),
   app_id: z.string().min(1).describe("The app id."),
   name: z
     .string()
     .optional()
     .describe(
-      "rotate only. The manifest ingest hook name to rotate (an x-homespun-manifest.ingest[].name). See list's `name` field.",
+      "rotate / set_signing_secret / clear_signing_secret. The manifest ingest hook name (an x-homespun-manifest.ingest[].name). See list's `name` field.",
+    ),
+  secret: z
+    .string()
+    .optional()
+    .describe(
+      "set_signing_secret only. A provider-generated signing secret to store verbatim (the Stripe path). Omit to have the relay mint one (the GitHub path), returned ONCE in the response.",
+    ),
+  grace_seconds: z
+    .number()
+    .optional()
+    .describe(
+      "set_signing_secret only. On a rotation, how long the previous secret stays valid so deliveries verify while you update the provider (default 3600, max 86400).",
     ),
 };
 
@@ -1586,7 +1598,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "ingest",
     description:
-      "Manage a v2 app's inbound catch-hooks (inbound-webhooks). A catch-hook lets an EXTERNAL system (Stripe, Zapier, Make, Home Assistant, an email router) POST JSON to a secret URL that writes into a declared collection, so the app receives data even with no agent online. Hooks are DECLARED IN THE MANIFEST (x-homespun-manifest.ingest) and materialized at deploy, so this tool has no create/delete: use it to READ BACK the URL and rotate a leaked one. ONE tool with an `action` enum: list (the app's hooks, each with its full secret URL, current rule collection/mode/wake/handshake, and per-status delivery counts) | rotate (mint a fresh secret for one hook by name and return its NEW url once; the old url stops working immediately, no redeploy needed). After deploying a manifest that declares a hook, run list and tell the owner the exact url to paste into the external system.",
+      "Manage a v2 app's inbound catch-hooks (inbound-webhooks). A catch-hook lets an EXTERNAL system (Stripe, Zapier, Make, Home Assistant, an email router) POST JSON to a secret URL that writes into a declared collection, so the app receives data even with no agent online. Hooks are DECLARED IN THE MANIFEST (x-homespun-manifest.ingest) and materialized at deploy, so this tool has no create/delete: use it to READ BACK the URL, rotate a leaked one, and manage the opt-in signing secret. ONE tool with an `action` enum: list (the app's hooks, each with its full secret URL, current rule collection/mode/wake/handshake, per-status delivery counts, and signing-secret state) | rotate (mint a fresh URL secret for one hook by name and return its NEW url once; the old url stops working immediately, no redeploy needed) | set_signing_secret (provision/rotate a hook's signing secret, a DIFFERENT secret from the URL: what a provider HMACs the body with; omit `secret` to mint one returned ONCE, or pass `secret` to store a provider value verbatim, never echoed) | clear_signing_secret (remove it). Signature verification ships DARK for now: nothing verifies a signature yet. After deploying a manifest that declares a hook, run list and tell the owner the exact url to paste into the external system.",
     inputSchema: ingestShape,
     // Consolidated tool: read action (list) + a mutating one (rotate). Marked
     // destructive (not read-only) because rotate invalidates the old URL, which
@@ -1615,6 +1627,30 @@ export const TOOLS: ToolDef[] = [
             }
             return jsonResult(
               await client.rotateIngestHook(appId, String(args["name"])),
+            );
+          }
+          case "set_signing_secret": {
+            if (str(args, "name") === undefined) {
+              return invalidArgs("set_signing_secret requires `name`");
+            }
+            const secret = str(args, "secret");
+            const grace = args["grace_seconds"];
+            return jsonResult(
+              await client.setIngestSigningSecret(appId, String(args["name"]), {
+                ...(secret !== undefined ? { secret } : {}),
+                ...(typeof grace === "number" ? { graceSeconds: grace } : {}),
+              }),
+            );
+          }
+          case "clear_signing_secret": {
+            if (str(args, "name") === undefined) {
+              return invalidArgs("clear_signing_secret requires `name`");
+            }
+            return jsonResult(
+              await client.clearIngestSigningSecret(
+                appId,
+                String(args["name"]),
+              ),
             );
           }
           default:

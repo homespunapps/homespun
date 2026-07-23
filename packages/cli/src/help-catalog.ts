@@ -60,6 +60,19 @@ export interface NounSpec {
   /** The noun's entry in the root help listing. Plain sentences. */
   rootSummary: string;
   verbs: VerbSpec[];
+  /**
+   * Verb comes LAST, after the common positionals, e.g. `data`, whose parser
+   * reads `homespun data <app> <collection> <verb>`. The default is verb-first
+   * (`homespun apps watch <app>`), matching every other noun. When set, a
+   * verb's `positionals` holds only what follows the verb, and
+   * `commonPositionals` holds what precedes it.
+   */
+  verbLast?: boolean;
+  /**
+   * For a verbLast noun, the positionals that come BEFORE the verb and are the
+   * same for every verb, e.g. "<app> <collection>". Ignored otherwise.
+   */
+  commonPositionals?: string;
   /** Paragraphs printed after the usage block. Irreducible prose. */
   notes?: string[];
   /** Overrides the default output note at the foot of the help. */
@@ -175,11 +188,16 @@ const DATA: NounSpec = {
   tagline: "collection row CRUD for an app",
   group: "app",
   rootSummary:
-    "Collection row CRUD for an app: list, get, upsert, update, delete, purge, import.",
+    "Collection row CRUD for an app: list, get, upsert, update, delete, purge, import, plus retention (owner override).",
+  // The data parser is verb-LAST: `homespun data <app> <collection> <verb>`
+  // (see commands/data.ts, which reads the verb from positionals[2]). Every
+  // other noun is verb-first. Each verb below carries only the positionals that
+  // FOLLOW the verb; <app> <collection> come before it, via commonPositionals.
+  verbLast: true,
+  commonPositionals: "<app> <collection>",
   verbs: [
     {
       verb: "list",
-      positionals: "<app> <collection>",
       summary: "Lists rows in a collection.",
       flags: [
         {
@@ -203,12 +221,11 @@ const DATA: NounSpec = {
     },
     {
       verb: "get",
-      positionals: "<app> <collection> <key>",
+      positionals: "<key>",
       summary: "Shows one row by key.",
     },
     {
       verb: "upsert",
-      positionals: "<app> <collection>",
       summary: "Creates a row, or ensures one exists at a key or unique field.",
       flags: [
         {
@@ -233,7 +250,7 @@ const DATA: NounSpec = {
     },
     {
       verb: "update",
-      positionals: "<app> <collection> <key>",
+      positionals: "<key>",
       summary: "Replaces an existing row's data.",
       flags: [
         {
@@ -251,7 +268,7 @@ const DATA: NounSpec = {
     },
     {
       verb: "delete",
-      positionals: "<app> <collection> <key>",
+      positionals: "<key>",
       summary: "Deletes one row by key.",
       flags: [
         {
@@ -264,7 +281,6 @@ const DATA: NounSpec = {
     },
     {
       verb: "purge",
-      positionals: "<app> <collection>",
       summary: "Removes one row even from an append-only collection.",
       flags: [
         {
@@ -277,7 +293,6 @@ const DATA: NounSpec = {
     },
     {
       verb: "import",
-      positionals: "<app> <collection>",
       summary: "Bulk-writes rows from a file in chunks via the batch API.",
       flags: [
         {
@@ -309,12 +324,47 @@ const DATA: NounSpec = {
         },
       ],
     },
+    {
+      verb: "retention",
+      summary:
+        "Shows or overrides the owner retention on a collection (owner control).",
+      flags: [
+        {
+          name: "max-rows",
+          value: "<n>",
+          description: "Override the max live rows kept (per-axis, positive)",
+        },
+        {
+          name: "max-age-days",
+          value: "<n>",
+          description: "Override the max row age in days (per-axis, positive)",
+        },
+      ],
+      bools: [
+        {
+          name: "clear-rows",
+          description:
+            "Clear the rows override, reverting to the author default",
+        },
+        {
+          name: "clear-age",
+          description:
+            "Clear the age override, reverting to the author default",
+        },
+        {
+          name: "show",
+          description:
+            "Only read the current effective retention, change nothing",
+        },
+      ],
+    },
   ],
   notes: [
     "<app> accepts either the app_id or its slug. upsert is the ONLY create-shaped verb: omit --key to add a new row (the server generates the key); pass --key to ensure a row exists at that key (returns the existing row with deduped:true on a collision, never errors). Pass --on <field> to upsert on a manifest-declared UNIQUE field instead of the key: the row whose <field> value matches is updated in place (idempotent re-import), else created.",
     "list --where takes a JSON array of {field, op, value} conditions (ANDed), op one of eq, neq, in, notIn, gt, lt, gte, lte (in and notIn take an array value). --sort takes a JSON array of {field, dir} (dir asc or desc). Filtering is applied AFTER the read permission and author scoping, so a filtered list is always a subset of what you could already read. Comparisons are same-type only (no coercion); dates compare as ISO-8601 strings. A custom --sort cannot be combined with --since.",
     "purge removes ONE row by --key even in an append-only collection. Owner and agent only (never members or anyone); it bypasses append-only and the collection delete list on purpose, and writes an audited delete feed entry.",
     "import reads NDJSON (one JSON object per line) OR a JSON array from --file and bulk-writes it in chunks via the batch API, in ONE process. Each object is a row's data. Pass --key-field to derive the row key from a field: an existing row at that key is LEFT UNCHANGED, so this is create-or-skip-by-id, not overwrite, and re-importing changed data for a known key does not update it. Import DEFAULTS TO SILENT (it suppresses notify and webhooks, since a bulk import is a migration); pass --emit-effects to fire them. A per-row failure is listed in the summary WITHOUT aborting the import.",
+    "retention is an OWNER control: the author declares default retention in the manifest, and this tightens or loosens it per collection at runtime WITHOUT a redeploy. Effective retention is per-axis override-or-author-default: --max-rows/--max-age-days set an axis override, --clear-rows/--clear-age revert an axis to the author default, and with no flag (or --show) it just reads. The response reports the effective bounds, the author default, the override, and wouldPrune (how many live rows the effective bound would prune on the next sweep). The override survives redeploys and effective maxRows is capped at MAX_ROWS_PER_APP.",
   ],
   outputNote:
     'Output is a single JSON object on stdout, and import additionally writes per-chunk progress lines to stderr. Errors go to stderr as {"error":{"code","message"}} with a non-zero exit.',
@@ -431,7 +481,7 @@ const INGEST: NounSpec = {
   tagline: "inbound catch-hook read surface",
   group: "app",
   rootSummary:
-    "Inbound catch-hook management: list, rotate. Read back an app's declared inbound hooks with their full secret URL so you can tell the owner where an external system posts, or rotate a leaked secret. Hooks themselves are declared in the app manifest (x-homespun-manifest.ingest).",
+    "Inbound catch-hook management: list, rotate, signing-secret. Read back an app's declared inbound hooks with their full secret URL so you can tell the owner where an external system posts, rotate a leaked URL secret, or manage a hook's opt-in signing secret. Hooks themselves are declared in the app manifest (x-homespun-manifest.ingest).",
   verbs: [
     {
       verb: "list",
@@ -462,11 +512,42 @@ const INGEST: NounSpec = {
         },
       ],
     },
+    {
+      verb: "signing-secret",
+      positionals: "<set|clear>",
+      summary:
+        "Sets, rotates, or clears a hook's opt-in signing secret (webhook signature verification).",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the hook belongs to (required)",
+        },
+        {
+          name: "name",
+          value: "<hookName>",
+          description: "Name of the manifest ingest hook (required)",
+        },
+        {
+          name: "secret",
+          value: "<value>",
+          description:
+            "set only: a provider-generated signing secret to store verbatim; omit to have the relay mint one (shown once)",
+        },
+        {
+          name: "grace-seconds",
+          value: "<n>",
+          description:
+            "set only: how long the previous secret stays valid on a rotation (default 3600, max 86400)",
+        },
+      ],
+    },
   ],
   notes: [
     "--app accepts either the app_id or its slug (resolved via GET /v1/apps?slug= when it does not look like a cuid).",
     "list returns { hooks: [{ name, url, collection, mode, wake, handshake, disabledAt, createdAt, deliveries: { accepted, failed, dropped_duplicate } }] }. The url is the full secret POST URL an external system posts JSON to; hand it to the app owner to paste into Stripe, Zapier, Make, Home Assistant, or any system that can POST a webhook. A hook whose rule left the manifest has disabledAt set and null rule fields.",
     "rotate mints a fresh secret for the named hook and returns { hook: { name, url } } with the NEW url once. The old url stops working immediately; no redeploy is needed. Use it when a url leaks.",
+    "signing-secret manages a hook's OPT-IN signing secret, distinct from the URL secret above: it is what a provider (GitHub, Stripe, ...) HMACs the request body with. `set` without --secret mints one and returns { secret, fingerprint, setAt } with the value shown ONCE; `set --secret <value>` stores a provider-generated value verbatim and returns { fingerprint, setAt } without echoing it; `clear` removes it. A rotation keeps the previous secret valid for --grace-seconds so deliveries verify while you update the provider. A hook that declares `verify` in its manifest rule (GitHub scheme in v1) requires a valid signature over the raw body and stays fail-closed (401) until this secret is set; the fingerprint (a plaintext-derived id) lets you confirm which secret is set without the relay ever showing it.",
     "Hooks are declared in the app manifest (x-homespun-manifest.ingest) and materialized at deploy, so there is no create or delete verb here: add or remove a hook by editing the manifest and redeploying.",
   ],
 };
@@ -1054,11 +1135,22 @@ export function specFor(noun: string, verb = ""): [string[], string[], string] {
   ];
 }
 
-/** "homespun apps watch <app> [--since <cursor>] [--once]" */
+/**
+ * "homespun apps watch <app> [--since <cursor>] [--once]", and for a verbLast
+ * noun "homespun data <app> <collection> get <key>".
+ */
 export function usageLine(noun: NounSpec, v: VerbSpec): string {
   const parts = ["homespun", noun.noun];
-  if (v.verb) parts.push(v.verb);
-  if (v.positionals) parts.push(v.positionals);
+  if (noun.verbLast) {
+    // Common positionals precede the verb, per the parser's grammar; the verb's
+    // own positionals (if any) follow it.
+    if (noun.commonPositionals) parts.push(noun.commonPositionals);
+    if (v.verb) parts.push(v.verb);
+    if (v.positionals) parts.push(v.positionals);
+  } else {
+    if (v.verb) parts.push(v.verb);
+    if (v.positionals) parts.push(v.positionals);
+  }
   for (const f of v.flags ?? []) {
     parts.push(f.value ? `[--${f.name} ${f.value}]` : `[--${f.name}]`);
   }
@@ -1205,9 +1297,15 @@ export function renderNounHelp(noun: NounSpec): string {
       all.reduce((w, f) => Math.max(w, spelled(f).length), 0) + 2,
     );
     for (const v of flagged) {
-      out.push(
-        `  ${["homespun", noun.noun, v.verb].filter(Boolean).join(" ")}`,
-      );
+      // Verb-last nouns (data) must show <app> <collection> before the verb
+      // here too, matching the Usage block and the parser. A bare
+      // "homespun data list" header is the exact verb-first shape #907 fixed.
+      const header = noun.verbLast
+        ? ["homespun", noun.noun, noun.commonPositionals, v.verb]
+            .filter(Boolean)
+            .join(" ")
+        : ["homespun", noun.noun, v.verb].filter(Boolean).join(" ");
+      out.push(`  ${header}`);
       for (const f of [...(v.flags ?? []), ...(v.bools ?? [])]) {
         const left = `    ${spelled(f)}`;
         const pad = Math.max(1, col + 4 - left.length);

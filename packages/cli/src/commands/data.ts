@@ -29,7 +29,7 @@ export async function runData(args: ParsedArgs): Promise<void> {
   }
   if (!appArg || !collection || !verb) {
     fail(
-      "usage: homespun data <app> <collection> <list|get|upsert|update|delete|purge|import>",
+      "usage: homespun data <app> <collection> <list|get|upsert|update|delete|purge|import|retention>",
       "invalid_args",
     );
   }
@@ -58,9 +58,11 @@ export async function runData(args: ParsedArgs): Promise<void> {
       return runPurge(appArg!, collection!, sub);
     case "import":
       return runImport(appArg!, collection!, sub);
+    case "retention":
+      return runRetention(appArg!, collection!, sub);
     default:
       fail(
-        `unknown verb '${verb}': homespun data <app> <collection> <list|get|upsert|update|delete|purge|import>`,
+        `unknown verb '${verb}': homespun data <app> <collection> <list|get|upsert|update|delete|purge|import|retention>`,
         "invalid_args",
       );
   }
@@ -467,4 +469,53 @@ async function runImport(
     silent: !emitEffects,
     failures,
   });
+}
+
+// `homespun data <app> <collection> retention` (issue #956): show or change the
+// OWNER retention override on a collection. With no set/clear flag (or --show) it
+// reads the current effective retention; otherwise it sets an axis
+// (--max-rows/--max-age-days) or clears one (--clear-rows/--clear-age, reverting
+// that axis to the author default). Effective retention is per-axis
+// `override ?? authorDefault`. Prints the effective bounds and the would-prune
+// count either way.
+async function runRetention(
+  appArg: string,
+  collection: string,
+  args: ParsedArgs,
+): Promise<void> {
+  assertKnownFlags(args, ...specFor("data", "retention"));
+  const clearRows = args.bools.has("clear-rows");
+  const clearAge = args.bools.has("clear-age");
+  const maxRows = parseIntFlag(args, "max-rows", undefined, { min: 1 });
+  const maxAgeDays = parseIntFlag(args, "max-age-days", undefined, { min: 1 });
+
+  if (clearRows && maxRows !== undefined) {
+    fail("--clear-rows cannot be combined with --max-rows", "invalid_args");
+  }
+  if (clearAge && maxAgeDays !== undefined) {
+    fail("--clear-age cannot be combined with --max-age-days", "invalid_args");
+  }
+
+  // Build the per-axis patch: a number sets the axis, null clears it, an omitted
+  // axis is left unchanged. `--show` (or no set/clear flag) reads without writing.
+  const patch: { maxRows?: number | null; maxAgeDays?: number | null } = {};
+  if (clearRows) patch.maxRows = null;
+  else if (maxRows !== undefined) patch.maxRows = maxRows;
+  if (clearAge) patch.maxAgeDays = null;
+  else if (maxAgeDays !== undefined) patch.maxAgeDays = maxAgeDays;
+
+  const willWrite =
+    patch.maxRows !== undefined || patch.maxAgeDays !== undefined;
+
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg);
+  try {
+    printJson(
+      willWrite
+        ? await client.setCollectionRetention(appId, collection, patch)
+        : await client.getCollectionRetention(appId, collection),
+    );
+  } catch (e) {
+    failFromError(e);
+  }
 }

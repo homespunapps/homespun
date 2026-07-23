@@ -10,7 +10,7 @@ description: >-
   data, watch it for changes.
 ---
 
-<!-- homespun skill v1.4.3 -->
+<!-- homespun skill v1.6.1 -->
 
 # app
 
@@ -1232,7 +1232,7 @@ read, so the session and the initial collection snapshots are in place:
 | `homespun.session.logout()` | Clears the stored session token and reloads as anonymous. |
 | `homespun.members.list()` | Every human Member of this app (always including its owner) plus every Agent its owner currently owns, as `{kind:"human"\|"agent", id, displayName, role?}`. Names only: never an email, and never anything derived from one for anyone other than themselves. |
 | `homespun.members.nameFor(author)` | Resolve a row's or feed entry's own `author` (`{kind, id}`) straight to a display name, never throws. Falls back to `"a member"` / `"an agent"` for an id no longer in the directory (a removed member, an unclaimed/reassigned agent), and `"a visitor"` for an anonymous author. |
-| `homespun.uploadBlob(file, opts?)` / `homespun.downloadBlob(id)` / `homespun.saveBlob(id, filename?)` | Binary attachment upload/download. Names kept from v1 for continuity. |
+| `homespun.uploadBlob(file, opts?)` / `homespun.downloadBlob(id)` / `homespun.saveBlob(id, filename?)` | Binary attachment upload/download. Names kept from v1 for continuity. To DISPLAY an app's own attachment, a bare `<img src=/_hs/attachments/id>` works (the read route accepts the app's own same-origin session for owner/member, private or public). `downloadBlob(id)` is the JS-bytes read: use it with `URL.createObjectURL` only when you need the raw bytes in JS (canvas, re-upload), not as the display path. |
 
 A minimal grocery-list page against the manifest above:
 
@@ -1364,7 +1364,13 @@ attachment id:
       // validates the id, and the bytes read back at /_hs/attachments/<id>.
       await homespun.collections.create("photos", { image: ref.id, caption: "" });
       const img = document.createElement("img");
-      img.src = "/_hs/attachments/" + ref.id; // same-origin, hardened serve path
+      // Display an app's OWN attachment with a bare URL. The
+      // `/_hs/attachments/<id>` route accepts the app's own same-origin session
+      // (owner/member) for reads, so an <img src> renders on the app's own page
+      // for a private app exactly as it does for a public/link one. Use
+      // homespun.downloadBlob(id) + URL.createObjectURL only when you need the
+      // raw bytes in JS (canvas, a Blob to hand elsewhere).
+      img.src = "/_hs/attachments/" + ref.id;
       document.body.appendChild(img);
     });
   });
@@ -1892,6 +1898,13 @@ shipping the full-resolution bytes each time:
 
 `?w=` also works on the agent download (`/v1/attachments/:id?w=256`) and the
 capability URL (`/b/<token>?w=256`).
+
+A bare `<img src="/_hs/attachments/<id>?w=256">` works for the app's OWN
+attachment on a private app too: the read route accepts the app's own
+same-origin session (owner/member), so the thumbnail renders on the app's own
+page just like the full image. The only thing without a width parameter is the
+JS-bytes read, `homespun.downloadBlob(id)`, so if you fetch the raw bytes in JS
+you get the full image; use the `?w=` URL form when you want a resized variant.
 
 Rules worth knowing:
 

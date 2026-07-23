@@ -27,7 +27,10 @@ export async function runIngest(args: ParsedArgs): Promise<void> {
     return;
   }
   if (verb === undefined) {
-    fail("missing verb (homespun ingest <list|rotate>)", "invalid_args");
+    fail(
+      "missing verb (homespun ingest <list|rotate|signing-secret>)",
+      "invalid_args",
+    );
   }
 
   const sub: ParsedArgs = {
@@ -44,9 +47,11 @@ export async function runIngest(args: ParsedArgs): Promise<void> {
       return runList(sub);
     case "rotate":
       return runRotate(sub);
+    case "signing-secret":
+      return runSigningSecret(sub);
     default:
       fail(
-        `unknown verb '${verb}' (homespun ingest <list|rotate>)`,
+        `unknown verb '${verb}' (homespun ingest <list|rotate|signing-secret>)`,
         "invalid_args",
       );
   }
@@ -92,6 +97,95 @@ async function runRotate(args: ParsedArgs): Promise<void> {
   const appId = await resolveAppId(client, appArg!);
   try {
     printJson(await client.rotateIngestHook(appId, name!));
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// signing-secret set|clear
+// ---------------------------------------------------------------------------
+//
+// The SIGNING secret is separate from the URL secret above (opt-in webhook
+// signature verification, issue #935, shipped dark: nothing verifies a
+// signature yet). `set` without --secret MINTS one and prints it ONCE (the
+// GitHub path); `set --secret <val>` stores a provider-generated value verbatim
+// (the Stripe path) and never echoes it; `clear` removes it.
+
+async function runSigningSecret(args: ParsedArgs): Promise<void> {
+  const action = args.positionals[0];
+  const sub: ParsedArgs = {
+    positionals: args.positionals.slice(1),
+    flags: args.flags,
+    bools: args.bools,
+    ...(args.danglingValueFlags !== undefined
+      ? { danglingValueFlags: args.danglingValueFlags }
+      : {}),
+  };
+  switch (action) {
+    case "set":
+      return runSigningSecretSet(sub);
+    case "clear":
+      return runSigningSecretClear(sub);
+    default:
+      fail(
+        "usage: homespun ingest signing-secret <set|clear> --app <idOrSlug> --name <hookName>",
+        "invalid_args",
+      );
+  }
+}
+
+async function runSigningSecretSet(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("ingest", "signing-secret"));
+  const appArg = args.flags.get("app");
+  const name = args.flags.get("name");
+  if (!appArg || !name) {
+    fail(
+      "usage: homespun ingest signing-secret set --app <idOrSlug> --name <hookName> [--secret <value>] [--grace-seconds <n>]",
+      "invalid_args",
+    );
+  }
+  const secret = args.flags.get("secret");
+  const graceRaw = args.flags.get("grace-seconds");
+  let graceSeconds: number | undefined;
+  if (graceRaw !== undefined) {
+    graceSeconds = Number(graceRaw);
+    if (!Number.isFinite(graceSeconds)) {
+      fail("--grace-seconds must be a number", "invalid_args");
+    }
+  }
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg!);
+  try {
+    const res = await client.setIngestSigningSecret(appId, name!, {
+      ...(secret !== undefined ? { secret } : {}),
+      ...(graceSeconds !== undefined ? { graceSeconds } : {}),
+    });
+    printJson(res);
+    if (res.secret !== undefined) {
+      process.stderr.write(
+        "Store this signing secret now: it will not be shown again. Paste it into the provider's webhook settings.\n",
+      );
+    }
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+async function runSigningSecretClear(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("ingest", "signing-secret"));
+  const appArg = args.flags.get("app");
+  const name = args.flags.get("name");
+  if (!appArg || !name) {
+    fail(
+      "usage: homespun ingest signing-secret clear --app <idOrSlug> --name <hookName>",
+      "invalid_args",
+    );
+  }
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg!);
+  try {
+    printJson(await client.clearIngestSigningSecret(appId, name!));
   } catch (e) {
     failFromError(e);
   }

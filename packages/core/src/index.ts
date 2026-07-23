@@ -40,6 +40,8 @@ export type {
   AppFeedEntry,
   AppFeedPage,
   CommunitySetupStep,
+  RetentionAxes,
+  CollectionRetentionView,
 } from "./client.js";
 
 export { openStream } from "./stream.js";
