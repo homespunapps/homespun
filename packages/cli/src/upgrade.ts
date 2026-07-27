@@ -125,7 +125,7 @@ export function formatUpgradeMessage(
 
   const lines: string[] = [];
   lines.push(
-    `app: this relay requires @homespunapps/cli >= ${minVersion} (you have ${yourVersion}).`,
+    `homespun: this relay requires @homespunapps/cli >= ${minVersion} (you have ${yourVersion}).`,
   );
   if (command !== null) {
     lines.push(`To upgrade: ${command}`);

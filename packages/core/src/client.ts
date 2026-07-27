@@ -467,6 +467,39 @@ export class HomespunClient {
     return this.asObject<AttachmentRef>(r);
   }
 
+  /**
+   * POST /v1/attachments/fetch — server-side URL ingestion. The RELAY downloads
+   * the bytes from `sourceUrl` itself (SSRF-guarded: https only, no private /
+   * loopback / link-local / metadata hosts, DNS resolved-and-pinned against
+   * rebinding, redirects refused, body size-capped, request timed out), then
+   * runs the IDENTICAL validation pipeline every upload runs (magic-byte MIME
+   * sniff, allowlist, per-type size cap, sha256, scan hook, per-agent / per-app /
+   * per-account quota) before returning the ready `AttachmentRef`.
+   *
+   * The caller sends only the URL string, so the bytes never enter the model
+   * context and cost NO tokens — the highest-leverage zero-context path for an
+   * image/media source that already has a URL. `mime` is advisory (the relay
+   * sniffs the real type). Works on any storage backend.
+   */
+  async fetchBlob(
+    sourceUrl: string,
+    opts: { scope?: "agent" | "app"; appId?: string; mime?: string } = {},
+  ): Promise<AttachmentRef> {
+    const body: {
+      source_url: string;
+      scope?: "agent" | "app";
+      app_id?: string;
+      mime?: string;
+    } = { source_url: sourceUrl };
+    if (opts.scope) body.scope = opts.scope;
+    if (opts.appId) body.app_id = opts.appId;
+    if (opts.mime) body.mime = opts.mime;
+
+    const r = await this.call("POST", "/v1/attachments/fetch", body);
+    if (!r.ok) this.fail(r);
+    return this.asObject<AttachmentRef>(r);
+  }
+
   /** GET /v1/attachments/:id — download bytes as an ArrayBuffer. */
   async downloadBlob(attachmentId: string): Promise<ArrayBuffer> {
     const url =
@@ -741,6 +774,22 @@ export class HomespunClient {
     const r = await this.call("GET", `/v1/apps/${encodeURIComponent(appId)}`);
     if (!r.ok) this.fail(r);
     return this.asObject<AppDetail>(r);
+  }
+
+  /**
+   * GET /v1/apps/:id/document: the app's AUTHORED HTML source (its current
+   * version), before the served page's injected prelude (SDK script, favicon,
+   * OG meta, trial banner). Use this to recover the exact HTML you deployed
+   * instead of scraping the public page and stripping the prelude. 404 if the
+   * app has no deployed version.
+   */
+  async getAppDocument(appId: string): Promise<AppDocument> {
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/document`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<AppDocument>(r);
   }
 
   /**
@@ -1105,6 +1154,46 @@ export class HomespunClient {
     return this.asObject<{ ok: boolean }>(r);
   }
 
+  /**
+   * POST /v1/apps/:id/ingest-hooks/:name/backfill bulk-loads an array of raw
+   * provider bodies through a hook's CURRENT manifest mapping, so a backfilled
+   * row is byte-identical to a live delivery (issue #966). Each body is an
+   * already-parsed JSON value (whatever the provider would have POSTed). It runs
+   * the SAME receive pipeline as the public URL, so map/dedupeKey/upsertOn/schema
+   * validation and the collection quota all apply, but it SKIPS the public-URL
+   * brakes (per-IP rate limit, per-app hourly cap) and never verifies a signature
+   * (owner/agent-authed). Wake is suppressed so a historical load never wakes a
+   * dormant app. Dedupe is ON: re-running an interrupted backfill is idempotent
+   * for a body-path dedupeKey (a header:<name> dedupeKey cannot resolve with no
+   * request headers, so it does not dedupe). Chunk arrays over the relay's
+   * INGEST_BACKFILL_MAX_BODIES (default 500), which return 400. Returns aggregate
+   * { accepted, dropped_duplicate, failed } counts plus a per-body `outcomes`
+   * array in input order.
+   */
+  async backfillIngestHook(
+    appId: string,
+    name: string,
+    bodies: unknown[],
+  ): Promise<{
+    accepted: number;
+    dropped_duplicate: number;
+    failed: number;
+    outcomes: string[];
+  }> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/ingest-hooks/${encodeURIComponent(name)}/backfill`,
+      { bodies },
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{
+      accepted: number;
+      dropped_duplicate: number;
+      failed: number;
+      outcomes: string[];
+    }>(r);
+  }
+
   // -------------------------------------------------------------------------
   // v2 grant links (M5). An owner/agent mints a capability URL carrying a
   // DECLARED custom role (x-homespun-manifest.roles) plus an optional row/filter
@@ -1466,33 +1555,34 @@ export class HomespunClient {
   // Agent-key community install (install-config programme, PR 4). Both act AS
   // the calling agent's owning human, who becomes the installed app's owner. A
   // `ref` is a namespaced `<handle>/<slug>` OR a community snapshot id;
-  // encodeURIComponent keeps a namespaced ref one path segment on the wire.
+  // `communityTemplatePath` sends a namespaced ref as two path segments so it
+  // survives an edge that decodes `%2F` to `/` before routing (#921).
   // -------------------------------------------------------------------------
 
   /**
-   * GET /v1/community/templates/:ref/config-contract: the install-time config
-   * contract for an installable template (its settings collection + the ordered
-   * keyed config/upload steps). Use it to discover what a template needs and to
-   * pre-upload files for `upload` steps (POST /v1/attachments) before install.
+   * GET the install-time config contract for an installable template (its
+   * settings collection + the ordered keyed config/upload steps). Use it to
+   * discover what a template needs and to pre-upload files for `upload` steps
+   * (POST /v1/attachments) before install.
    */
   async getCommunityConfigContract(
     ref: string,
   ): Promise<CommunityConfigContract> {
     const r = await this.call(
       "GET",
-      `/v1/community/templates/${encodeURIComponent(ref)}/config-contract`,
+      communityTemplatePath(ref, "config-contract"),
     );
     if (!r.ok) this.fail(r);
     return this.asObject<CommunityConfigContract>(r);
   }
 
   /**
-   * POST /v1/community/templates/:ref/install: install a community template for
-   * the calling agent's owning human. `config` is `{ [stepKey]: value }` where a
-   * `config` step's value is a string and an `upload` step's value is an
-   * attachment id the agent pre-uploaded (agent-scoped) via `uploadBlob()` /
-   * `uploadBlobInline()`; the relay re-points it to the new app on install.
-   * Installs always create; returns the new app's id, slug, and url.
+   * POST to install a community template for the calling agent's owning human.
+   * `config` is `{ [stepKey]: value }` where a `config` step's value is a string
+   * and an `upload` step's value is an attachment id the agent pre-uploaded
+   * (agent-scoped) via `uploadBlob()` / `uploadBlobInline()`; the relay
+   * re-points it to the new app on install. Installs always create; returns the
+   * new app's id, slug, and url.
    */
   async installCommunityTemplate(
     ref: string,
@@ -1500,7 +1590,7 @@ export class HomespunClient {
   ): Promise<CommunityInstallResult> {
     const r = await this.call(
       "POST",
-      `/v1/community/templates/${encodeURIComponent(ref)}/install`,
+      communityTemplatePath(ref, "install"),
       config !== undefined ? { config } : {},
     );
     if (!r.ok) this.fail(r);
@@ -1640,16 +1730,31 @@ export class HomespunClient {
 // ---------------------------------------------------------------------------
 
 /**
- * One multi-file-deploy asset: bytes the deployed page references by a stable,
- * app-relative, same-origin path (e.g. `frames/000.jpg`). `content_base64` is the
- * standard base64 of the raw bytes; `mime` is advisory (the relay sniffs the
- * real type from the leading bytes).
+ * One multi-file-deploy asset carrying its bytes inline as base64. The deployed
+ * page references it by a stable, app-relative, same-origin path (e.g.
+ * `frames/000.jpg`). `content_base64` is the standard base64 of the raw bytes;
+ * `mime` is advisory (the relay sniffs the real type from the leading bytes).
  */
-export interface AppAsset {
+export interface AppAssetInline {
   path: string;
   content_base64: string;
   mime?: string;
 }
+
+/**
+ * One multi-file-deploy asset referencing an ALREADY-uploaded attachment (via
+ * `attachments fetch` or presign + finalize) instead of carrying its bytes. The
+ * referenced attachment must be owned by the deploying agent, app-scoped to THIS
+ * app, and `ready`. Lets an image reach the app with zero base64 in the deploy
+ * body (and, with fetch, zero bytes in the model context at all).
+ */
+export interface AppAssetRef {
+  path: string;
+  attachment_id: string;
+}
+
+/** A multi-file-deploy asset: inline bytes OR a by-reference attachment id. */
+export type AppAsset = AppAssetInline | AppAssetRef;
 
 /** Request body for `POST /v1/apps` — create (deploy) a new App. */
 export interface DeployAppRequest {
@@ -1806,6 +1911,16 @@ export interface AppDetail extends AppSummary {
 export interface AppsPage {
   items: AppSummary[];
   next_cursor: string | null;
+}
+
+/** `GET /v1/apps/:id/document`: an app's authored HTML source (current version). */
+export interface AppDocument {
+  /** The authored HTML, exactly as deployed (no served-page prelude injected). */
+  html: string;
+  /** The current version number these bytes belong to. */
+  version: number;
+  /** Content hash of `html` (the app's `sourceHash`). */
+  source_hash: string;
 }
 
 /** One DNS record the domain owner must publish (custom domains). */
@@ -2013,6 +2128,21 @@ export interface ListWhereCondition {
 export interface ListSortSpec {
   field: string;
   dir?: "asc" | "desc";
+}
+
+/**
+ * Path for a community-template ref action. A namespaced `<handle>/<slug>` ref
+ * becomes a TWO-segment path (`/templates/<handle>/<slug>/<suffix>`) so it
+ * survives a proxy/edge that normalizes a percent-encoded slash to `/` before
+ * routing (#921); a snapshot id (no slash) stays single-segment. Mirrors the
+ * server's `parseNamespacedId`: exactly two non-empty slash-separated parts.
+ */
+export function communityTemplatePath(ref: string, suffix: string): string {
+  const parts = ref.split("/");
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return `/v1/community/templates/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}/${suffix}`;
+  }
+  return `/v1/community/templates/${encodeURIComponent(ref)}/${suffix}`;
 }
 
 // Serialize `where`/`sort` into the `q` query param (URL-encoded JSON), or

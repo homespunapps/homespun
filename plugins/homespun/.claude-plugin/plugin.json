@@ -1,12 +1,14 @@
 {
   "name": "homespun",
-  "version": "0.0.1",
-  "description": "Hand a human a rich interactive UI by URL, then collect a structured answer back, or show them a view-only report or dashboard. Bundles the `homespun` agent skill, which drives the `homespun` CLI.",
+  "version": "1.6.12",
+  "description": "Build your own software. Your AI deploys a real multi-user app with its own link, magic-link sign-in, a shared database and per-role permissions, and keeps access afterwards so it can keep operating and improving it. Bundles the `homespun` agent skill, which drives the `homespun` CLI.",
   "author": {
     "name": "aerolalit",
     "url": "https://github.com/aerolalit"
   },
   "homepage": "https://homespun.dev",
+  "repository": "https://github.com/homespunapps/homespun",
+  "license": "MIT",
   "keywords": ["app", "agent", "human-in-the-loop", "relay", "skill"],
   "skills": ["./skills/homespun"]
 }

@@ -101,11 +101,11 @@ async function run(tokens: string[]): Promise<void> {
 
 describe("runSkill", () => {
   it("GETs <relay>/skills/homespun/SKILL.md and writes the body to stdout", async () => {
-    stubFetch({ status: 200, body: "# app\n\nbody\n" });
+    stubFetch({ status: 200, body: "# homespun\n\nbody\n" });
     await run(["show"]);
     expect(exitCode).toBeUndefined();
     expect(lastFetchUrl).toBe("https://relay.test/skills/homespun/SKILL.md");
-    expect(stdout).toBe("# app\n\nbody\n");
+    expect(stdout).toBe("# homespun\n\nbody\n");
   });
 
   it("sends x-homespun-cli-version header (consistency with /v1/* — useful for audit logs)", async () => {

@@ -74,7 +74,7 @@ export function buildServer(opts: BuildServerOptions = {}): McpServer {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       return (
-        "# app\n\nThe app guide could not be fetched from the relay " +
+        "# homespun\n\nThe Homespun guide could not be fetched from the relay " +
         `(${message}).\n\nCall the \`get_skill\` tool to retrieve it once the ` +
         "relay is reachable.\n"
       );

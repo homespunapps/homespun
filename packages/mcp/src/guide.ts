@@ -1,11 +1,12 @@
-// Compose the MCP-flavoured app guide from the shared conceptual core + the
-// MCP invocation layer.
+// Compose the MCP-flavoured Homespun guide from the shared conceptual core +
+// the MCP invocation layer.
 //
 // Single source of truth: the conceptual core lives in skills/homespun/SKILL.md
 // between `<!-- homespun:core:start -->` / `<!-- homespun:core:end -->` markers (the
 // CLI invocation grammar lives OUTSIDE those markers, so the CLI document and
-// the MCP guide share the exact same prose for "when to use app / events vs
-// records / schema design / house style / the round-trip mental model"). The
+// the MCP guide share the exact same prose for "when to deploy an app / the
+// collection and change-feed data model / schema design / permissions / house
+// style"). The
 // MCP invocation layer (tool-call grammar) lives in skills/homespun/MCP-INVOCATION.md.
 //
 // The MCP guide = MCP-INVOCATION.md (with its trailing "the rest is the core"

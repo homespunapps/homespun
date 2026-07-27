@@ -2,7 +2,7 @@
 
 A thin **stdio [Model Context Protocol](https://modelcontextprotocol.io) server** for [Homespun](https://homespun.dev). It lets any MCP client (Claude Desktop, Cursor, Windsurf, Cline, your own host) deploy a real multi-user web app in one call and keep operating its data afterwards: hosting on its own URL, magic-link identity, a shared realtime database with per-role permissions, email notifications and file attachments, all included.
 
-It is a wrapper, not a reimplementation: all relay I/O goes through [`@homespunapps/core`](https://www.npmjs.com/package/@homespunapps/core), and config is shared with the [`homespun` CLI](https://www.npmjs.com/package/@homespunapps/cli) (`~/.config/homespun/config.json`) — so the CLI and this server use the **same agent identity**.
+It is a wrapper, not a reimplementation: all relay I/O goes through [`@homespunapps/core`](https://www.npmjs.com/package/@homespunapps/core), and config is shared with the [`homespun` CLI](https://www.npmjs.com/package/@homespunapps/cli) (`~/.config/homespun/config.json`), so the CLI and this server use the **same agent identity**.
 
 ## Runtime requirement: Node.js >= 20
 
@@ -10,7 +10,7 @@ The binary is `homespun-mcp`. It speaks MCP over stdio and is meant to be launch
 
 ## Quickstart
 
-No global install needed — point your MCP client at `npx @homespunapps/mcp`. On first use, if no API key is configured, the server auto-registers a fresh agent against the hosted relay and saves the key to the shared CLI store; nothing else to set up.
+No global install needed: point your MCP client at `npx @homespunapps/mcp`. On first use, if no API key is configured, the server auto-registers a fresh agent against the hosted relay and saves the key to the shared CLI store; nothing else to set up.
 
 ### Claude Desktop
 
@@ -80,23 +80,23 @@ If you'd rather install it globally (`npm i -g @homespunapps/mcp`), use `"comman
 
 ## Configuration
 
-All environment variables are optional — the defaults target the hosted relay and auto-register on first use.
+All environment variables are optional; the defaults target the hosted relay and auto-register on first use.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `HOMESPUN_URL` | `https://homespun.dev` | Relay base URL. Set to point at a different relay. |
 | `HOMESPUN_API_KEY` | _(auto-registered)_ | Agent API key. If unset, the server registers an agent on first use and saves the key to `~/.config/homespun/config.json` (shared with the CLI). |
-| `HOMESPUN_TOKEN` | — | Alias for `HOMESPUN_API_KEY` (for hosts that name secrets `*_TOKEN`). `HOMESPUN_API_KEY` wins if both are set. |
+| `HOMESPUN_TOKEN` | _(none)_ | Alias for `HOMESPUN_API_KEY` (for hosts that name secrets `*_TOKEN`). `HOMESPUN_API_KEY` wins if both are set. |
 | `HOMESPUN_AGENT_NAME` | `homespun-mcp` | Display name for the auto-registered agent. |
-| `HOMESPUN_REGISTER_SECRET` | — | Registration secret, only for relays running `REGISTRATION_MODE=secret`. |
+| `HOMESPUN_REGISTER_SECRET` | _(none)_ | Registration secret, only for relays running `REGISTRATION_MODE=secret`. |
 
 Config precedence mirrors the CLI: env vars win over the saved profile, which falls back to the default relay URL.
 
 ## Tools
 
-This server has **full parity with the [`homespun` CLI](https://www.npmjs.com/package/@homespunapps/cli)** — every capability the CLI exposes is reachable here.
+This server has **full parity with the [`homespun` CLI](https://www.npmjs.com/package/@homespunapps/cli)**: every capability the CLI exposes is reachable here.
 
-MCP tools are request/response — there is no long-lived "watch". To receive a human's response you **poll** `get_events` with the cursor from the previous call (optionally with `wait_seconds` to long-poll); to watch a record collection, re-call `list_records` with the prior `since`. Each tool description spells out the pattern for the model.
+MCP tools are request/response, so there is no long-lived "watch". To see what changed you **poll** `get_feed_events` with the cursor from the previous call (pass `wait` to long-poll, 0 to 30 seconds); to watch one collection, re-call `list_rows` with the prior `next_cursor` as `since`. Each tool description spells out the pattern for the model.
 
 To keep the tool list compact (a flat 50+ tools would bloat client context and degrade selection), **hot-path nouns stay discrete tools** while **multi-verb management nouns collapse into one tool each with a required `action` enum**.
 
@@ -104,59 +104,53 @@ To keep the tool list compact (a flat 50+ tools would bloat client context and d
 
 | Tool | What it does |
 | --- | --- |
-| `create_app` | Create an app — inline HTML (`name`+`html`) **or** reuse a saved template (`template_id`). Optional event/input/record schema, participants, tags, icon, callback, `context_key`. Returns `{ app_id, url, urls, title, expires_at }`. **Give `url` to the human.** |
-| `get_app_state` | Fetch an app's metadata (status, title, expiry) without its event log. |
-| `get_events` | Poll the app's append-only event log for what the human did. Pass `since` (cursor) and optional `wait_seconds` (long-poll). |
-| `send_to_app` | Push an event into an open app to update the live UI. |
-| `update_app` | Edit a live app in place (ttl/title/preamble/input_data/metadata/tags/icon). |
-| `upgrade_app` | Re-pin a live app to another version of its template (swap HTML+schemas, same URL). |
-| `list_apps` | Enumerate your apps (filter by status/template_id; paginated). |
-| `delete_app` | Close/delete an app. |
-| `list_records` | List rows in an app's mutable record collection (also the records poll/watch). |
-| `get_record` | Fetch one record row by key. |
-| `upsert_record` | Create/return a record row (dedups on `record_key`). |
-| `update_record` | Update a record row (optional `if_match` optimistic lock). |
-| `delete_record` | Soft-delete a record row (the page sees it live). |
-| `delete_record_collection` | Drop a whole record collection (all rows + the collection row). Destructive, owner-only, requires `confirm: true`. |
+| `deploy_app` | Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL. Omit `app_id` to create, pass it to redeploy in place (same URL, same data, same members). Takes `html` or `html_path`, optional `assets`, `visibility`, `slug`, `dry_run`, `force`. |
+| `list_rows` | List rows in a collection. Doubles as the poll for a collection's current state: pass the prior `next_cursor` as `since`. |
+| `get_row` | Fetch one row by `key` (a dedicated relay route, not a client-side scan). |
+| `upsert_row` | Create a row, or return the existing one if `key` is already present (`deduped: true`). The only create-shaped verb. |
+| `update_row` | Replace an existing row's `data`. Optional `if_match` optimistic lock. |
+| `delete_row` | Soft-delete a row. Optional `if_match`. |
+| `get_feed_events` | Poll the app's change feed for row creates/updates/deletes from any writer, human or agent. Optional `wait` (0-30s) long-poll. |
 
 ### Consolidated tools (one tool, required `action`)
 
 | Tool | Actions |
 | --- | --- |
-| `template` | `create` · `version` · `update` · `search` · `list` · `show` · `get_version` · `delete` · `publish` · `unpublish` · `search_public` · `set_icon` |
-| `template_records` | `list` · `get` · `upsert` · `update` · `delete` · `delete_collection` |
-| `participant` | `list` · `new` · `revoke` |
-| `share` | `list` · `invite` · `set_access` · `revoke` |
-| `attachments` | `upload` · `download` · `show` · `list` · `delete` · `mint_token` · `revoke_token` · `list_tokens` |
+| `apps` | `list` · `show` · `update` · `share_link_rotate` · `delete` · `wake` · `domain_set` · `domain_status` · `domain_remove` |
+| `members` | `add` · `list` · `set_role` · `remove` · `roles` |
+| `grants` | `mint` · `list` · `revoke` |
+| `ingest` | `list` · `rotate` · `set_signing_secret` · `clear_signing_secret` |
+| `attachments` | `upload` · `fetch` · `presign` · `finalize` · `download` · `show` · `list` · `delete` · `mint_token` · `revoke_token` · `list_tokens` |
 | `taste` | `get` · `set` · `clear` |
-| `key` | `list` · `revoke` |
-| `trash` | `list` · `restore` · `restore_template` · `purge` · `purge_template` |
+| `key` | `list` · `mint` · `revoke` |
 | `feedback` | `create` · `list` |
 | `agent` | `whoami` · `claim` · `logout` |
+| `community` | `publish` · `get_config_contract` · `install` · `list_pending` · `get_submission` · `approve` · `reject` · `set_trust_level` |
+| `publisher` | `claim` · `get` · `update` |
+| `review` | `create` · `respond` · `report` · `remove` · `unhold` |
 
 ### Single-purpose tools
 
 | Tool | What it does |
 | --- | --- |
-| `run_query` | Read-only SQL over your scoped apps/records/events (`format`: json/csv/tsv/table). |
-| `get_skill` | Fetch the relay's auto-updating `SKILL.md` (unauthenticated) to self-teach the workflow. |
+| `get_skill` | Fetch the relay's auto-updating guide (unauthenticated) to self-teach the workflow. |
 
-**Attachments** take/return file paths: `upload` reads an absolute `file_path`; `download` writes to an absolute `out_path` (or returns base64 when omitted).
+**Attachments** take and return file paths: `upload` reads an absolute `file_path`; `download` writes to an absolute `out_path` (or returns base64 when omitted). For real media, `presign` then PUT then `finalize` avoids moving bytes through the tool call.
 
-**Events vs records.** Events are an append-only journal — forms, approvals, surveys, pickers. Records are a mutable collection where the current state matters more than the edit history — todo lists, kanban boards, comment threads. Reach for records when the page shows several mutable items.
+**One data primitive.** Everything an app stores is a **collection**: a named, mutable, queryable set of rows, each with a `key`, a `data` payload, an optimistic-lock `version` and an `author`. Every write also lands on the app's ordered **change feed**. Declare a collection `appendOnly: true` in the manifest when you want a journal (an audit trail, a submission log) rather than mutable state.
 
 ### Not exposed (and why)
 
-- The CLI's `config show` is replaced by `agent`→`whoami` (resolved relay URL + active profile + whether a key is set; no secrets).
-- `agent register` isn't a tool — the server auto-registers on first use and shares the CLI's key store; `agent`→`claim` binds it to a human afterward.
-- `demo` (the interactive 60-second terminal tour) and the CLI self-updater are terminal/CLI concerns with no agent use; omitted.
+- The CLI's `config show` is replaced by `agent` → `whoami` (resolved relay URL, active profile, and whether a key is set; no secrets).
+- `agent register` is not a tool. The server auto-registers on first use and shares the CLI's key store; `agent` → `claim` binds it to a human afterwards.
+- `demo` (the interactive terminal tour) and the CLI self-updater are terminal concerns with no agent use; omitted.
 
 ## Typical flow
 
-1. `create_app` with your HTML + an `event_schema` declaring the events the page emits → returns a `url`.
-2. Paste the `url` into the conversation and ask the human to open it.
-3. `get_events` with `wait_seconds: 25` in a loop, passing the prior `next_cursor` as `since`, until the awaited event appears.
-4. Optionally `send_to_app` to update the live UI, or use the record tools for mutable collections.
+1. `deploy_app` with your HTML plus an `x-homespun-manifest` declaring the app's collections and which roles may read, write and delete each. Returns `{ app_id, url, ... }`.
+2. Give the `url` to the owner, and invite anyone else with `members` (`action: add`).
+3. `get_feed_events` with `wait: 25` in a loop, passing the prior `cursor` as `since`, to see what people do.
+4. Read and write the same data with `list_rows` / `upsert_row` / `update_row`, and ship changes with `deploy_app` again, passing `app_id`.
 
 ## MCP registry
 
@@ -164,4 +158,4 @@ To keep the tool list compact (a flat 50+ tools would bloat client context and d
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT, see [LICENSE](./LICENSE).

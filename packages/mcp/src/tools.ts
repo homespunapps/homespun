@@ -302,26 +302,40 @@ const deployAppShape = {
     ),
   assets: z
     .array(
-      z.object({
-        path: z
-          .string()
-          .describe(
-            "App-relative, same-origin reference the HTML uses, e.g. 'frames/000.jpg' or 'media/intro.mp4'. Relative ONLY: no leading '/', no '..' segment, no backslash, charset [A-Za-z0-9._/-], not under a reserved prefix (_hs, b).",
-          ),
-        content_base64: z
-          .string()
-          .describe("Standard base64 of the asset's raw bytes."),
-        mime: z
-          .string()
-          .optional()
-          .describe(
-            "Advisory content-type. The relay sniffs the REAL type from the bytes and enforces the attachment allowlist; omit it (or set application/octet-stream) for data files like CSV that don't magic-byte-sniff, so they are stored + served as an inert download.",
-          ),
-      }),
+      z.union([
+        z.object({
+          path: z
+            .string()
+            .describe(
+              "App-relative, same-origin reference the HTML uses, e.g. 'frames/000.jpg' or 'media/intro.mp4'. Relative ONLY: no leading '/', no '..' segment, no backslash, charset [A-Za-z0-9._/-], not under a reserved prefix (_hs, b).",
+            ),
+          content_base64: z
+            .string()
+            .describe("Standard base64 of the asset's raw bytes."),
+          mime: z
+            .string()
+            .optional()
+            .describe(
+              "Advisory content-type. The relay sniffs the REAL type from the bytes and enforces the attachment allowlist; omit it (or set application/octet-stream) for data files like CSV that don't magic-byte-sniff, so they are stored + served as an inert download.",
+            ),
+        }),
+        z.object({
+          path: z
+            .string()
+            .describe(
+              "App-relative, same-origin reference the HTML uses (same rules as the inline form).",
+            ),
+          attachment_id: z
+            .string()
+            .describe(
+              "Id of an ALREADY-uploaded attachment to bind at this path, instead of carrying base64. Use with `attachments fetch` (URL, zero model-context cost) or presign + finalize: the attachment must be owned by YOU, app-scoped to THIS app (upload it with scope=app, app_id=this app), and ready. Skips decode/upload; the deploy just maps path -> attachment_id.",
+            ),
+        }),
+      ]),
     )
     .optional()
     .describe(
-      "Optional bundle of files shipped WITH the app in ONE deploy: images, fonts, audio/video, data. Each asset is validated + stored app-scoped exactly like a normal attachment (byte-sniff, allowlist, size cap, quota, scan) and served at its `path` on the app's OWN origin, so the page references it by a stable same-origin path (`<img src=\"frames/000.jpg\">`, `<video src=\"media/intro.mp4\">`; media/font paths support HTTP Range). The whole deploy is rejected atomically if any asset fails validation. A redeploy's assets REPLACE the previous version's set. Bounded by the relay's per-deploy asset-count cap; total bytes by the per-app blob quota.",
+      "Optional bundle of files shipped WITH the app in ONE deploy: images, fonts, audio/video, data. Each asset either carries its bytes inline as `content_base64` OR references an already-uploaded attachment by `attachment_id` (prefer the reference form for real images/media: upload once via `attachments fetch` or presign, then bind it here with NO base64 in the deploy body). Each asset is validated + stored app-scoped exactly like a normal attachment (byte-sniff, allowlist, size cap, quota, scan) and served at its `path` on the app's OWN origin, so the page references it by a stable same-origin path (`<img src=\"frames/000.jpg\">`, `<video src=\"media/intro.mp4\">`; media/font paths support HTTP Range). The whole deploy is rejected atomically if any asset fails validation. A redeploy's assets REPLACE the previous version's set. Bounded by the relay's per-deploy asset-count cap; total bytes by the per-app blob quota.",
     ),
 };
 
@@ -602,6 +616,7 @@ const attachmentsShape = {
   action: z
     .enum([
       "upload",
+      "fetch",
       "presign",
       "finalize",
       "download",
@@ -613,7 +628,7 @@ const attachmentsShape = {
       "list_tokens",
     ])
     .describe(
-      "Binary attachment operations. PREFER presign + finalize for any real image or media (anything beyond a tiny icon): presign returns a { put_url, attachment_id }, then YOU PUT the raw bytes to put_url over HTTP out-of-band, so the bytes NEVER enter the model context and cost NO tokens. upload with `content_base64` sends the bytes INLINE in the tool-call arguments, which loads them into the model context and costs tokens PROPORTIONAL TO FILE SIZE (even a few-hundred-KB image is very costly); use it only as a fallback for small assets or clients that cannot PUT out-of-band. upload: `content_base64` (base64 bytes, no filesystem) when you have bytes but no local file, or `file_path` (absolute, read on the RELAY host) when the file is local to the relay; scope agent|app. presign + finalize: (1) presign with { mime, size, sha256, scope }, (2) PUT the bytes to put_url out-of-band, (3) finalize confirms it (re-sniffs + re-checks the bytes). download: fetch bytes by attachment_id to out_path (absolute) or return base64. show: metadata only. list: the agent's attachments. delete: soft-delete. mint_token: mint a /b/<token> capability URL (returned ONCE). revoke_token / list_tokens: manage those tokens.",
+      "Binary attachment operations. For ANY real image or media (anything beyond a tiny icon) PREFER a ZERO-CONTEXT path so the bytes never enter the model context and cost NO tokens: `fetch` when you have a URL (the relay downloads it server-side; you send only the URL string), or presign + finalize when the client can PUT the raw bytes out-of-band. upload with `content_base64` sends the bytes INLINE in the tool-call arguments, loading them into the model context at a token cost PROPORTIONAL TO FILE SIZE (even a few-hundred-KB image is very costly, worse on every retry); use it only as a last-resort fallback for small assets or clients that have neither a URL nor an out-of-band PUT. fetch: pass { source_url, scope } and the relay fetches the bytes itself (https only, SSRF-guarded) and runs the same sniff/allowlist/size/quota/scan checks as any upload. upload: `content_base64` (base64 bytes, no filesystem) or `file_path` (absolute, read on the RELAY host); scope agent|app. presign + finalize: (1) presign with { mime, size, sha256, scope }, (2) PUT the bytes to put_url out-of-band, (3) finalize confirms it (re-sniffs + re-checks the bytes). download: fetch bytes by attachment_id to out_path (absolute) or return base64. show: metadata only. list: the agent's attachments. delete: soft-delete. mint_token: mint a /b/<token> capability URL (returned ONCE). revoke_token / list_tokens: manage those tokens.",
     ),
   size: z
     .number()
@@ -640,6 +655,12 @@ const attachmentsShape = {
     .optional()
     .describe(
       "upload: ABSOLUTE path to a file read on the SERVER host running this MCP connector (the relay), NOT your machine. Only works when the file is local to the relay (e.g. a locally-run CLI). For a hosted or remote agent, use `content_base64` instead.",
+    ),
+  source_url: z
+    .string()
+    .optional()
+    .describe(
+      "fetch: an https URL the RELAY downloads server-side, so the bytes NEVER enter the model context (zero token cost). SSRF-guarded: https only, no private/loopback/link-local/metadata hosts, DNS pinned, redirects refused, size-capped, timed out. The downloaded bytes run the same byte-sniff/allowlist/size/quota/scan checks as any upload. Prefer this (or presign+finalize) over `content_base64` for real images/media.",
     ),
   content_base64: z
     .string()
@@ -1665,7 +1686,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "attachments",
     description:
-      "Binary attachments (images, PDFs, audio, video) referenced from event payloads / input_data via `format: homespun-attachment-id`. ONE tool with an `action` enum: upload | presign | finalize | download | show | list | delete | mint_token | revoke_token | list_tokens. TOKEN COST, READ FIRST: an inline `upload` with `content_base64` carries the bytes in the tool-call arguments, so they enter the MODEL CONTEXT and cost tokens PROPORTIONAL TO FILE SIZE (a few-hundred-KB image is already very costly, worse on every retry). PREFER presign + finalize for ANY real image or media (anything beyond a tiny icon) whenever the client can do an out-of-band HTTP PUT, because the bytes then never touch the model context. upload (inline) takes EITHER `content_base64` (base64 bytes, no filesystem; use for SMALL assets or clients that cannot PUT out-of-band) OR `file_path` (ABSOLUTE path read on the RELAY host, only usable when the file is local to the relay). presign + finalize (the token-free path, for images/video/big audio): (1) presign with { mime, size, sha256, scope } returns { put_url, attachment_id }; (2) YOU PUT the raw bytes to put_url over plain HTTP out-of-band, so the bytes never route through this tool or the model context; (3) finalize with the attachment_id. At finalize the relay re-reads the stored bytes, BYTE-SNIFFS the real type, and enforces the same allowlist + size + sha256 + quota + scan checks as any upload, so a presign that lies about its mime is caught and never served inline. The presigned path requires the Azure storage backend; a filesystem self-host returns a clear not-supported error (use inline upload there). download writes to an ABSOLUTE out_path (or returns base64). Scope an upload to agent (default, reusable) or app. mint_token returns a /b/<token> capability URL (ONCE) a browser can GET without your API key.",
+      "Binary attachments (images, PDFs, audio, video) referenced from event payloads / input_data via `format: homespun-attachment-id`. ONE tool with an `action` enum: upload | fetch | presign | finalize | download | show | list | delete | mint_token | revoke_token | list_tokens. TOKEN COST, READ FIRST: an inline `upload` with `content_base64` carries the bytes in the tool-call arguments, so they enter the MODEL CONTEXT and cost tokens PROPORTIONAL TO FILE SIZE (a few-hundred-KB image is already very costly, worse on every retry). For ANY real image or media (anything beyond a tiny icon) use a ZERO-CONTEXT path instead: `fetch` when you have a URL (the relay downloads it server-side, you send only the URL string), or presign + finalize when the client can PUT the raw bytes out-of-band. fetch: { source_url (https), scope } — the relay downloads the URL itself behind an SSRF guard (https only, no private/loopback/metadata hosts, DNS pinned, redirects refused, size-capped, timed out) and runs the same byte-sniff + allowlist + size + quota + scan checks as any upload; works on any storage backend. upload (inline) takes EITHER `content_base64` (base64 bytes, no filesystem; last-resort for small assets or clients with neither a URL nor an out-of-band PUT) OR `file_path` (ABSOLUTE path read on the RELAY host, only usable when the file is local to the relay). presign + finalize (token-free, for images/video/big audio): (1) presign with { mime, size, sha256, scope } returns { put_url, attachment_id }; (2) YOU PUT the raw bytes to put_url over plain HTTP out-of-band; (3) finalize with the attachment_id. At finalize the relay re-reads the stored bytes, BYTE-SNIFFS the real type, and enforces the same allowlist + size + sha256 + quota + scan checks as any upload, so a presign that lies about its mime is caught and never served inline. The presigned path requires the Azure storage backend; a filesystem self-host returns a clear not-supported error (use fetch or inline upload there). download writes to an ABSOLUTE out_path (or returns base64). Scope an upload to agent (default, reusable) or app. mint_token returns a /b/<token> capability URL (ONCE) a browser can GET without your API key.",
     inputSchema: attachmentsShape,
     // Consolidated tool: read actions (download/show/list/list_tokens) +
     // mutating ones (upload/delete/mint_token/revoke_token). openWorld:true
@@ -1731,6 +1752,25 @@ export const TOOLS: ToolDef[] = [
               scope,
               appId: str(args, "app_id"),
               filename: str(args, "filename") ?? basename(filePath!),
+              mime: str(args, "mime"),
+            });
+            return jsonResult(ref);
+          }
+          case "fetch": {
+            // Server-side URL ingestion: the relay downloads source_url itself
+            // (SSRF-guarded), so no bytes ride in the tool-call arguments and
+            // nothing enters the model context.
+            const sourceUrl = str(args, "source_url");
+            if (sourceUrl === undefined)
+              return invalidArgs(
+                "fetch requires `source_url` (an https URL the relay downloads server-side)",
+              );
+            const scope = (str(args, "scope") ?? "agent") as "agent" | "app";
+            if (scope === "app" && str(args, "app_id") === undefined)
+              return invalidArgs("scope=app requires `app_id`");
+            const ref = await client.fetchBlob(sourceUrl, {
+              scope,
+              appId: str(args, "app_id"),
               mime: str(args, "mime"),
             });
             return jsonResult(ref);

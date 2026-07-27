@@ -40,6 +40,9 @@ import { runData } from "./commands/data.js";
 import { runMembers } from "./commands/members.js";
 import { runGrant } from "./commands/grant.js";
 import { runIngest } from "./commands/ingest.js";
+import { runPublisher } from "./commands/publisher.js";
+import { runTemplate } from "./commands/template.js";
+import { runReview } from "./commands/review.js";
 import { VERSION } from "./version.js";
 import { HomespunApiError } from "@homespunapps/core";
 import { failUpgradeRequired } from "./output.js";
@@ -141,6 +144,15 @@ async function main(): Promise<void> {
       break;
     case "ingest":
       await runIngest(args);
+      break;
+    case "publisher":
+      await runPublisher(args);
+      break;
+    case "template":
+      await runTemplate(args);
+      break;
+    case "review":
+      await runReview(args);
       break;
   }
 }

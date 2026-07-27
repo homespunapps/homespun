@@ -1,8 +1,10 @@
 # @homespunapps/cli
 
-Command-line client for the [Homespun](https://homespun.dev) relay:
-hand a human a rich interactive UI by URL and capture their answer as structured
-data — from any agent (cron job, chat bot, CI, headless server).
+Build your own software. Command-line client for the
+[Homespun](https://homespun.dev) relay: deploy a real multi-user web app from any
+agent (cron job, chat bot, CI, headless server) with its own link, magic-link
+sign-in, a shared database and per-role permissions, then keep reading and
+writing its data so the agent can keep operating and improving it.
 
 ## Install
 

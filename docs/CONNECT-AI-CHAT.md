@@ -93,17 +93,33 @@ Claude Code can use the hosted connector instead of the stdio server, handy if
 you'd rather not run anything locally:
 
 ```sh
-claude mcp add --transport http app https://homespun.dev/mcp
+claude mcp add --transport http homespun https://homespun.dev/mcp
 ```
 
-Then in Claude Code run `/mcp`, select **app**, and **Authenticate**. It opens
-the browser for the same login + consent flow and stores the token. After that,
-Homespun's tools are available in the session.
+Then in Claude Code run `/mcp`, select **homespun**, and **Authenticate**. It
+opens the browser for the same login + consent flow and stores the token. After
+that, Homespun's tools are available in the session.
 
-> Prefer streaming and local control? The CLI route (`npm i -g @homespunapps/cli` +
-> the skill) gives you true `homespun watch` streaming. See the
-> [README install section](../README.md#install). The remote connector and the
-> local CLI are interchangeable, so use whichever fits.
+Any coding agent (Claude Code, Cursor, Codex, Windsurf, and the rest) can also
+skip the connector entirely. Paste this one line and it sets itself up:
+
+```
+Set me up with Homespun: read https://homespun.dev/skills/homespun/SKILL.md and follow it, then ask me what app I want to build.
+```
+
+> Prefer streaming and local control? The CLI route gives you true
+> `homespun watch` streaming:
+>
+> ```sh
+> npm i -g @homespunapps/cli
+> homespun agent register --name home
+> ```
+>
+> `agent register` runs the device-authorization sign-in in your browser and
+> writes the resulting key to your Homespun config, so it is both the login and
+> the key-issuing step. See the [README install section](../README.md#install).
+> The remote connector and the local CLI are interchangeable, so use whichever
+> fits.
 
 ---
 
@@ -120,6 +136,20 @@ Claude-specific integration.
   asks for a *server URL* for a remote/HTTP MCP connector, give it
   `https://homespun.dev/mcp`. It will discover the auth endpoints
   automatically and walk you through login + consent.
+- **Cursor, Windsurf, Cline, VS Code Copilot**: these configure MCP servers
+  from a JSON file rather than a settings screen. See the entry below.
+
+Editors that take an `mcpServers` JSON block all accept the same entry. Add it,
+reload the editor, and approve the sign-in the first time it calls the
+connector:
+
+```json
+{
+  "mcpServers": {
+    "homespun": { "type": "http", "url": "https://homespun.dev/mcp" }
+  }
+}
+```
 
 The flow is identical everywhere: **paste the URL → log in by email → approve
 the consent screen**. No API key to copy, no client secret to manage. The

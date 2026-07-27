@@ -481,7 +481,7 @@ const INGEST: NounSpec = {
   tagline: "inbound catch-hook read surface",
   group: "app",
   rootSummary:
-    "Inbound catch-hook management: list, rotate, signing-secret. Read back an app's declared inbound hooks with their full secret URL so you can tell the owner where an external system posts, rotate a leaked URL secret, or manage a hook's opt-in signing secret. Hooks themselves are declared in the app manifest (x-homespun-manifest.ingest).",
+    "Inbound catch-hook management: list, rotate, signing-secret, backfill. Read back an app's declared inbound hooks with their full secret URL so you can tell the owner where an external system posts, rotate a leaked URL secret, manage a hook's opt-in signing secret, or bulk-load historical payloads through a hook's mapping. Hooks themselves are declared in the app manifest (x-homespun-manifest.ingest).",
   verbs: [
     {
       verb: "list",
@@ -542,6 +542,36 @@ const INGEST: NounSpec = {
         },
       ],
     },
+    {
+      verb: "backfill",
+      summary:
+        "Bulk-loads historical raw provider bodies through a hook's mapping, writing rows identical to live deliveries.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the hook belongs to (required)",
+        },
+        {
+          name: "name",
+          value: "<hookName>",
+          description:
+            "Name of the manifest ingest hook to backfill into (required)",
+        },
+        {
+          name: "file",
+          value: "<path>",
+          description:
+            "Path to a JSON-array or NDJSON file of raw provider payloads, one whole body per entry (required)",
+        },
+        {
+          name: "chunk",
+          value: "<n>",
+          description:
+            "Bodies per relay call (default 500); the file is split across as many calls as needed",
+        },
+      ],
+    },
   ],
   notes: [
     "--app accepts either the app_id or its slug (resolved via GET /v1/apps?slug= when it does not look like a cuid).",
@@ -549,6 +579,7 @@ const INGEST: NounSpec = {
     "rotate mints a fresh secret for the named hook and returns { hook: { name, url } } with the NEW url once. The old url stops working immediately; no redeploy is needed. Use it when a url leaks.",
     "signing-secret manages a hook's OPT-IN signing secret, distinct from the URL secret above: it is what a provider (GitHub, Stripe, ...) HMACs the request body with. `set` without --secret mints one and returns { secret, fingerprint, setAt } with the value shown ONCE; `set --secret <value>` stores a provider-generated value verbatim and returns { fingerprint, setAt } without echoing it; `clear` removes it. A rotation keeps the previous secret valid for --grace-seconds so deliveries verify while you update the provider. A hook that declares `verify` in its manifest rule (GitHub scheme in v1) requires a valid signature over the raw body and stays fail-closed (401) until this secret is set; the fingerprint (a plaintext-derived id) lets you confirm which secret is set without the relay ever showing it.",
     "Hooks are declared in the app manifest (x-homespun-manifest.ingest) and materialized at deploy, so there is no create or delete verb here: add or remove a hook by editing the manifest and redeploying.",
+    "backfill seeds a hook's collection with historical data: it POSTs an array of raw provider bodies to the OWNER endpoint (POST /v1/apps/:id/ingest-hooks/:name/backfill) and runs each through the SAME mapping the live public URL uses, so a backfilled row is byte-identical to a live delivery. It reads a JSON-array or NDJSON --file (each entry is a whole provider payload, any JSON value, not necessarily an object) and chunks it into --chunk bodies per call (default 500). It reuses the receive pipeline, so map/dedupeKey/upsertOn/row-schema validation and the collection quota all apply, but it SKIPS the public-URL brakes (the per-IP rate limit and the per-app hourly cap) and never verifies a signature (you are the authenticated owner). Wake is suppressed, so a large historical load never wakes a dormant app. Dedupe is ON: re-running the same file is idempotent for a body-path dedupeKey; a header:<name> dedupeKey cannot resolve here (no request headers), so it does not dedupe. Prints aggregate { total, accepted, dropped_duplicate, failed } counts.",
   ],
 };
 
@@ -1088,6 +1119,244 @@ const AGENT: NounSpec = {
   ],
 };
 
+const PUBLISHER: NounSpec = {
+  noun: "publisher",
+  tagline: "community publisher identity",
+  group: "other",
+  rootSummary:
+    "Your community publisher identity: claim (set the permanent handle), show, update (display name, bio, website), and set-trust (operator only).",
+  verbs: [
+    {
+      verb: "claim",
+      positionals: "<handle>",
+      summary: "Claims your one permanent publisher handle.",
+    },
+    {
+      verb: "show",
+      summary: "Shows your own publisher profile.",
+    },
+    {
+      verb: "update",
+      summary: "Updates your publisher display name, bio, or website.",
+      flags: [
+        {
+          name: "display-name",
+          value: "<name>",
+          description: "Public display name",
+        },
+        { name: "bio", value: "<text>", description: "Short publisher bio" },
+        {
+          name: "website",
+          value: "<url>",
+          description: "Public website or profile link",
+        },
+      ],
+    },
+    {
+      verb: "set-trust",
+      positionals: "<handle> <new|established>",
+      summary: "Sets a publisher's trust level (operator only).",
+    },
+  ],
+  notes: [
+    "All verbs act as the calling agent's owning human. The handle is set ONCE by claim and is permanent afterward; claim and update additionally need a verified email server-side.",
+    "update requires at least one of --display-name, --bio, or --website. The website field maps to the profile url; it is spelled --website here because --url is the global relay-target override.",
+    "set-trust promotes a publisher to established (the review fast-track) or back to new. It is operator-gated server-side and rejects a caller who is not the relay operator.",
+  ],
+};
+
+const TEMPLATE: NounSpec = {
+  noun: "template",
+  tagline: "community marketplace templates",
+  group: "other",
+  rootSummary:
+    "Community marketplace templates: publish an owned app, read a template's config-contract, install one, and the operator review queue (list-pending, show, approve, reject).",
+  verbs: [
+    {
+      verb: "publish",
+      positionals: "<app>",
+      summary: "Publishes an owned app as a pending community template.",
+      flags: [
+        {
+          name: "title",
+          value: "<text>",
+          description: "Listing title, defaults to the manifest name",
+        },
+        {
+          name: "description",
+          value: "<text>",
+          description: "Short listing blurb, defaults to the manifest one",
+        },
+        {
+          name: "long-description",
+          value: "<text>",
+          description: "Long-form description shown on the detail page",
+        },
+        {
+          name: "category",
+          value: "<name>",
+          description: "Listing category, validated server-side",
+        },
+        {
+          name: "tags",
+          value: "<path|json>",
+          description: "Curation tags as inline JSON or a path to a JSON file",
+        },
+        {
+          name: "slug",
+          value: "<slug>",
+          description: "Per-publisher slug for a namespaced, versioned line",
+        },
+        {
+          name: "version",
+          value: "<semver>",
+          description: "Semver version, defaults to 1.0.0",
+        },
+        {
+          name: "changelog-note",
+          value: "<text>",
+          description: "Note recorded in this version's changelog",
+        },
+        {
+          name: "setup-steps",
+          value: "<path|json>",
+          description: "Typed setup steps as inline JSON or a JSON file path",
+        },
+      ],
+      bools: [
+        {
+          name: "attest-example-only",
+          description: "Attest the template and seed rows carry no real data",
+        },
+      ],
+    },
+    {
+      verb: "config-contract",
+      positionals: "<ref>",
+      summary: "Shows a template's install-time config contract.",
+    },
+    {
+      verb: "install",
+      positionals: "<ref>",
+      summary: "Installs a community template for your owning human.",
+      flags: [
+        {
+          name: "config",
+          value: "<path|json>",
+          description: "Install config as inline JSON or a path to a JSON file",
+        },
+      ],
+    },
+    {
+      verb: "list-pending",
+      summary: "Lists pending submissions in the review queue (operator only).",
+      flags: [
+        { name: "limit", value: "<n>", description: "Page size" },
+        { name: "cursor", value: "<cursor>", description: "Page cursor" },
+      ],
+    },
+    {
+      verb: "show",
+      positionals: "<snapshot-id>",
+      summary: "Shows one submission's full content (operator only).",
+    },
+    {
+      verb: "approve",
+      positionals: "<snapshot-id>",
+      summary: "Approves a pending submission (operator only).",
+    },
+    {
+      verb: "reject",
+      positionals: "<snapshot-id>",
+      summary: "Rejects a pending submission with a note (operator only).",
+      flags: [
+        {
+          name: "note",
+          value: "<note>",
+          description: "Reason sent to the publisher's app feed (required)",
+        },
+      ],
+    },
+  ],
+  notes: [
+    "A template <ref> is a namespaced <handle>/<slug> or a community snapshot id, passed straight to the relay. publish resolves <app> by id or slug, the same way apps and data do.",
+    "publish, config-contract, and install act as the calling agent's owning human. Install always creates a new owned app and returns its id, slug, and url; use config-contract first to discover what config an install needs.",
+    "list-pending, show, approve, and reject drive the operator review queue and are operator-gated server-side. reject requires --note, which is delivered to the publisher's app feed.",
+  ],
+};
+
+const REVIEW: NounSpec = {
+  noun: "review",
+  tagline: "community template reviews",
+  group: "other",
+  rootSummary:
+    "Community template reviews: create a star review for a template you installed, respond as the publisher, report a review, and remove or unhold one (operator only).",
+  verbs: [
+    {
+      verb: "create",
+      positionals: "<ref>",
+      summary: "Creates a star review for a template you installed.",
+      flags: [
+        {
+          name: "stars",
+          value: "<1-5>",
+          description: "Star rating, an integer from 1 to 5 (required)",
+        },
+        {
+          name: "body",
+          value: "<text>",
+          description: "Optional written review body",
+        },
+      ],
+    },
+    {
+      verb: "respond",
+      positionals: "<review-id>",
+      summary: "Responds to a review as the publisher.",
+      flags: [
+        {
+          name: "response",
+          value: "<text>",
+          description: "Publisher response text",
+        },
+      ],
+      bools: [
+        {
+          name: "clear",
+          description: "Clear the existing publisher response",
+        },
+      ],
+    },
+    {
+      verb: "report",
+      positionals: "<review-id>",
+      summary: "Reports a review for operator attention.",
+      flags: [
+        {
+          name: "reason",
+          value: "<reason>",
+          description: "Why the review is being reported (required)",
+        },
+      ],
+    },
+    {
+      verb: "remove",
+      positionals: "<review-id>",
+      summary: "Removes a review (operator only).",
+    },
+    {
+      verb: "unhold",
+      positionals: "<review-id>",
+      summary: "Publishes a held review (operator only).",
+    },
+  ],
+  notes: [
+    "create identifies the template by its namespaced <handle>/<slug> ref, and you must have installed it. --stars is an integer 1 to 5; --body is optional. A body containing a link or email may land held for moderation.",
+    "respond acts as the publisher on your own template's review: exactly one of --response <text> or --clear is required, where --clear removes the existing response by sending null.",
+    "report flags a review for the operator with a --reason. remove and unhold are operator-gated moderation actions: remove takes a review down, unhold publishes a held review.",
+  ],
+};
+
 // Order here is the order in `homespun --help` and in the generated reference
 // page: app commands first, then the rest.
 const NOUNS: NounSpec[] = [
@@ -1097,6 +1366,9 @@ const NOUNS: NounSpec[] = [
   MEMBERS,
   GRANTS,
   INGEST,
+  PUBLISHER,
+  TEMPLATE,
+  REVIEW,
   KEY,
   TASTE,
   FEEDBACK,

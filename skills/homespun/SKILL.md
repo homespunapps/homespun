@@ -1,68 +1,84 @@
 ---
-name: app
+name: homespun
 description: >-
-  Build a small personal app for a human — an HTML page backed by live,
-  queryable data — deploy it with one command, and keep collaborating with
-  the human through it via a data API. One primitive: collections (a
-  mutable, queryable row store with a live change feed). Use when a question
-  or workflow deserves a persistent app the human can reopen anytime, not
-  just a one-shot reply. Drives the `homespun` CLI: deploy an app, read/write its
-  data, watch it for changes.
+  Deploy a real multi-user web app from this conversation, then keep operating
+  it. You author an HTML page plus a manifest; `homespun deploy` puts it live on
+  its own URL with magic-link sign-in, a shared realtime database, per-role
+  read/write/delete permissions, email notifications and file uploads. Owners
+  invite other people, who sign in and use it together. You keep read and write
+  access to the app's data and its change feed afterwards, so you can query it,
+  write to it, watch it and redeploy it in later conversations. Use when the work
+  deserves a persistent app people can return to and share, rather than a reply.
+  Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.1 -->
+<!-- homespun skill v1.6.12 -->
 
-# app
+# homespun
 
-`homespun` deploys small apps for you. You author an HTML page plus a manifest
-(what data it stores, who may read/write it), `homespun deploy` puts it live at
-its own URL, and you stay a first-class collaborator on that app afterwards —
-reading and writing its data, watching it for changes — through the exact
-same collection API the page itself uses.
+`homespun` deploys real web apps for you and keeps you connected to them. You
+author an HTML page plus a manifest (what data it stores, who may read and write
+each part of it), `homespun deploy` puts it live on its own URL, and the relay
+supplies the parts you would otherwise have to build: sign-in, a shared database
+with a live change feed, per-role permissions, email notifications and file
+uploads. The owner invites whoever should have access, and they use it together.
+
+You stay a first-class participant afterwards. Through the exact same collection
+API the page itself uses, you can read the app's data, write to it, watch its
+feed, and redeploy a new version to the same URL in a later conversation. The app
+does not end when this conversation does.
 
 ## When to use this
 
 Use `homespun` when the interaction is richer than a text reply, OR when it
-should **persist** — a dashboard the human reopens, a shared list you and the
-human both edit over time, a tool that outlives this conversation. For a
-one-shot question, just ask in text. For a rich but disposable one-shot
-interaction, deploy a small app anyway — there's no separate "form" primitive
-in v2; an app with one collection and no persistence expectation is just a
-small, short-lived app.
+should **persist**, OR when **more than one person** needs it: a dashboard
+someone reopens next month, a list a household or a team edits together, an
+intake form whose submissions you keep reading, a tool that outlives this
+conversation. For a one-shot question, just ask in text.
+
+There is no separate "form" primitive: a single-collection app with one page is
+how you do the small case, and it is still a real app with a URL, sign-in and
+data you can come back to.
 
 <!-- homespun:core:start -->
 
-## The mental model: one primitive
+## The data model: collections and the change feed
 
-Everything an app stores is a **collection** — a named, mutable, queryable
-set of rows, each with a `key`, a `data` payload, an optimistic-lock
-`version`, and an `author`. Every write (create, update, delete) also lands
-on the app's **change feed**, an ordered log you and the page can both
-subscribe to. That's it: one data primitive, one feed. There is no separate
-"event" type and no template/app split — an app IS its HTML plus its
+An app's *storage* is built from one primitive. Everything an app stores is a
+**collection**, a named, mutable, queryable set of rows, each with a `key`, a
+`data` payload, an optimistic-lock `version`, and an `author`. Every write
+(create, update, delete) also lands on the app's **change feed**, an ordered log
+you and the page can both subscribe to. One data primitive, one feed. There is no
+separate "event" type and no template/app split: an app IS its HTML plus its
 manifest plus its collections.
+
+That covers storage only. An app also has an identity layer (sign-in, an owner,
+members and roles), permissions expressed per collection and per operation, email
+notification rules, scheduled sends, inbound webhooks and binary attachments. All
+of those are declared in the same manifest and documented below.
 
 **Append-only collections are how you get "events."** If you want an
 audit trail or a one-shot journaled fact ("this happened") rather than a
 mutable row, declare the collection `appendOnly: true` in the manifest (see
-below) and only ever `create` into it — never `update`/`delete`. You get
+below) and only ever `create` into it, never `update`/`delete`. You get
 exactly what a v1 "event" gave you (an ordered, immutable, replayable log),
 expressed through the same collection API instead of a second primitive.
 
 The three things you build:
 
-1. **A manifest** — declares the app's collections (with row schema and
-   who may write/delete each), which external hosts its page may fetch from,
-   and whether it may load CDN scripts/styles.
-2. **An HTML page** — talks to its own data exclusively through
+1. **A manifest**, which declares the app's collections (with row schema and
+   which roles may read, write and delete each), who the app is visible to,
+   which email notifications it sends, which external hosts its page may fetch
+   from, and whether it may load CDN scripts/styles.
+2. **An HTML page**, which talks to its own data exclusively through
    `window.homespun.collections.*` and `window.homespun.feed`, injected by the
-   relay at runtime.
-3. **Deploys** — `homespun deploy` puts the app live; `homespun deploy --app <id>`
+   relay at runtime, and reads who is signed in from `window.homespun.session`.
+3. **Deploys**: `homespun deploy` puts the app live; `homespun deploy --app <id>`
    redeploys it in place, same URL.
 
 After that, you (the agent) read and write the same collections the page
 reads and writes, via `homespun data`, and watch the app's live feed via
-`homespun apps watch` — the same round trip the human's browser gets, just from
+`homespun apps watch`. You see the same data the people using the app see, from
 the CLI.
 
 **`homespun.collections` is a FLAT API, not per-collection objects.** Every
@@ -412,8 +428,19 @@ receiver, then verify each request:
    bound replay.
 
 Delivery is **at-least-once**: a receiver can see the same `X-Homespun-Delivery`
-id twice (a retry after a slow 2xx), so treat that header as an idempotency key
-and dedupe on it.
+id twice (a retry after a slow 2xx, or a relay worker that crashed after the
+POST but before it recorded the outcome), so treat that header as an idempotency
+key and dedupe on it. The id is the delivery row's own id and is stable across
+every attempt, which is what makes it usable as the key.
+
+Two things a receiver must not do instead:
+
+- **Do not dedupe on a hash of the body.** The signature timestamp `t` and the
+  envelope's `sent_at` are regenerated for each attempt, so two sends of the
+  same delivery have different bytes.
+- **Do not rely on `delivery_id` in the body when the rule sets a
+  `bodyTemplate`.** A custom body is sent verbatim and carries only what the
+  template renders, so for those rules the header is the only key.
 
 **Authenticated webhooks (`connection` + `bodyTemplate`).** A webhook can also
 authenticate to its target with a stored credential and send a **custom JSON
@@ -545,16 +572,16 @@ catch-hook.
 If the `homespun` command isn't on your PATH yet, install it first:
 `npm i -g @homespunapps/cli`.
 
-The hosted relay (`https://homespun.dev`) is the default — `homespun agent register`
+The hosted relay (`https://homespun.dev`) is the default: `homespun agent register`
 works out of the box. The CLI needs:
 
 - **An agent API key.** Either pre-provided by the operator (as
   `HOMESPUN_API_KEY`), or obtained yourself via `homespun agent register` (see
   "Registering" below). Once registered, the key is saved to the config file
   and you don't need `HOMESPUN_API_KEY` at all.
-- **A relay URL.** Only relevant for self-hosters — set `HOMESPUN_URL` (or pass
+- **A relay URL.** Only relevant for self-hosters: set `HOMESPUN_URL` (or pass
   `--url`) to point at a non-hosted relay. Note this is the **control-plane**
-  URL (where `deploy`/`apps`/`data` talk) — the *deployed app itself* is
+  URL (where `deploy`/`apps`/`data` talk); the *deployed app itself* is
   served on its own domain (see "Serving and security" below), not under
   this URL.
 
@@ -569,8 +596,8 @@ This skill carries its version in an HTML comment near the top of the file:
 <!-- homespun skill vX.Y.Z -->
 ```
 
-**The skill version is the app package version** (`@homespunapps/relay`,
-`@homespunapps/cli`, `@homespunapps/core` — all kept in lockstep by the release
+**The skill version is the homespun package version** (`@homespunapps/relay`,
+`@homespunapps/cli`, `@homespunapps/core`, all kept in lockstep by the release
 script). `scripts/cut-release.sh` updates this comment alongside the
 `package.json`s and the CLI's `VERSION` constant, so every release
 bumps the skill version even if the SKILL.md content didn't change.
@@ -588,7 +615,7 @@ LOCAL_VER=$(grep -m1 -oE '<!-- homespun skill v[0-9]+\.[0-9]+\.[0-9]+' <path-to-
 REMOTE_VER=$(homespun skill version --plain)
 # If the relay is on an old image that lacks a version comment, the probe
 # returns "0.0.0". Don't clobber a newer local copy with the older relay
-# skill — skip the update and proceed with what's local.
+# skill; skip the update and proceed with what's local.
 if [ "$REMOTE_VER" = "0.0.0" ]; then
   : # nothing to do
 elif [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
@@ -596,9 +623,9 @@ elif [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
 fi
 ```
 
-Where `<path-to-your-local-skill>` is wherever YOUR runtime stores the app
-skill (e.g. `~/.claude/skills/homespun/SKILL.md` for Claude Code,
-`~/.cursor/rules/app.mdc` for Cursor, the relevant section of
+Where `<path-to-your-local-skill>` is wherever YOUR runtime stores the
+homespun skill (e.g. `~/.claude/skills/homespun/SKILL.md` for Claude Code,
+`~/.cursor/rules/homespun.mdc` for Cursor, the relevant section of
 `~/.codex/AGENTS.md` for Codex / Gemini-style concatenated files).
 
 The two `grep`s above are intentionally strict:
@@ -612,16 +639,16 @@ Rules:
 
 - If the local file has no `<!-- homespun skill v... -->` comment, treat it as
   stale and run `homespun skill show > <path>`.
-- If `REMOTE_VER` is `0.0.0`, skip the update — the relay is on an old
+- If `REMOTE_VER` is `0.0.0`, skip the update: the relay is on an old
   image without a version comment, and clobbering your (presumably newer)
   local copy with that would be a downgrade.
 - If the network is unreachable or `homespun skill version` fails, **do not
-  update** — proceed with the local skill you have.
+  update**: proceed with the local skill you have.
 - Don't loop. Check once at conversation start; if you've already refreshed in
   this run and it's still mismatched, stop and report the error to
   the human.
 - If you've hand-edited the local skill (added your own notes), save your
-  changes first — `homespun skill show > <path>` is a clobbering write.
+  changes first, because `homespun skill show > <path>` is a clobbering write.
 
 ## Discover the CLI with `--help`
 
@@ -629,32 +656,32 @@ Rules:
 but `--help` is the authoritative, always-current reference for every flag,
 argument, and default:
 
-- `homespun --help` — the command list and global options.
-- `homespun <command> --help` — every flag and option for that command, e.g.
+- `homespun --help`: the command list and global options.
+- `homespun <command> --help`: every flag and option for that command, e.g.
   `homespun deploy --help`, `homespun apps --help`, `homespun apps watch --help`,
   `homespun data --help`.
 
 If a command errors or you are unsure of an option name, **run `--help`
-instead of guessing** — the CLI is self-documenting and the help text reflects
+instead of guessing**: the CLI is self-documenting and the help text reflects
 the installed version, which this skill may not.
 
 ### If `homespun` exits 75 ("CLI upgrade required")
 
 The relay you're talking to needs a newer `@homespunapps/cli` than you have
 installed. The CLI signals this with **exit code 75** (`EX_TEMPFAIL`) and a
-stderr message that starts with `app: this relay requires @homespunapps/cli >=
+stderr message that starts with `homespun: this relay requires @homespunapps/cli >=
 <version>`. If that message includes a `To upgrade: <command>` line, the
-command is correct for how `homespun` was installed on this machine — there's
+command is correct for how `homespun` was installed on this machine, so there's
 nothing to guess.
 
 What to do, in this order:
 
 1. **Run the printed upgrade command once.** If no command is printed (the
    message says "vendored" or "unknown" install), stop and ask the human to
-   bump `@homespunapps/cli` — don't try to install one yourself.
+   bump `@homespunapps/cli`; don't try to install one yourself.
 2. **Re-run your original `homespun` command once.** If it succeeds, continue.
 3. **If it still fails with exit 75 after one upgrade + retry**, stop and
-   report the error to the human. Do not loop — repeated upgrade attempts
+   report the error to the human. Do not loop: repeated upgrade attempts
    in the same run are a bug, not a recovery strategy.
 
 ## Registering
@@ -722,7 +749,7 @@ your agent has been **claimed** by a human. Do this once, before your first
 deploy:
 
 1. **The human mints a one-shot claim code.** In the relay's UI: Account menu →
-   "My agents" → "Claim a new agent" → "Generate claim code" — this calls
+   "My agents" → "Claim a new agent" → "Generate claim code". This calls
    `POST /v1/self/claim-codes` and shows the human a code like `cc_...`
    (15-minute TTL, single use). Ask the human to do this and hand you the
    code out-of-band (paste it into the chat, an env var, however you two are
@@ -737,21 +764,21 @@ deploy:
    human and migrates ownership of anything the agent already created. Output:
    `{ ok: true, owner_human_id, claimed_at }`.
 3. **This is one-way.** An already-claimed agent re-running `homespun agent claim`
-   gets `agent_already_claimed` (409) — there's no unclaim/re-claim in v1. To
+   gets `agent_already_claimed` (409): there's no unclaim/re-claim in v1. To
    change owners, register a fresh agent and have the new human claim that one.
 
 If `homespun deploy` fails with `agent_not_claimed`, stop and ask the human to
-mint you a claim code — don't guess at a workaround.
+mint you a claim code; don't guess at a workaround.
 
 <!-- homespun:core:start -->
 
 ## Authoring an app: the manifest
 
 The manifest is a plain JSON Schema 2020-12 document with one namespaced
-extension key, `x-homespun-manifest`. It is the **whole consent surface** — what
+extension key, `x-homespun-manifest`. It is the **whole consent surface**: what
 it declares is exactly what the relay enforces at runtime, so be as precise
 as you can: unknown keys are hard rejected (a typo is a deploy-time error,
-never silently ignored), and there are no implicit grants — `owner`/`agent`
+never silently ignored), and there are no implicit grants: `owner`/`agent`
 are never auto-added to a permission list.
 
 **Visibility is not a manifest field.** Whether an app is `private`, `link`,
@@ -827,7 +854,7 @@ app stores and who may write it; visibility governs who may open the app at all
 
 Fields, exactly:
 
-- **`x-homespun-manifest.app`** — `name` (required, ≤80 chars), `description`
+- **`x-homespun-manifest.app`**: `name` (required, ≤80 chars), `description`
   (≤280 chars), `icon` (a single **pictographic** emoji: a geometric/symbol/
   letter/digit codepoint such as the half-circle "◐" is rejected with
   manifest_invalid, "icon must be an emoji, not a letter, digit, or symbol").
@@ -850,11 +877,11 @@ Fields, exactly:
   - **`ogImage`**: an `https://` URL (≤2048 chars) used as the share-preview
     image (`og:image`/`twitter:image`) instead of the generated card. The
     relay never fetches it; it is only emitted as the meta-tag value.
-- **`x-homespun-manifest.collections`** — a map of collection name →
+- **`x-homespun-manifest.collections`**: a map of collection name →
   `{ schema?, write, delete, read?, countRead?, appendOnly?, seedOnInstall? }`.
   An app may declare zero collections (a purely presentational app).
-  - **`schema`** — `{ "$ref": "#/$defs/<Name>" }` into the document's own
-    `$defs`. Optional — omit it for a schemaless collection (rows validated
+  - **`schema`**: `{ "$ref": "#/$defs/<Name>" }` into the document's own
+    `$defs`. Optional: omit it for a schemaless collection (rows validated
     only at your own discretion). Cross-document refs are not supported.
     **A declared schema is STRICTLY ENFORCED:** any `create`/`upsert`/`update`
     whose `data` fails the schema is rejected `422 row_schema_violation`, with
@@ -863,9 +890,9 @@ Fields, exactly:
     `appendOnly` are all enforced by the relay on every request, through the
     same door for browser visitors and for you as the agent. A non-conforming
     write never lands.
-  - **`write`** — required, non-empty array of roles that may `create`/
+  - **`write`**: required, non-empty array of roles that may `create`/
     `upsert`/`update` rows in this collection.
-  - **`delete`** — required, non-empty array of roles that may delete rows.
+  - **`delete`**: required, non-empty array of roles that may delete rows.
   - **`read`**: optional array of roles. **It IS enforced, server-side, on
     every read** (list, single-row get, and the live change feed), exactly the
     way `write` and `delete` are. Semantics:
@@ -943,14 +970,14 @@ Fields, exactly:
     to the app's visibility), `author` (row-scoped: the human/agent who
     authored *that specific row*; valid in `delete` and `read`, not in
     `write`, since a create has no pre-existing row to be the author of).
-- **`x-homespun-manifest.externalHosts`** — an array of `https://` origins
+- **`x-homespun-manifest.externalHosts`**: an array of `https://` origins
   (DNS name, optional single leftmost `*.` wildcard, no path/query/IP
   literal) the page's `fetch`/`XMLHttpRequest` is allowed to reach. This is
   the **only** way a deployed app can talk to anything besides its own data
-  API — see "Serving and security" below.
-- **`x-homespun-manifest.cdn`** — boolean, default `false`. Set `true` to allow
+  API. See "Serving and security" below.
+- **`x-homespun-manifest.cdn`**: boolean, default `false`. Set `true` to allow
   `<script src>`/`<link rel=stylesheet>` from any `https:` origin (a CDN).
-  It does **not** widen what the page can `fetch()` — that's `externalHosts`
+  It does **not** widen what the page can `fetch()`; that's `externalHosts`
   only, kept separate on purpose so a page can load, say, a charting library
   from a CDN without also being able to exfiltrate data to arbitrary hosts.
 - **`x-homespun-manifest.capabilities`**: optional array from a STRICT
@@ -1214,16 +1241,16 @@ read, so the session and the initial collection snapshots are in place:
 
 | Surface | What it does |
 |---|---|
-| `homespun.ready` | `Promise<void>` — resolves once the session is resolved and every declared collection has been snapshotted into the local mirror. `await` it before your first synchronous read. |
+| `homespun.ready` | `Promise<void>`. Resolves once the session is resolved and every declared collection has been snapshotted into the local mirror. `await` it before your first synchronous read. |
 | `homespun.collections.snapshot(name)` | Synchronous read of every row currently in the local mirror. `[]` before `ready`. |
 | `homespun.collections.get(name, key)` | Synchronous point read; `undefined` if absent/deleted. |
 | `homespun.collections.count(name)` | `Promise<number>`: the collection's live row count from the server. Works even when the caller cannot read the rows, if the manifest opted in with `countRead` (the "3 spots left" shape). Network read, not a mirror read. Rejects `collection_count_forbidden` when not opted in. |
-| `homespun.collections.on(name, handler)` | Live deltas for one collection, already folded into row shape — `{kind:"upsert", collection, row: HomespunRow}` or `{kind:"delete", collection, row:{key, deletedAt}}`. Returns an unsubscribe function. |
+| `homespun.collections.on(name, handler)` | Live deltas for one collection, already folded into row shape: `{kind:"upsert", collection, row: HomespunRow}` or `{kind:"delete", collection, row:{key, deletedAt}}`. Returns an unsubscribe function. |
 | `homespun.collections.create(name, data)` | `POST`; the server generates the row key. Returns the created `HomespunRow` FLAT. (The raw `POST /v1/apps/:id/collections/:name` REST endpoint instead wraps it as `{ "row": ... }`; see "Raw REST envelopes" if you call the API directly.) |
 | `homespun.collections.upsert(name, key, data)` | Create-or-return-existing for a caller-supplied key (idempotent). |
 | `homespun.collections.update(name, key, data, {ifMatch?})` | Optimistic-locked update. A stale `ifMatch` rejects with `code:"conflict"` and `details.current` set to the winning row. |
 | `homespun.collections.delete(name, key, {ifMatch?})` | Soft-delete (tombstone). |
-| `homespun.feed.on(handler, {collection?})` | Unfiltered (or single-collection-filtered) live change feed — every create/update/delete across the app, in order. Each entry is a raw `FeedEntry`: `{seq, op:"create"\|"update"\|"delete", collection, key, data, author, ts}`. **Note the field is `op`, not `kind`** — `feed.on` and `collections.on` carry different shapes (see below). |
+| `homespun.feed.on(handler, {collection?})` | Unfiltered (or single-collection-filtered) live change feed: every create/update/delete across the app, in order. Each entry is a raw `FeedEntry`: `{seq, op:"create"\|"update"\|"delete", collection, key, data, author, ts}`. **Note the field is `op`, not `kind`**: `feed.on` and `collections.on` carry different shapes (see below). |
 | `homespun.feed.cursor` | Highest feed `seq` applied locally so far (memory-only). |
 | `homespun.app.{slug,name,description,icon,visibility,collections}` | Manifest-derived, safe-to-expose facts about this app. |
 | `homespun.session.{kind,humanId}` | Who's looking at the page right now: `"owner"` \| `"member"` \| `"anonymous"`, and their human id (`null` if anonymous). |
@@ -1270,7 +1297,7 @@ A minimal grocery-list page against the manifest above:
     }
 
     homespun.ready.then(render);
-    // Live updates — from the human's own edits AND from `homespun data upsert`
+    // Live updates, from a member's own edits AND from `homespun data upsert`
     // calls the agent makes later.
     homespun.collections.on("items", render);
 
@@ -1296,15 +1323,15 @@ Rules of thumb:
   and the initial collection snapshots are actually in place.
 - **`collections.on` and `feed.on` are not interchangeable.** `collections.on`
   gives you a row-shaped delta already folded for one collection
-  (`{kind:"upsert"|"delete", row}`) — reach for it when you just want to
+  (`{kind:"upsert"|"delete", row}`). Reach for it when you just want to
   re-render on change, as in the example above. `feed.on` gives you the raw,
   unfolded `FeedEntry` (`{seq, op, collection, key, data, author, ts}`,
   field is **`op`** not `kind`) across the whole app (or one collection via
-  `{collection}`) — reach for it when you need ordering/`seq`, cross-collection
+  `{collection}`). Reach for it when you need ordering/`seq`, cross-collection
   events, or the entry's own metadata (`author`, `ts`) rather than just the
   resulting row.
 - **`.textContent`, never `.innerHTML`**, for anything containing human- or
-  agent-authored text — the same injection discipline as any other web page.
+  agent-authored text: the same injection discipline as any other web page.
 - **Never invent a client-side `by`/`author` field for what the row's real,
   server-stamped `author` already is.** A page-written field like
   `{ ...data, by: "Alice" }` is just ordinary row data: any visitor can set
@@ -1318,8 +1345,8 @@ Rules of thumb:
   relay stamped into a real name. Greet the current viewer the same way, with
   `homespun.session.displayName`, falling back to something generic (e.g.
   "Sign in" or "Welcome") when it's `null`.
-- **No relay-injected stylesheet or CSS variables in v2.** Unlike the old
-  app viewer, a deployed app gets no default styling — you own 100% of the
+- **No relay-injected stylesheet or CSS variables in v2.** Unlike the v1
+  viewer, a deployed app gets no default styling: you own 100% of the
   CSS from the first paint. Write real, theme-aware CSS (respect
   `prefers-color-scheme` yourself) rather than assuming a house style exists.
 - **Network access is manifest-gated, not blanket-blocked.** A v2 app is a
@@ -1328,7 +1355,7 @@ Rules of thumb:
   `externalHosts`; nothing else. `<script src>`/`<link rel=stylesheet>` from
   an external `https:` origin additionally requires `cdn: true`. Images,
   fonts, and media may load from any `https:` origin (or `data:`) regardless
-  of `cdn`/`externalHosts` — those are display-only and can't exfiltrate
+  of `cdn`/`externalHosts`: those are display-only and can't exfiltrate
   data. Anything not covered by one of these is blocked by the app's CSP;
   there is no escape hatch besides declaring it in the manifest and
   redeploying.
@@ -1398,21 +1425,21 @@ never exhaust the owner's storage.
 Either way the bytes count against the **app owner's** blob quota, and an
 uploader who goes too fast gets a clean `rate_limited` error.
 
-## Serving and security — what an app's origin can and can't do
+## Serving and security: what an app's origin can and can't do
 
 Each deployed app is served **top-level**, at its own subdomain
-(`<slug>.homespunapps.com`) — not embedded in an iframe. A few things follow
+(`<slug>.homespunapps.com`), not embedded in an iframe. A few things follow
 from that:
 
 - **No cookies on the app's origin.** The usercontent domain strips every
-  inbound `Cookie` header and drops every outbound `Set-Cookie` — nothing on
+  inbound `Cookie` header and drops every outbound `Set-Cookie`: nothing on
   that origin ever reads or sets one. Session state lives in the browser's
   `localStorage`, scoped per-app-origin, and is established via
   `homespun.session.login()` (a redirect to the identity provider) rather than a
   cookie.
-- **`connect-src` is `'self'` plus your declared `externalHosts` — never
+- **`connect-src` is `'self'` plus your declared `externalHosts`, never
   wider**, regardless of the `cdn` flag. `cdn: true` only widens
-  `script-src`/`style-src` (code you load), not what the page can fetch —
+  `script-src`/`style-src` (code you load), not what the page can fetch,
   keeping "can load a charting library" and "can exfiltrate data" as two
   separate grants.
 - **Visibility gates who can open the app at all**: `private` (only the
@@ -1430,26 +1457,26 @@ from that:
 
 ## Deploying and iterating
 
-`homespun deploy` is the one command for both creating and redeploying — decided
+`homespun deploy` is the one command for both creating and redeploying, decided
 by whether you pass `--app`, not by two separate verbs. Tell the human their
 new app is private until they invite members or change its visibility.
 
-**Canonical shape — a directory with two fixed filenames:**
+**Canonical shape, a directory with two fixed filenames:**
 
 ```sh
 homespun deploy ./my-app
-#   reads ./my-app/index.html and ./my-app/manifest.json — no discovery
+#   reads ./my-app/index.html and ./my-app/manifest.json, no discovery
 #   heuristics, both files required
 ```
 
-**Escape hatch — a single HTML file plus an explicit manifest:**
+**Escape hatch, a single HTML file plus an explicit manifest:**
 
 ```sh
 homespun deploy ./index.html --manifest ./manifest.json
 # --manifest also accepts inline JSON
 ```
 
-**Create** (no `--app`) — `POST /v1/apps`:
+**Create** (no `--app`) calls `POST /v1/apps`:
 
 ```sh
 homespun deploy ./my-app
@@ -1464,23 +1491,23 @@ homespun deploy ./my-app --visibility public --slug grocery-list
   `--visibility link` app always gets a server-generated slug; passing
   `--slug` with it is rejected before the request even goes out.
 
-**Redeploy** (`--app <id-or-slug>`) — `POST /v1/apps/:id/versions`:
+**Redeploy** (`--app <id-or-slug>`) calls `POST /v1/apps/:id/versions`:
 
 ```sh
 homespun deploy ./my-app --app grocery-list
 # -> { app_id, version, visibility, created: false, compat, breaks? }
 ```
 
-- `--slug`/`--visibility` cannot be changed here — slug is immutable for the
+- `--slug`/`--visibility` cannot be changed here: slug is immutable for the
   app's lifetime; change visibility with `homespun apps update --visibility`.
 - **The compat gate.** By default the relay refuses a redeploy that
-  *narrows* the manifest against the currently-live one — removing a
-  collection, tightening a schema, dropping a write/delete role that used to
-  be granted — because rows already written under the old contract could
-  stop making sense. It fails `422` with `details.breaks[]` naming every
+  *narrows* the manifest against the currently-live one. Narrowing means
+  removing a collection, tightening a schema, or dropping a write/delete role
+  that used to be granted, and it is refused because rows already written
+  under the old contract could stop making sense. It fails `422` with `details.breaks[]` naming every
   offending path. Adding collections/roles or loosening constraints is
   always compatible. Pass `--force` to redeploy anyway (a narrowed
-  collection is detached, not deleted — its rows aren't destroyed).
+  collection is detached, not deleted, and its rows aren't destroyed).
 
 **Dry run before you deploy (`--check`).** Add `--check` to validate a bundle
 WITHOUT deploying it: the relay runs the full manifest + asset-shape validation,
@@ -1516,7 +1543,9 @@ brings it back before you deploy/read/write against it again.
 optional `assets[]` bundle alongside the HTML, so an app AND its files ship in
 ONE call. This is the clean way to deliver a scroll-scrub frame sequence, a
 hosted video, a custom font, or a data file, with no second upload step and no
-CDN. Each asset is `{ path, content_base64, mime? }`:
+CDN. Each asset is EITHER `{ path, content_base64, mime? }` (inline bytes) OR
+`{ path, attachment_id }` (a reference to an already-uploaded attachment, see
+"Avoiding base64 in the model context" below):
 
 - `path` is the **app-relative, same-origin** reference your HTML uses, e.g.
   `frames/000.jpg`. It must be relative (no leading `/`), carry no `..`
@@ -1583,10 +1612,45 @@ A hosted video is the same shape with one
 `<video src="media/clip.mp4" controls>` tag; the browser's native seek issues
 Range requests the relay answers with `206`.
 
+**Avoiding base64 in the model context: reference an attachment by id.**
+
+`content_base64` carries the file's bytes INLINE in the deploy call. When a model
+emits that call through the MCP tool, those bytes ride in the tool-call arguments
+and cost context tokens proportional to the file size, re-paid on every retry (a
+few-hundred-KB image is already very costly). An asset entry has a second form
+that carries no bytes, `{ path, attachment_id }`: name an already-uploaded
+attachment and the deploy binds `path` to it.
+
+```jsonc
+"assets": [{ "path": "img/hero.jpg", "attachment_id": "att_..." }]
+```
+
+The referenced attachment must be **owned by you, app-scoped to THIS app, and
+`ready`** (an agent-scoped attachment, or one belonging to another app, is
+rejected with an opaque error). Two ways to produce one WITHOUT the bytes ever
+entering the model context:
+
+- **`attachments` action `fetch`** with `{ source_url, scope: "app", app_id }`:
+  the relay downloads the bytes server-side (SSRF-gated, https only), runs the
+  same sniff / allowlist / size / scan / quota pipeline as any upload, and
+  returns a ready `attachment_id`. You send only a URL string. This is the
+  least-effort zero-context path when the image is reachable at a URL.
+- **`attachments` presign -> out-of-band PUT -> finalize** (see "Images, video,
+  and any real media" below) with `scope: "app", app_id`: you PUT the raw bytes
+  straight to storage, so they bypass the model context. Use this when you hold
+  the bytes but not a URL.
+
+Because an app-scoped attachment needs the app id, the order for a NEW app is:
+`deploy_app` to create it (get `app_id`), then `fetch` / `presign` with
+`scope: "app"` and that id, then redeploy with
+`assets: [{ path, attachment_id }]`. For an EXISTING app, do it in one redeploy.
+On a filesystem self-host (no presign backend) fall back to inline
+`content_base64`: still correct, just not zero-context.
+
 ## Reading and writing data as the agent
 
 You use the **same collection API** the deployed page uses, just from the
-CLI/your own process rather than the browser — `homespun data` for point-in-time
+CLI/your own process rather than the browser: `homespun data` for point-in-time
 reads/writes, `homespun apps watch` for the live feed.
 
 ```sh
@@ -1594,18 +1658,18 @@ reads/writes, `homespun apps watch` for the live feed.
 homespun data grocery-list items list
 homespun data grocery-list items get row_abc123
 
-# Write — upsert is the ONLY create-shaped verb: omit --key to add a new
+# Write. Upsert is the ONLY create-shaped verb: omit --key to add a new
 # row (server-generated key); pass --key to ensure a row exists at that key
 # (returns the existing row with deduped:true on a collision, never errors)
 homespun data grocery-list items upsert --data '{"name":"Milk","checked":false}'
 homespun data grocery-list items upsert --key milk --data '{"name":"Milk"}'
 
-# Update / delete — optionally optimistic-locked with --if-match <version>
+# Update / delete, optionally optimistic-locked with --if-match <version>
 homespun data grocery-list items update milk --data '{"name":"Milk","checked":true}'
 homespun data grocery-list items delete milk --yes
 ```
 
-`<app>` accepts either the app id or its slug throughout — `homespun data`,
+`<app>` accepts either the app id or its slug throughout: `homespun data`,
 `homespun deploy --app`, and every `homespun apps` subcommand resolve a slug via a
 lookup automatically.
 
@@ -1631,7 +1695,7 @@ ignores that can silently drop every row it writes:
   array key is **`items`**, not `rows`. The two list envelopes deliberately
   differ, so never assume one shape from the other.
 
-**Watching the live feed** — the direct replacement for polling: streams the
+**Watching the live feed** is the direct replacement for polling: streams the
 app's change feed as JSON-lines, one compact object per line, over a
 WebSocket with an automatic long-poll fallback (byte-identical output either
 way, so a pipe consumer can't tell which transport served a given line):
@@ -1644,7 +1708,7 @@ homespun apps watch grocery-list --timeout 300                # give up after 5 
 ```
 
 A dormancy transition mid-watch prints a single `{"type":"_dormant"}` line
-and exits `0` — that's "the app went to sleep," not an error.
+and exits `0`. That's "the app went to sleep," not an error.
 
 **Managing the app itself:**
 
@@ -1654,12 +1718,12 @@ homespun apps list --status dormant     # filter by lifecycle status
 homespun apps show grocery-list         # full detail: manifest, current_version, row_count, storage_bytes
 homespun apps update grocery-list --visibility private
 homespun apps wake grocery-list         # wake a dormant app
-homespun apps delete grocery-list --yes # destructive — permanently removes the app and its data
+homespun apps delete grocery-list --yes # destructive, permanently removes the app and its data
 ```
 
 Other identity/config commands still work exactly as you'd expect and are
 unrelated to any of the above: `homespun config show` (inspect the resolved
-url/api-key — `homespun config` bare with no verb is rejected with
+url/api-key; `homespun config` bare with no verb is rejected with
 `invalid_args`; `show` is the read-only inspection verb, alongside
 `list`/`use`/`add`/`rm` for multi-profile management), `homespun agent logout`
 (clear local credentials), `homespun key list|mint|revoke` (inspect / mint a
@@ -1786,7 +1850,7 @@ reuse a URL from another copy of the template: each install mints its own.
 ## Attachments (binary uploads)
 
 Attachments are binary blobs (images, PDFs, audio, video, and text/data files)
-you upload once and then reference from row data or event payloads by their
+you upload once and then reference from row data by their
 `attachment_id` (a field declared with `format: homespun-attachment-id`
 validates the id). Every upload is server-side MIME-sniffed from its bytes,
 checked against the relay's allowlist, and counted against your size +
@@ -2009,10 +2073,10 @@ data-exposure trap, not a style nit, so read it first.
 
 <!-- homespun:core:end -->
 
-## If you know the old (event) skill — migration note
+## If you know the old (event) skill: migration note
 
-If you've used app before and learned the event/app/template model, here's
-the direct mapping — everything below is a rename or a fold onto the one
+If you learned homespun's v1 event/app/template model, here's
+the direct mapping. Everything below is a rename or a fold onto the one
 collection primitive, not a new concept:
 
 | Old | New |
@@ -2022,10 +2086,10 @@ collection primitive, not a new concept:
 | `homespun.state.events` | `homespun.collections.snapshot("events")` |
 | `homespun.state.last(type)` | `homespun.collections.snapshot("events").findLast(r => r.data.type === type)` |
 | `homespun.inputData` | a seed row you write yourself at deploy time (e.g. an app-config collection, key `"main"`), read via `homespun.collections.get(...)` |
-| `homespun.records.*` | `homespun.collections.*` — same seven methods (`snapshot/get/on/create/upsert/update/delete`), just renamed to match the manifest's `collections` keyword |
+| `homespun.records.*` | `homespun.collections.*`, the same seven methods (`snapshot/get/on/create/upsert/update/delete`), just renamed to match the manifest's `collections` keyword |
 | `homespun create` / `homespun template create` / `homespun upgrade` | `homespun deploy` (create with no `--app`; redeploy with `--app <id>`) |
 | `homespun watch <homespun-id>` | `homespun apps watch <app>` |
-| `homespun send` | `homespun data <app> <collection> upsert` (or `update`) — there's no separate "send an event" verb; you write into a collection like anything else |
+| `homespun send` | `homespun data <app> <collection> upsert` (or `update`). There's no separate "send an event" verb; you write into a collection like anything else |
 
 There is no shim: a deployed app talks the new API only. If you're
 migrating an existing template/app's HTML, expect to rewrite its data

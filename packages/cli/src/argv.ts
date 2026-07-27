@@ -76,6 +76,11 @@ export const BOOLEAN_FLAGS = new Set([
   "all",
   // `homespun members set-role --clear-role`: drop a custom role back to plain member.
   "clear-role",
+  // `homespun template publish --attest-example-only`: attest the captured template
+  // and its seed rows carry no real personal data (marketplace PR 10).
+  "attest-example-only",
+  // `homespun review respond --clear`: clear a publisher response (sends null).
+  "clear",
 ]);
 
 /**

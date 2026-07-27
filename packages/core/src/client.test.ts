@@ -1,7 +1,11 @@
 // Unit tests for HomespunClient.call, exercised through the `fetch` override.
 
 import { describe, it, expect } from "vitest";
-import { HomespunClient, HomespunApiError } from "./client.js";
+import {
+  HomespunClient,
+  HomespunApiError,
+  communityTemplatePath,
+} from "./client.js";
 
 /** Build a client with a stubbed fetch. */
 function clientWith(fetchImpl: typeof fetch): HomespunClient {
@@ -630,5 +634,53 @@ describe("HomespunClient.wsBaseUrl", () => {
     expect(
       new HomespunClient({ url: "http://relay.test", apiKey: "k" }).wsBaseUrl,
     ).toBe("ws://relay.test");
+  });
+});
+
+describe("communityTemplatePath (#921)", () => {
+  it("sends a namespaced <handle>/<slug> ref as two path segments", () => {
+    expect(communityTemplatePath("lalit/academy-crm", "config-contract")).toBe(
+      "/v1/community/templates/lalit/academy-crm/config-contract",
+    );
+    expect(communityTemplatePath("lalit/academy-crm", "install")).toBe(
+      "/v1/community/templates/lalit/academy-crm/install",
+    );
+  });
+
+  it("keeps a snapshot id ref as a single segment", () => {
+    expect(
+      communityTemplatePath("cmrw5ukvw002w1qs5u61qd5xi", "config-contract"),
+    ).toBe("/v1/community/templates/cmrw5ukvw002w1qs5u61qd5xi/config-contract");
+  });
+
+  it("percent-encodes each segment", () => {
+    expect(communityTemplatePath("a b/c d", "install")).toBe(
+      "/v1/community/templates/a%20b/c%20d/install",
+    );
+    // Not exactly two non-empty parts -> single encoded segment.
+    expect(communityTemplatePath("a/b/c", "install")).toBe(
+      "/v1/community/templates/a%2Fb%2Fc/install",
+    );
+    expect(communityTemplatePath("/x", "install")).toBe(
+      "/v1/community/templates/%2Fx/install",
+    );
+  });
+});
+
+describe("community install methods send the right path (#921)", () => {
+  it("getCommunityConfigContract / installCommunityTemplate build namespaced two-segment paths", async () => {
+    const seen: string[] = [];
+    const c = clientWith(async (input) => {
+      seen.push(String(input));
+      return res({ status: 200, body: JSON.stringify({ ok: true }) });
+    });
+    await c.getCommunityConfigContract("lalit/academy-crm");
+    await c.installCommunityTemplate("lalit/academy-crm");
+    await c.getCommunityConfigContract("cmrw5ukvw002w1qs5u61qd5xi");
+    expect(seen).toEqual([
+      "https://relay.test/v1/community/templates/lalit/academy-crm/config-contract",
+      "https://relay.test/v1/community/templates/lalit/academy-crm/install",
+      "https://relay.test/v1/community/templates/cmrw5ukvw002w1qs5u61qd5xi/config-contract",
+    ]);
   });
 });
