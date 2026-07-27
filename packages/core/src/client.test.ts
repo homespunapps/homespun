@@ -247,16 +247,19 @@ describe("HomespunClient app-member operations", () => {
           humanId: "hum_1",
           email: "a@b.test",
           role: "member",
-          customRole: "editor",
+          customRole: "reviewer",
           createdAt: "2026-01-01T00:00:00.000Z",
         },
       }),
     );
-    await c.addAppMember("app_1", { email: "a@b.test", customRole: "editor" });
+    await c.addAppMember("app_1", {
+      email: "a@b.test",
+      customRole: "reviewer",
+    });
     expect(seen().body).toEqual({
       email: "a@b.test",
       role: undefined,
-      custom_role: "editor",
+      custom_role: "reviewer",
     });
   });
 

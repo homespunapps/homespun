@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.12 -->
+<!-- homespun skill v1.6.13 -->
 
 # homespun
 
@@ -125,7 +125,7 @@ const page = await homespun.collections.list("tasks", {
 The agent side is the same query over the CLI: `homespun data <app> <coll> list
 --where '<json-array>' --sort '<json-array>'`. Two rules to know:
 
-- **The filter never widens what you can read.** Read permission + author
+- **The filter never widens what you can read.** Read permission + any row
   scoping are applied FIRST, then the filter - so a filtered list is always a
   **subset** of what you could already read. A caller who cannot read the
   collection is refused (`collection_read_forbidden`) whether or not a filter is
@@ -155,8 +155,16 @@ snake_case wire at the SDK boundary:
 }
 ```
 
-The row's `author` is **server-stamped and tamper-proof**: it records who
-actually wrote the row. Its `kind` is one of `"human"`, `"agent"`, or `"anon"`
+The row's `author` is **server-stamped and tamper-proof**, but read the name
+carefully: it records who wrote the row **LAST, not who created it**. Every
+update rewrites it, so a row Alice created and Bob (or your own agent) later
+edited comes back with Bob as its `author`, and Alice is not recorded anywhere
+on the row afterwards. `createdAt` tells you WHEN a row was created; nothing on
+the wire tells you by WHOM. If you need "the person who created this row" as a
+permission boundary, that is the `creator` subject in the manifest (see "Who may
+change a row" below), enforced server-side, not a field you read back here.
+
+Its `kind` is one of `"human"`, `"agent"`, or `"anon"`
 (the sentinel for a truly-anonymous writer on a public/link app). **That is a
 DIFFERENT enum from `homespun.session.kind`**, whose values are `"owner"`,
 `"member"`, and `"anonymous"`. So do not special-case
@@ -169,8 +177,8 @@ a guestbook, RSVP, or booking legitimately keeps the responder's stated name
 in `data` (e.g. `data.name`), and you should render it as what they called
 themselves. The one rule is that a self-declared field is never PROOF of who
 wrote the row. Render `data.name` as their stated name and
-`homespun.members.nameFor(row.author)` as who actually wrote it (server-stamped);
-never treat the former as the latter.
+`homespun.members.nameFor(row.author)` as who actually wrote it last
+(server-stamped); never treat the former as the latter.
 
 **Anonymous visitors on a PUBLIC (or LINK) app get a session automatically,
 with no login.** The relay hands every visitor an anonymous session
@@ -878,7 +886,8 @@ Fields, exactly:
     image (`og:image`/`twitter:image`) instead of the generated card. The
     relay never fetches it; it is only emitted as the meta-tag value.
 - **`x-homespun-manifest.collections`**: a map of collection name →
-  `{ schema?, write, delete, read?, countRead?, appendOnly?, seedOnInstall? }`.
+  `{ schema?, write, update?, delete, read?, countRead?, appendOnly?,
+  seedOnInstall? }`.
   An app may declare zero collections (a purely presentational app).
   - **`schema`**: `{ "$ref": "#/$defs/<Name>" }` into the document's own
     `$defs`. Optional: omit it for a schemaless collection (rows validated
@@ -886,12 +895,29 @@ Fields, exactly:
     **A declared schema is STRICTLY ENFORCED:** any `create`/`upsert`/`update`
     whose `data` fails the schema is rejected `422 row_schema_violation`, with
     the failing JSON Schema paths listed in the error's `details`. Nothing in
-    this block is advisory: `schema`, `write`, `delete`, `read` and
+    this block is advisory: `schema`, `write`, `update`, `delete`, `read` and
     `appendOnly` are all enforced by the relay on every request, through the
     same door for browser visitors and for you as the agent. A non-conforming
     write never lands.
-  - **`write`**: required, non-empty array of roles that may `create`/
-    `upsert`/`update` rows in this collection.
+  - **`write`**: required, non-empty array of roles that may CREATE rows in
+    this collection (`create`, and the create half of `upsert`). It ALSO gates
+    updates unless the collection declares its own `update` list, so on a
+    collection with no `update`, `write` means "may add rows **and** may
+    overwrite every row already in the collection, including other people's".
+    Read "Who may change a row" below before you leave it that way.
+  - **`update`**: optional array of roles that may change an EXISTING row
+    (`update`, and the update half of an `on:`-field upsert). **Omitted means
+    "same as `write`"**, so a collection that leaves it off is governed by
+    `write` for both halves. Declare it to split adding from editing:
+    `write: ["anyone"]` plus `update: ["creator"]` is "anyone may add a row,
+    only the person who created it may change it", which `write` alone cannot
+    express. It takes the same subjects `delete` does, including the
+    row-scoped `creator` / `editor` / `author`, because by the time it is
+    checked a target row exists. An explicit `update: []` is legal and means
+    nobody may update: rows can be created and deleted but never edited. (For
+    "never edited AND never deleted", use `appendOnly` instead, and use it
+    *alone*: declaring `appendOnly: true` alongside any `update` list, empty or
+    not, is rejected at deploy as a contradiction.)
   - **`delete`**: required, non-empty array of roles that may delete rows.
   - **`read`**: optional array of roles. **It IS enforced, server-side, on
     every read** (list, single-row get, and the live change feed), exactly the
@@ -908,14 +934,17 @@ Fields, exactly:
       whose `hint` names the roles the collection requires. This applies to the
       data API itself, so a visitor calling the collection endpoint directly is
       refused just as the page would be.
-    - **`read: ["author"]`** scopes reads to the caller's *own* rows: a list
-      returns only rows that caller authored, and a get on a row authored by
-      someone else returns `404 row_not_found` (the same error a missing key
-      returns) rather than a 403, deliberately, so a caller cannot probe which
-      keys exist. An anonymous visitor has no author identity, so it can never
-      satisfy `author` and is refused `403` outright.
+    - **A row-scoped `read`** (`["creator"]`, `["editor"]`, or the older
+      `["author"]`) scopes reads to the caller's *own* rows: a list returns only
+      the rows that match, and a get on a row that does not returns `404
+      row_not_found` (the same error a missing key returns) rather than a 403,
+      deliberately, so a caller cannot probe which keys exist. **Prefer
+      `creator`**: `editor` and `author` both mean "wrote it last", so the first
+      time anyone else touches a row it drops out of its original writer's view.
+      An anonymous visitor has no stable identity, so it satisfies none of the
+      three and is refused `403` outright.
     - Matching is **literal, with no implicit grants**: `read: ["owner"]` does
-      not silently include `agent`, and under a bare `read: ["author"]` even
+      not silently include `agent`, and under a bare row-scoped read list even
       the owner and you are scoped to your own rows unless you also list
       `"owner"`/`"agent"`.
     - `read` is applied **on top of** app visibility, never instead of it: a
@@ -934,8 +963,9 @@ Fields, exactly:
       /_hs/count/<collection>` (or call `homespun.collections.count(name)`) and
       gets `{ "count": N }`, the number of live rows only, never any row data
       and no field values. Matching is literal (no implicit grants), the same
-      as `write`/`delete`; `"author"` is not accepted (a count is an aggregate,
-      not a per-row view). v1 is a whole-collection total with no filtering.
+      as `write`/`delete`; the row-scoped subjects (`creator`, `editor`,
+      `author`) are not accepted (a count is an aggregate, not a per-row view).
+      v1 is a whole-collection total with no filtering.
     - It does **not** relax `read`: the rows stay exactly as protected as
       before, so this is safe to add to a collection that captures private
       submissions.
@@ -945,7 +975,10 @@ Fields, exactly:
     append-only collection is refused `403 append_only` for *every* role,
     including `owner` and `agent`, and that check runs before the role match,
     so an append-only violation reports `append_only` rather than a misleading
-    "forbidden". Model an edit as a new row.
+    "forbidden". Model an edit as a new row. Because that check runs first,
+    `appendOnly: true` and an `update` list contradict each other and the deploy
+    is **rejected** if you declare both: there is nobody left for the `update`
+    list to admit. Pick one.
   - **`seedOnInstall`**: optional boolean (default `false`). Only meaningful on
     a *template* (a published/first-party snapshot someone installs). Set `true`
     to pre-fill this collection with the template's starter rows when the
@@ -967,9 +1000,14 @@ Fields, exactly:
   - **Roles** (the full vocabulary): `agent` (you, the deploying/owning
     agent), `owner` (the human who owns the app), `member` (a human invited
     as a collaborator), `anyone` (any authenticated-or-not visitor, subject
-    to the app's visibility), `author` (row-scoped: the human/agent who
-    authored *that specific row*; valid in `delete` and `read`, not in
-    `write`, since a create has no pre-existing row to be the author of).
+    to the app's visibility), plus three **row-scoped** subjects decided per
+    target row rather than carried by the caller: `creator` (created the row),
+    `editor` (wrote the row last), and `author` (an older name for `editor`,
+    still accepted, discouraged because the word reads like "creator" and does
+    not mean it). All three are valid in `update`, `delete` and `read`, and
+    rejected in `write` and `countRead`. **`creator` is the one to reach for**;
+    see "Who may change a row" below for the full table and why the distinction
+    is a security property, not a naming preference.
 - **`x-homespun-manifest.externalHosts`**: an array of `https://` origins
   (DNS name, optional single leftmost `*.` wildcard, no path/query/IP
   literal) the page's `fetch`/`XMLHttpRequest` is allowed to reach. This is
@@ -1040,6 +1078,110 @@ Fields, exactly:
   pattern for other providers (a map, a form, a calendar): declare the origin in
   `embeds`, then iframe it.
 
+### Who may change a row: `update`, `creator`, `editor`
+
+`write` is two capabilities wearing one name. It says who may ADD a row and,
+unless you say otherwise, it also says who may CHANGE every row already there.
+The `update` list is how you separate those two, and the row-scoped subjects are
+how you say *whose* rows.
+
+> **SECURITY: a `write` list is also an OVERWRITE list.** If a collection's
+> `write` admits a caller, that same caller may overwrite **any** row in that
+> collection, not just their own, unless an `update` list narrows it. So
+> `write: ["anyone"]` on a per-user collection means every signed-in visitor may
+> rewrite every other visitor's row, and since an update also restamps the row's
+> `author`, the original writer's row can vanish from their own
+> `read: ["author"]` view in the same request. **How reachable that is depends
+> entirely on whether your row keys are guessable.** An app keyed on something
+> predictable (`profile`, `settings`, a date like `2026-07-27`, a username, an
+> email address) hands any signed-in user a working takeover: they call
+> `homespun.collections.update("journal", "2026-07-27", ...)` and the row is
+> theirs. An app that only ever calls `create()` gets server-generated keys, so
+> it is protected by nobody being able to guess a key, which is secrecy, not
+> authorization. Neither app is safe by construction. **Declare `update`.**
+
+**Wrong**, and it looks careful: any signed-in visitor may rewrite any entry,
+and the rewrite makes that entry theirs, so it drops out of its original
+writer's `read: ["author"]` view at the same moment.
+
+```json
+"entries": {
+  "write":  ["anyone"],
+  "delete": ["author"],
+  "read":   ["author"]
+}
+```
+
+**Right:**
+
+```json
+"entries": {
+  "write":  ["anyone"],
+  "update": ["creator"],
+  "delete": ["creator"],
+  "read":   ["creator"]
+}
+```
+
+Anyone signed in may add a row; only the person who created it may change,
+remove or see it, and no later write by anyone, including the app's own agent,
+can transfer that.
+
+> **SECURITY: `creator` settles who OWNS a row, NOT which rows a caller may
+> CLAIM.** The recipe above closes the overwrite hole and leaves a land-grab
+> open behind it, and the two are easy to mistake for one. A create is gated by
+> `write` alone and never looks at the key the caller supplied, so under
+> `write: ["anyone"]` the first caller to `upsert("journal", "2026-07-27", ...)`
+> a guessable key becomes its creator, permanently. Predictable keys (`profile`,
+> `settings`, a username, an email address, today's date) are exactly the ones
+> an app reaches for, and every one of them is claimable by whoever writes it
+> first. Afterwards the person the slot was meant for is locked out of their own
+> key: their update is denied by `update: ["creator"]`, and their create dedups
+> onto the squatter's live row and hands its contents back instead. Deleting is
+> not a way out either, because a create over a tombstoned key stamps a fresh
+> creator, so the slot simply changes hands again. `unique` does not rescue
+> this: it constrains a data field's values, and a collision is a hard `409`, so
+> the legitimate user is denied all the same. **The safe shape is a key the
+> caller does not choose:** let `homespun.collections.create(name, data)` mint
+> the key server-side, or have the app's agent create the row. Reach for a
+> caller-chosen natural key only where losing the race to it is harmless.
+
+**The three row-scoped subjects, and why there are three:**
+
+| Subject | Means | Use it? |
+|---|---|---|
+| `creator` | the identity that CREATED the row. Stamped once, never moves. | **Yes. Default to this one.** |
+| `editor` | the identity that wrote the row LAST. Moves on every update. | Only when you genuinely mean "whoever touched it last". |
+| `author` | the LAST writer, exactly like `editor`. The original name, accepted forever. | Discouraged in new manifests: it reads like "creator" and is not. |
+
+All three are valid in `update`, `delete` and `read`, and rejected in `write`
+and `countRead` (a create has no pre-existing row to scope against, and a count
+is an aggregate, not a per-row view). If your app declares custom roles, the
+suffix forms narrow one of them the same way: `<role>:own` limits it to the rows
+that holder wrote LAST, and `<role>:creator` to the rows they CREATED.
+
+**`editor` and `author` transfer; `creator` does not.** The moment anyone else
+writes a row, including your own agent doing a routine cleanup or a status flip,
+they become its editor. Under `update: ["author"]` the person who created the
+row then loses the right to edit it, and under `read: ["author"]` loses sight of
+it entirely. That is why `update: ["author", "agent"]`, which looks like the
+natural shape for an agent-assisted per-user app, quietly locks the human out of
+their own row the first time the agent touches it. Use `creator` for "this row
+belongs to this person", and reserve `editor` for "the last person to touch
+this".
+
+**Anonymous visitors never satisfy a row-scoped subject.** Every anonymous
+writer on a public or link app is stamped with the same shared `anon` sentinel,
+so `creator`, `editor`, `author` and every `:own` / `:creator` suffix are false
+for them, always. Under `update: ["creator"]` an anonymous visitor can create a
+row and then cannot edit it; under `read: ["creator"]` cannot read it back. That
+is fail-closed and intended: an anonymous session is not an identity, and
+scoping rows to it would hand every visitor's row to every other visitor. If
+your app needs visitors to come back and edit their own submission, give them a
+real identity first: `homespun.session.login()` for a sign-in, or a grant link
+(`homespun grants mint`), which mints a stable per-holder identity that DOES
+satisfy these subjects.
+
 ### Schema gotchas (two that bite at deploy time)
 
 - **`maxLength` cannot exceed the per-row byte cap.** A whole row's serialized
@@ -1103,11 +1245,16 @@ requests, contact and feedback boxes are all this shape.
   "orders": {
     "schema": { "$ref": "#/$defs/Order" },
     "write": ["anyone", "owner", "agent"],
+    "update": ["owner", "agent"],
     "delete": ["owner", "agent"],
     "read": ["owner", "agent"]
   }
 }
 ```
+
+`orders` declares `update` even though only staff read it: without that line,
+`write: ["anyone"]` would let any visitor rewrite any order that already exists,
+not only add their own (see "Who may change a row").
 
 An anonymous customer can POST an order (it lands with an `anon` author), but
 listing `orders` gives them `403 collection_read_forbidden`: only the owner and
@@ -1116,10 +1263,13 @@ API directly gets them nothing the page would not show them either. `menu` omits
 `read`, so it stays readable by every visitor, which is exactly what you want for
 the half of the app the customer is supposed to see.
 
-Adding `"author"` to that `read` list lets each submitter see their own row back
+Adding `"creator"` to that `read` list lets each submitter see their own row back
 (an order status page) without seeing anyone else's, but only for submitters who
-are *signed in*: `author` needs a stable identity to match a row against, and an
-anonymous visitor has none, so it stays a `403` for them. Keep the queue
+are *signed in*: a row-scoped subject needs a stable identity to match a row
+against, and an anonymous visitor has none, so it stays a `403` for them. Use
+`creator` rather than the older `author` here: `author` means the row's LAST
+writer, so the first time the owner or your agent edits an order, that order
+would drop out of the customer's own status page. Keep the queue
 `read: ["owner", "agent"]` when the customer never signs in.
 
 **The recipe is not finished until the page has a sign-in control.** This app is
@@ -1183,12 +1333,16 @@ aggregate with `countRead` while keeping `read` locked down:
   "signups": {
     "schema": { "$ref": "#/$defs/Signup" },
     "write": ["anyone"],
+    "update": ["owner"],
     "delete": ["owner"],
     "read": ["owner"],
     "countRead": ["anyone"]
   }
 }
 ```
+
+`update: ["owner"]` is what holds a visitor to adding a signup rather than
+rewriting somebody else's; without it, `write: ["anyone"]` grants both.
 
 The page reads the number with `homespun.collections.count(name)`, which
 resolves to a plain integer:
@@ -1445,7 +1599,7 @@ from that:
 - **Visibility gates who can open the app at all**: `private` (only the
   owner plus invited members, sign-in gated; this is the default), `link`
   (anyone with the URL), `public` (listed and discoverable). This is
-  orthogonal to the per-collection `write`/`delete` role lists in the
+  orthogonal to the per-collection `write`/`update`/`delete` role lists in the
   manifest; visibility controls who can load the page, the manifest roles
   control who can write which collection once they are on it.
 - **Only a private app gets a sign-in gate.** A public or link app serves its
@@ -2028,13 +2182,23 @@ data-exposure trap, not a style nit, so read it first.
 4. **`create()` server-mints the row key.** `homespun.collections.create(name,
    data)` returns a row with a server-generated `key`: do not invent a
    client-side id to identify a row. Use `upsert(name, key, data)` only when YOU
-   own a meaningful natural key (e.g. a date). Never trust a client-written
-   `author`/`by` field as proof of who wrote a row; the row's server-stamped
-   `author` is the only tamper-proof attribution.
+   own a meaningful natural key (e.g. a date), and when you do, **declare an
+   `update` list**: a guessable key plus a `write` list that admits the public
+   is a row takeover, because `write` on its own lets any caller it admits
+   overwrite any row in the collection (see "Who may change a row"). An
+   `update` list stops the overwrite but not the land-grab: whoever writes a
+   guessable key first owns that slot for good, so prefer a server-minted key
+   over a natural one wherever losing that race would matter. Never
+   trust a client-written `author`/`by` field as proof of who wrote a row; the
+   row's server-stamped `author` is the only tamper-proof attribution, and it
+   names the row's LAST writer, not its creator.
 
 5. **Anonymous visitors have no stable identity.** An anonymous caller's
    `session.humanId` is `null` and every anonymous write authors as the same
    `anon` sentinel, so you cannot tell two anonymous visitors apart server-side.
+   They therefore never satisfy `creator`, `editor`, `author` or any
+   `:own`/`:creator` suffix: a permission list scoped that way is always false
+   for an anonymous caller, which is fail-closed and deliberate.
    When a public app needs to remember "this browser's own draft" (an RSVP they
    can edit, a cart), mint a client id in `localStorage` and store it IN the row
    data yourself:
