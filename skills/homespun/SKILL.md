@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.16 -->
+<!-- homespun skill v1.6.17 -->
 
 # homespun
 
@@ -827,11 +827,13 @@ app stores and who may write it; visibility governs who may open the app at all
     "collections": {
       "items": {
         "schema": { "$ref": "#/$defs/GroceryItem" },
+        "read": ["owner", "member", "agent"],
         "write": ["agent", "owner", "member"],
         "delete": ["agent", "owner", "member"]
       },
       "audit": {
         "schema": { "$ref": "#/$defs/AuditEntry" },
+        "read": ["owner", "agent"],
         "write": ["agent"],
         "delete": ["owner"],
         "appendOnly": true
@@ -843,22 +845,40 @@ app stores and who may write it; visibility governs who may open the app at all
 }
 ```
 
-> **SAFETY: `read` is UNRESTRICTED BY DEFAULT.** Omitting `read` does not mean
-> "no one can read", it means EVERYONE who can open the app reads every row. On
-> a `public` or `link` app that is every anonymous visitor on the internet. So
-> if a collection can be written by the public (its `write` includes `"anyone"`,
-> or the app is `public`/`link`) AND it holds anything a person would not want
-> shown to strangers (names, emails, phone numbers, messages, orders, bookings,
-> any personal data), you MUST set `read` to the roles that should see it:
-> typically `["owner", "agent"]`, plus `"member"` when staff read it too.
-> Otherwise every visitor can read every submission by hitting the data API
-> (`GET /_hs/c/<collection>`) directly; the page is not what protects the rows,
-> the `read` list is.
+> **SAFETY: `read` is MANDATORY on every collection.** A deploy that leaves it
+> off is refused, `permission_role_invalid`, naming the collection. This is not
+> paperwork: an ABSENT `read` never meant "nobody can read", it meant EVERYONE
+> who can open the app reads every row, which on a `public` or `link` app is
+> every anonymous visitor on the internet. That default was taken up by silence
+> rather than by choice on most collections ever deployed, so silence stopped
+> being an available answer. Say which you mean:
+>
+> - `"read": ["owner", "agent"]` for anything a person would not want shown to
+>   strangers (names, emails, phone numbers, messages, orders, bookings, any
+>   personal data). Add `"member"` when staff read it too.
+> - `"read": ["creator"]` for "everyone sees only their own rows".
+> - `"read": ["anyone"]` when the data really is public. This is exactly the old
+>   absent-key behaviour, written down, and it is perfectly legal: a menu, a
+>   published schedule, a price list.
+> - `"read": []` when nobody reads the rows through the data API at all (an
+>   agent-written audit log you only ever read as the owner, for instance, would
+>   still list `"owner"`).
+>
+> Pick the narrowest one that works. Every visitor can hit the data API
+> (`GET /_hs/c/<collection>`) directly, so the page is never what protects the
+> rows, the `read` list is.
 >
 > **Rule of thumb: collecting data FROM the public? Restrict who can READ it.**
 > The "public submits, only the owner reads" recipe below is exactly this shape:
 > `orders` sets `read: ["owner", "agent"]` because the submissions are private,
-> while `menu` omits `read` on purpose because it is meant to be world-readable.
+> while `menu` sets `read: ["anyone"]` because it is meant to be world-readable.
+>
+> Adding a `read` list to a collection that never had one is **never** blocked
+> by the redeploy compat check. Silence already granted the widest scope there
+> is, so any list you write is at most as wide, and a narrowing needs no
+> re-consent. Bringing an older app into compliance is a plain redeploy.
+> (An app published to the community before the key became mandatory still
+> installs and trials fine; only a new deploy is held to the rule.)
 
 Fields, exactly:
 
@@ -886,7 +906,7 @@ Fields, exactly:
     image (`og:image`/`twitter:image`) instead of the generated card. The
     relay never fetches it; it is only emitted as the meta-tag value.
 - **`x-homespun-manifest.collections`**: a map of collection name →
-  `{ schema?, write, update?, delete, read?, countRead?, appendOnly?,
+  `{ schema?, read, write, update?, delete, countRead?, appendOnly?,
   seedOnInstall? }`.
   An app may declare zero collections (a purely presentational app).
   - **`schema`**: `{ "$ref": "#/$defs/<Name>" }` into the document's own
@@ -919,14 +939,20 @@ Fields, exactly:
     *alone*: declaring `appendOnly: true` alongside any `update` list, empty or
     not, is rejected at deploy as a contradiction.)
   - **`delete`**: required, non-empty array of roles that may delete rows.
-  - **`read`**: optional array of roles. **It IS enforced, server-side, on
+  - **`read`**: **required** array of roles. **It IS enforced, server-side, on
     every read** (list, single-row get, and the live change feed), exactly the
     way `write` and `delete` are. Semantics:
-    - **Omitted** (the common case): anyone who can open the app can read the
-      collection. This is the back-compat default, so leaving `read` off keeps
-      a collection world-readable within the app's visibility. On a public/link
-      app that means every anonymous visitor, so do not leave it off on a
-      collection that stores anything private (see the SAFETY note above).
+    - **Omitted**: rejected at deploy, `permission_role_invalid`, naming the
+      collection. It used to be optional, and an omitted list meant anyone who
+      could open the app could read every row: on a public/link app, every
+      anonymous visitor. Nothing about that default has changed for apps that
+      already carry it, and a stored manifest is still re-validated leniently so
+      an app published under the older rule keeps installing. What changed is
+      that you can no longer arrive at it by saying nothing. Write
+      `"read": ["anyone"]` if that is what you want.
+    - **`[]` (empty)**: legal, and the opposite of omitting it. Nobody may read
+      the rows through the data API. Note that this includes you: an agent that
+      needs to read the collection must list `"agent"`.
     - **Declared, and the caller holds one of the listed roles**: the read is
       allowed and returns every row.
     - **Declared, and the caller holds none of them** (including an explicit
@@ -1239,6 +1265,7 @@ requests, contact and feedback boxes are all this shape.
 "collections": {
   "menu": {
     "schema": { "$ref": "#/$defs/MenuItem" },
+    "read": ["anyone"],
     "write": ["agent", "owner"],
     "delete": ["agent", "owner"]
   },
@@ -1259,9 +1286,11 @@ not only add their own (see "Who may change a row").
 An anonymous customer can POST an order (it lands with an `anon` author), but
 listing `orders` gives them `403 collection_read_forbidden`: only the owner and
 you can read the queue, and that is enforced by the relay, so hitting the data
-API directly gets them nothing the page would not show them either. `menu` omits
-`read`, so it stays readable by every visitor, which is exactly what you want for
-the half of the app the customer is supposed to see.
+API directly gets them nothing the page would not show them either. `menu`
+declares `read: ["anyone"]`, so it stays readable by every visitor, which is
+exactly what you want for the half of the app the customer is supposed to see.
+That is the affirmative way to say "this part is public", and it is the only way
+to say it now that an absent `read` is a deploy error.
 
 Adding `"creator"` to that `read` list lets each submitter see their own row back
 (an order status page) without seeing anyone else's, but only for submitters who
