@@ -1,6 +1,6 @@
 {
   "name": "homespun",
-  "version": "1.6.21",
+  "version": "1.6.22",
   "description": "Build your own software. Your AI deploys a real multi-user app with its own link, magic-link sign-in, a shared database and per-role permissions, and keeps access afterwards so it can keep operating and improving it. Bundles the `homespun` agent skill, which drives the `homespun` CLI.",
   "author": {
     "name": "aerolalit",

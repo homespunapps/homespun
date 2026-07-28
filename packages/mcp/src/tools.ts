@@ -448,7 +448,7 @@ const appsShape = {
       "domain_remove",
     ])
     .describe(
-      "list: YOUR owning human's apps. show/update/delete/wake: act on one app (app_id). share_link_rotate: rotate a 'link' app's share token, returning a new share_url (the old link stops working); also generates one if the app has none yet. domain_set/domain_status/domain_remove: manage the app's ONE custom domain (app_id; domain_set also needs domain).",
+      "list: YOUR owning human's apps. show/update/delete/wake: act on one app (app_id). share_link_rotate: rotate a 'link' app's share token, returning a new share_url (the old link stops working); also generates one if the app has none yet. domain_set/domain_status/domain_remove: manage the app's custom domains (app_id; domain_set also needs domain).",
     ),
   app_id: z
     .string()
@@ -486,7 +486,7 @@ const appsShape = {
     .string()
     .optional()
     .describe(
-      "domain_set only. The bare custom domain to bind (e.g. app.example.com). The response's dns_records lists the DNS entries the domain owner must publish.",
+      "domain_set: the bare custom domain to bind (e.g. app.example.com); the response's dns_records lists the DNS entries the domain owner must publish. domain_remove: OPTIONAL, the one domain to unbind - omit it to unbind them all.",
     ),
 };
 
@@ -1341,7 +1341,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "apps",
     description:
-      "Manage v2 app lifecycle (deploy_app creates/redeploys; this tool covers the rest). ONE tool with an `action` enum: list (YOUR owning human's apps) | show (full detail incl. manifest, timezone, has_share_token) | update (visibility and/or timezone - slug is immutable; switching TO 'link' returns a share_url once) | share_link_rotate (rotate a 'link' app's share token, returning a new share_url and revoking the old link; also generates one if the app has none) | delete (soft-delete, idempotent) | wake (a dormant app; a no-op reporting the actual status otherwise) | domain_set (bind ONE custom domain; returns the DNS records the domain owner must publish) | domain_status (the domain record, live-refreshed against Cloudflare when enabled; inspect last_error when it is not activating) | domain_remove (unbind the domain, idempotent).",
+      "Manage v2 app lifecycle (deploy_app creates/redeploys; this tool covers the rest). ONE tool with an `action` enum: list (YOUR owning human's apps) | show (full detail incl. manifest, timezone, has_share_token) | update (visibility and/or timezone - slug is immutable; switching TO 'link' returns a share_url once) | share_link_rotate (rotate a 'link' app's share token, returning a new share_url and revoking the old link; also generates one if the app has none) | delete (soft-delete, idempotent) | wake (a dormant app; a no-op reporting the actual status otherwise) | domain_set (bind a custom domain; the FIRST one serves the app and every one after it redirects there, which is how apex + www works; returns the DNS records the domain owner must publish) | domain_status (the serving domain plus its `aliases`, live-refreshed against Cloudflare when enabled; inspect last_error when one is not activating) | domain_remove (unbind one domain, or all of them when no `domain` is given; idempotent).",
     inputSchema: appsShape,
     // Consolidated tool: read actions (list/show) + mutating ones (update/
     // delete/wake). Hint reflects delete, the most-privileged action.
@@ -1443,8 +1443,14 @@ export const TOOLS: ToolDef[] = [
             if (str(args, "app_id") === undefined) {
               return invalidArgs("domain_remove requires `app_id`");
             }
-            await client.deleteAppDomain(String(args["app_id"]));
-            return jsonResult({ app_id: args["app_id"], domain_removed: true });
+            await client.deleteAppDomain(
+              String(args["app_id"]),
+              str(args, "domain"),
+            );
+            return jsonResult({
+              app_id: args["app_id"],
+              domain_removed: str(args, "domain") ?? "all",
+            });
           default:
             return invalidArgs(`unknown apps action '${action}'`);
         }

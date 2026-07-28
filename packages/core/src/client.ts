@@ -907,10 +907,17 @@ export class HomespunClient {
    * DELETE /v1/apps/:id/domain - remove the domain binding (Cloudflare
    * hostname best-effort + record + quota release). Idempotent.
    */
-  async deleteAppDomain(appId: string): Promise<void> {
+  /**
+   * Unbind the app's custom domains. With no `domain` every binding goes;
+   * with one, only that binding, except that removing the primary takes its
+   * aliases with it (an alias pointing at a domain the app no longer holds
+   * would redirect visitors into nothing).
+   */
+  async deleteAppDomain(appId: string, domain?: string): Promise<void> {
+    const query = domain ? `?domain=${encodeURIComponent(domain)}` : "";
     const r = await this.call(
       "DELETE",
-      `/v1/apps/${encodeURIComponent(appId)}/domain`,
+      `/v1/apps/${encodeURIComponent(appId)}/domain${query}`,
     );
     if (!r.ok) this.fail(r);
   }
