@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.18 -->
+<!-- homespun skill v1.6.19 -->
 
 # homespun
 
@@ -995,6 +995,17 @@ Fields, exactly:
     - It does **not** relax `read`: the rows stay exactly as protected as
       before, so this is safe to add to a collection that captures private
       submissions.
+  - **`relations`**: optional object mapping a relation NAME to `{ "field":
+    "<top-level field>", "set": "caller"? }`. Names a row scope of the
+    collection's own: "the caller whose principal id is the value in this row's
+    `<field>`". A declared name is then a permission subject in `update`,
+    `delete` and `read`, bare or as `<role>:<relation>`, and rejected in `write`
+    and `countRead` exactly like `creator`. `set: "caller"` makes the server
+    stamp the field on create and refuse every later change to it; omit it to
+    let the writer choose whom the row belongs to (the agent-writes-for-a-human
+    shape). At most 8 per collection, and the field must be a declared,
+    string-capable property when the collection declares a schema. See "Rows
+    that belong to a person" below, which is where the recipes are.
   - **`appendOnly`**: optional boolean (default `false`). Set `true` for a
     journal/event-shaped collection: rows can be created but never updated or
     deleted. **This is enforced, not advisory:** an update or delete against an
@@ -1295,6 +1306,153 @@ Two things worth knowing before you design around roles:
   It is not expressed through `includes` and cannot be changed by a manifest.
   The app owner already outranks every role you declare, so there is no reason
   to give them one.
+
+### Rows that belong to a person: `relations`
+
+`creator` and `editor` answer "who touched this row". They cannot answer "whose
+row is this", because the person a row is ABOUT is usually not the person who
+typed it. A shift the manager assigned, a task the agent filed on someone's
+behalf, a packing list that belongs to one traveller: in every one of those the
+owner is a **field of the row**, and until you declare it, that field is just
+text any writer can overwrite.
+
+`relations` gives that field a name and makes it enforceable.
+
+```json
+"tasks": {
+  "schema": { "$ref": "#/$defs/Task" },
+  "relations": {
+    "assignee": { "field": "assignedTo" },
+    "reporter": { "field": "reportedBy", "set": "caller" }
+  },
+  "read":   ["assignee", "admin"],
+  "write":  ["contributor"],
+  "update": ["assignee", "admin"],
+  "delete": ["reporter", "admin"]
+}
+```
+
+`assignee` now means "the caller whose own principal id is the value in this
+row's `assignedTo` field". It is a subject exactly like `creator`: usable in
+`update`, `delete` and `read`, and rejected in `write` and `countRead` for the
+same two reasons (a create has no row to compare against, and a count is an
+aggregate over the whole collection rather than one person's view).
+
+**The value is a principal id, not a name or an email.** A page reads its own
+from `homespun.session.humanId`, and everyone else's from
+`homespun.members.list()`. An agent uses the human id it already holds. A field
+holding `"alice@example.com"` or `"Alice"` matches nobody and grants nothing,
+silently, so put an id there.
+
+**`set: "caller"` is what makes it authorization rather than a claim.** With it,
+the SERVER fills the field in with the caller's own id when the row is created,
+overwriting whatever the client sent, and refuses every later attempt to change
+it. Without it, whoever `write` admits chooses the value, which is exactly what
+you want when an **agent creates a row that a human owns**: the agent writes
+`assignedTo: "<the human's id>"`, and from that moment the human can edit and
+read their own row even though they could never have created it.
+
+Use `set: "caller"` when the row belongs to whoever made it. Omit it when
+somebody else decides who the row belongs to.
+
+Rules the deploy validator enforces, so you find out at `homespun deploy`:
+
+- A relation name follows the role-name grammar, and may not be a built-in
+  subject (`owner`, `member`, `agent`, `anyone`, `author`, `creator`, `editor`),
+  may not be `own`, and may not be a role you declared. Those names already mean
+  something in a permission list.
+- `field` must be a simple top-level field name, and if the collection declares
+  a schema it must be a declared property that can hold a string (`"type":
+  "string"`, or `["string", "null"]` for a row that starts unassigned).
+- At most 8 relations per collection, and two relations may not bind the same
+  field.
+- A permission list may only name a relation the SAME collection declares.
+
+**Narrowing works too.** `admin:assignee` on `update` means "an admin, and only
+on rows assigned to them". It is the same shape as `<role>:own` and
+`<role>:creator`, which keep their existing meanings unchanged: `:own` is the
+last writer, `:creator` is the creator, and neither is a relation you declare.
+
+**Read scoping is real, and it is a filter, not just a check.** Under `read:
+["assignee"]` a `list()` returns only the caller's own rows, on every page, and
+a direct `get()` of somebody else's row returns **not found**, never
+"forbidden", so a caller cannot learn which keys exist. The live feed follows
+the same rule: an entry reaches only the person its data names. Two consequences
+worth knowing:
+
+- A **delete** entry carries the row's last-known data, so the person the row
+  named still learns it was removed.
+- **Reassigning** a row moves it: the new assignee starts seeing it, the old one
+  stops. The old assignee's browser keeps a stale copy until it reconnects, at
+  which point it drops out entirely.
+
+> **SECURITY: `set: "caller"` decides who a row BELONGS to, not which key a
+> caller may take.** This is the same trap the `creator` warning above
+> describes, and declaring a relation does not close it. A create is gated by
+> `write` alone and never looks at the key, so under `write: ["anyone"]` on a
+> guessable key (`profile`, a username, today's date) the first caller wins the
+> slot, and a later create on the same live key **dedups and hands that row's
+> current contents back to whoever tried**, even under `read: ["<relation>"]`.
+> Let the server mint the key (`homespun.collections.create(name, data)`), or
+> upsert on the relation field itself (`on: "<field>"`, with the field declared
+> `unique`), which resolves to the caller's own row and nobody else's.
+
+**Anonymous visitors satisfy no relation**, for the same reason they satisfy no
+`creator`: they have no identity to compare a field against. If the collection
+declares `set: "caller"`, an anonymous visitor cannot even create the row, which
+is deliberate: a row nobody owns, in a collection whose rules are about
+ownership, is worse than a refused write. Give visitors a real identity first
+(`homespun.session.login()`, or a grant link).
+
+#### Recipe: everyone sees only their own rows
+
+The per-user collection, done properly. Anyone signed in may add a row; the
+server decides whose it is; nobody else can see it, edit it or delete it.
+
+```json
+"entries": {
+  "schema": { "$ref": "#/$defs/Entry" },
+  "relations": { "owner_": { "field": "ownedBy", "set": "caller" } },
+  "read":   ["owner_"],
+  "write":  ["anyone"],
+  "update": ["owner_"],
+  "delete": ["owner_"]
+}
+```
+
+with `ownedBy` declared as a `"type": "string"` property of `Entry`. The page
+never sets `ownedBy`; the server does. This is stronger than the `creator`
+version of the same recipe in one specific way: the owning field is **data**, so
+your agent can hand a row to a different person later by writing the field,
+which `creator` can never do. It is weaker in one way too: without `set:
+"caller"`, whoever `write` admits picks the value, so leave `set` on unless you
+mean to allow that.
+
+(Note the trailing underscore in `owner_`: `owner` itself is a built-in subject
+and is rejected as a relation name.)
+
+#### Recipe: the agent files it, the human owns it
+
+The shape the four first-party templates were faking. The agent is the only
+writer; each row names the person it is for; that person can then read and
+correct their own.
+
+```json
+"reports": {
+  "schema": { "$ref": "#/$defs/Report" },
+  "relations": { "subject": { "field": "forPerson" } },
+  "read":   ["subject", "owner"],
+  "write":  ["agent"],
+  "update": ["subject", "agent"],
+  "delete": ["owner"]
+}
+```
+
+No `set` here, on purpose: the agent is choosing who the row is for, so the
+value has to be the agent's to write. That is the one case where a
+client-supplied relation value is the point rather than the hole, and it is safe
+only because `write` is `["agent"]`. **If `write` admits a wider audience, add
+`set: "caller"`,** or anyone admitted to write can name anyone they like.
 
 ### Schema gotchas (two that bite at deploy time)
 
