@@ -236,30 +236,30 @@ describe("HomespunClient app-member operations", () => {
     expect(seen().body).toEqual({
       email: "a@b.test",
       role: undefined,
-      custom_role: undefined,
+      custom_roles: undefined,
     });
   });
 
-  it("addAppMember passes an optional custom_role through to the body", async () => {
+  it("addAppMember passes optional custom_roles through to the body", async () => {
     const { c, seen } = capturingClient(
       JSON.stringify({
         member: {
           humanId: "hum_1",
           email: "a@b.test",
           role: "member",
-          customRole: "reviewer",
+          customRoles: ["reviewer"],
           createdAt: "2026-01-01T00:00:00.000Z",
         },
       }),
     );
     await c.addAppMember("app_1", {
       email: "a@b.test",
-      customRole: "reviewer",
+      customRoles: ["reviewer", "scheduler"],
     });
     expect(seen().body).toEqual({
       email: "a@b.test",
       role: undefined,
-      custom_role: "reviewer",
+      custom_roles: ["reviewer", "scheduler"],
     });
   });
 

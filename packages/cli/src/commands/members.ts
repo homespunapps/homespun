@@ -125,7 +125,7 @@ async function runSetRole(args: ParsedArgs): Promise<void> {
   const appArg = args.flags.get("app");
   if (!appArg) {
     fail(
-      "usage: homespun members set-role --app <idOrSlug> --human <humanId> (--custom-role <name> | --clear-role)",
+      "usage: homespun members set-role --app <idOrSlug> --human <humanId> (--custom-role <name[,name...]> | --clear-role)",
       "invalid_args",
     );
   }
@@ -133,9 +133,9 @@ async function runSetRole(args: ParsedArgs): Promise<void> {
   if (!humanId) {
     fail("--human is required", "invalid_args");
   }
-  // Clearing a role is a real instruction, so it gets its own explicit flag
-  // rather than being spelled as an omitted or empty --custom-role: an omitted
-  // value must never silently wipe someone's role.
+  // Clearing a member's roles is a real instruction, so it gets its own
+  // explicit flag rather than being spelled as an omitted or empty
+  // --custom-role: an omitted value must never silently wipe someone's roles.
   const customRole = args.flags.get("custom-role");
   const clear = args.bools.has("clear-role");
   if (clear && customRole !== undefined) {
@@ -146,18 +146,32 @@ async function runSetRole(args: ParsedArgs): Promise<void> {
   }
   if (!clear && customRole === undefined) {
     fail(
-      "one of --custom-role <name> or --clear-role is required",
+      "one of --custom-role <name[,name...]> or --clear-role is required",
       "invalid_args",
     );
   }
+  // A member may hold several roles, so the flag takes a comma-separated list.
+  // A role name can never contain a comma (the manifest validator's role-name
+  // grammar is lowercase letters, digits and underscore), so the split is
+  // unambiguous. An empty entry is rejected rather than dropped: a trailing
+  // comma is a typo, and silently ignoring it would apply a role set the caller
+  // did not write.
+  const customRoles = clear
+    ? []
+    : customRole!.split(",").map((r) => {
+        const trimmed = r.trim();
+        if (trimmed.length === 0) {
+          fail(
+            "--custom-role must not contain an empty role name",
+            "invalid_args",
+          );
+        }
+        return trimmed;
+      });
   const client = makeClient(args);
   const appId = await resolveAppId(client, appArg!);
   try {
-    printJson(
-      await client.setAppMemberRole(appId, humanId!, {
-        customRole: clear ? null : customRole!,
-      }),
-    );
+    printJson(await client.setAppMemberRole(appId, humanId!, { customRoles }));
   } catch (e) {
     failFromError(e);
   }

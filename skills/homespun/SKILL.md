@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.17 -->
+<!-- homespun skill v1.6.18 -->
 
 # homespun
 
@@ -1208,6 +1208,94 @@ real identity first: `homespun.session.login()` for a sign-in, or a grant link
 (`homespun grants mint`), which mints a stable per-holder identity that DOES
 satisfy these subjects.
 
+### Roles your app defines: `roles` and `includes`
+
+The five built-in subjects (`owner`, `member`, `agent`, `anyone`, plus the
+row-scoped `creator` / `editor` / `author`) describe a person's relationship to
+the *platform*. They cannot say "a reviewer", "a coach", "a front-desk shift
+lead", because those are relationships to *your app*. Declare those yourself,
+under `x-homespun-manifest.roles`, and then use the names as permission subjects
+exactly as you would a built-in one.
+
+```json
+"x-homespun-manifest": {
+  "roles": {
+    "viewer":      { "label": "Viewer",      "description": "Can see the board" },
+    "contributor": { "label": "Contributor", "description": "Can move cards", "includes": ["viewer"] },
+    "admin":       { "label": "Admin",       "description": "Runs the board", "includes": ["contributor"] }
+  },
+  "collections": {
+    "cards": {
+      "read":   ["viewer"],
+      "write":  ["contributor"],
+      "update": ["contributor"],
+      "delete": ["admin"]
+    }
+  }
+}
+```
+
+**Declaring a role grants nothing.** A permission list naming it is what grants
+something. `roles` says the name exists (and what to call it on screen); the
+collection lists say what it can do. That split is deliberate: there is one place
+to read to find out what any role may do, and it is the collection.
+
+**`includes` composes roles, transitively.** In the manifest above, `admin`
+includes `contributor`, and `contributor` includes `viewer`, so a person holding
+`admin` holds `contributor` and `viewer` too, everywhere. That is why `read`
+names only `viewer`: write the shared part once, in the base role, instead of
+repeating `["viewer", "contributor", "admin"]` in every list and getting one of
+them wrong in six months. Composition only ever ADDS; there is no way to subtract, because a
+rule that takes access away cannot be summarized on an install screen without
+the reader having to work out an ordering.
+
+Rules the deploy validator enforces, so you find out at `homespun deploy` rather
+than in production:
+
+- Every entry of `includes` must name a role declared in the same `roles` block.
+- A built-in name (`owner`, `member`, `agent`, `anyone`, `author`, `creator`,
+  `editor`) is rejected. Their meaning is fixed by the platform, and a manifest
+  that could include one would be a manifest handing out owner powers.
+- No cycles, direct or through a chain. The error names the cycle.
+- At most 16 entries per role, and the longest chain may be 8 roles deep
+  counting the role itself. If you hit that, the hierarchy is too deep for
+  anyone to reason about; flatten it.
+
+**A person may hold several roles at once.** A member is given roles with
+`homespun members set-role --app <app> --human <humanId> --custom-role
+reviewer,scheduler` (comma-separated), and holds the union of what each one
+grants, plus everything those roles include. `--clear-role` drops them back to a plain
+member. A member may hold up to 8 declared roles; if you want more than that on
+one person, declare a role that `includes` the others and hand out that one
+instead.
+
+A **grant link** is different: `homespun grants mint --app <app> --role <name>`
+mints a link carrying exactly ONE role, because a link *is* a handout of that
+role. The link's holder still gets everything that role includes.
+
+**Role names are also usable in the narrowing forms.** `reviewer:creator` on
+`update` means "a reviewer, and only on rows they created"; `reviewer:own` means
+"and only on rows they wrote last". The base of the suffix must be a declared
+role, since the built-in row scopes already have their own bare names.
+
+**Check what you actually built** with `homespun members roles --app <app>`. It
+reports, per declared role and per collection, the EFFECTIVE access a holder has
+(separately for members and for grant-link holders, whose floors differ), and
+what each role includes. It is computed by asking the real authorizer, not by
+re-reading your manifest, so it is the answer enforcement will give.
+
+Two things worth knowing before you design around roles:
+
+- **A custom role never implies `member`.** A grant-link holder carrying
+  `reviewer` is `{anyone, reviewer}` and nothing else, so a collection with
+  `read: ["member"]` is invisible to them. A signed-in member carrying
+  `reviewer` is `{anyone, member, reviewer}`. If both populations should see a
+  collection, list both subjects.
+- **`owner` carries `member`, and that hierarchy is the platform's, not yours.**
+  It is not expressed through `includes` and cannot be changed by a manifest.
+  The app owner already outranks every role you declare, so there is no reason
+  to give them one.
+
 ### Schema gotchas (two that bite at deploy time)
 
 - **`maxLength` cannot exceed the per-row byte cap.** A whole row's serialized
@@ -1683,14 +1771,22 @@ homespun deploy ./my-app --app grocery-list
 
 - `--slug`/`--visibility` cannot be changed here: slug is immutable for the
   app's lifetime; change visibility with `homespun apps update --visibility`.
-- **The compat gate.** By default the relay refuses a redeploy that
-  *narrows* the manifest against the currently-live one. Narrowing means
-  removing a collection, tightening a schema, or dropping a write/delete role
-  that used to be granted, and it is refused because rows already written
-  under the old contract could stop making sense. It fails `422` with `details.breaks[]` naming every
-  offending path. Adding collections/roles or loosening constraints is
-  always compatible. Pass `--force` to redeploy anyway (a narrowed
-  collection is detached, not deleted, and its rows aren't destroyed).
+- **The compat gate.** By default the relay refuses a redeploy on either of
+  two grounds, and they point in opposite directions.
+  - It *strands existing rows*: a collection removed, a row schema tightened,
+    or a collection flipped `appendOnly`. Rows written under the old contract
+    could stop making sense.
+  - It *widens what the app's install screen says*: some collection now
+    reaches further than the live manifest does, so a user installing today
+    would be asked to approve something the current users never saw. The
+    break quotes that sentence back to you.
+
+  It fails `422` with `details.breaks[]` naming every offending path. Taking
+  access AWAY is always compatible and never asks: dropping a role from
+  `read`/`write`/`delete`, or adding `update: ["creator"]` to a
+  `write: ["anyone"]` collection so only each row's creator can edit it,
+  redeploys clean. Pass `--force` to redeploy anyway (a removed collection is
+  detached, not deleted, and its rows aren't destroyed).
 
 **Dry run before you deploy (`--check`).** Add `--check` to validate a bundle
 WITHOUT deploying it: the relay runs the full manifest + asset-shape validation,

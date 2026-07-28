@@ -940,12 +940,12 @@ export class HomespunClient {
    */
   async addAppMember(
     appId: string,
-    opts: { email: string; role?: "member"; customRole?: string },
+    opts: { email: string; role?: "member"; customRoles?: string[] },
   ): Promise<AddAppMemberResult> {
     const r = await this.call(
       "POST",
       `/v1/apps/${encodeURIComponent(appId)}/members`,
-      { email: opts.email, role: opts.role, custom_role: opts.customRole },
+      { email: opts.email, role: opts.role, custom_roles: opts.customRoles },
     );
     if (!r.ok) this.fail(r);
     return this.asObject<AddAppMemberResult>(r);
@@ -962,8 +962,8 @@ export class HomespunClient {
   }
 
   /**
-   * PATCH /v1/apps/:id/members/:humanId — change an existing member's custom
-   * role in place. `customRole: null` clears it back to a plain member. The
+   * PATCH /v1/apps/:id/members/:humanId — replace an existing member's declared
+   * roles in place. An empty array clears them back to a plain member. Every
    * role must be one the app's manifest declares (a reserved base role or an
    * undeclared name is a 400), and the app owner's own membership cannot be
    * re-roled.
@@ -977,12 +977,12 @@ export class HomespunClient {
   async setAppMemberRole(
     appId: string,
     humanId: string,
-    opts: { customRole: string | null },
+    opts: { customRoles: string[] },
   ): Promise<{ member: AppMember }> {
     const r = await this.call(
       "PATCH",
       `/v1/apps/${encodeURIComponent(appId)}/members/${encodeURIComponent(humanId)}`,
-      { custom_role: opts.customRole },
+      { custom_roles: opts.customRoles },
     );
     if (!r.ok) this.fail(r);
     return this.asObject<{ member: AppMember }>(r);
@@ -1800,7 +1800,7 @@ export interface DeployAppResponse {
 export interface RedeployAppRequest {
   html: string;
   manifest: unknown;
-  /** Bypass the compat gate; a narrowing collection is detached, not deleted. */
+  /** Bypass the compat gate; a removed collection is detached, not deleted. */
   force?: boolean;
   /**
    * Optional asset bundle for this version. Replaces the previous version's asset
@@ -1831,14 +1831,16 @@ export interface RedeployAppResponse {
  * redeploy) the compat gate runs against the current version.
  *
  *   - `ok` is true when a REAL deploy with the same inputs would succeed: a
- *     clean deploy, or a narrowing redeploy with `force: true`. It is false
- *     when a real un-forced redeploy would be REJECTED for narrowing the
- *     manifest (see `compat: "incompatible"` + `breaks`).
- *   - `compat` is present only for a redeploy check: "clean" (no narrowing),
- *     "forced" (narrows, but force was set so the real deploy would detach and
- *     proceed), or "incompatible" (narrows and force was NOT set, so the real
- *     deploy would return manifest_incompatible_redeploy).
- *   - `breaks` lists the narrowings, present only when there is at least one.
+ *     clean deploy, or a gated redeploy with `force: true`. It is false when a
+ *     real un-forced redeploy would be REJECTED, either for stranding rows
+ *     already written or for widening what the app's install screen discloses
+ *     (see `compat: "incompatible"` + `breaks`).
+ *   - `compat` is present only for a redeploy check: "clean" (nothing gated),
+ *     "forced" (gated, but force was set so the real deploy would proceed), or
+ *     "incompatible" (gated and force was NOT set, so the real deploy would
+ *     return manifest_incompatible_redeploy).
+ *   - `breaks` lists what the gate found, present only when there is at least
+ *     one.
  */
 export interface DeployCheckResult {
   ok: boolean;
@@ -1952,7 +1954,16 @@ export interface AppMember {
   humanId: string;
   email: string;
   role: string;
-  /** M5: an optional DECLARED custom role attached alongside base member powers. */
+  /**
+   * The DECLARED roles attached alongside base member powers. A member may hold
+   * several at once and holds the union of what each grants, plus everything
+   * those roles `includes`.
+   */
+  customRoles?: string[];
+  /**
+   * The first of `customRoles`, or null. The single-role shape this API
+   * reported before a member could hold several; read `customRoles`.
+   */
   customRole?: string | null;
   createdAt: string;
 }

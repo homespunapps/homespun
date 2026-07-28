@@ -276,7 +276,7 @@ const deployAppShape = {
     .boolean()
     .optional()
     .describe(
-      "Validate only: run the full manifest + asset-shape validation, the compat gate (for a redeploy), and the schedule-timezone advisory, then return { ok, warnings, compat?, breaks? } WITHOUT creating a version or mutating anything. An invalid manifest returns the SAME error a real deploy would; a narrowing redeploy reports the compat break instead of applying it. `check` is an accepted alias.",
+      "Validate only: run the full manifest + asset-shape validation, the compat gate (for a redeploy), and the schedule-timezone advisory, then return { ok, warnings, compat?, breaks? } WITHOUT creating a version or mutating anything. An invalid manifest returns the SAME error a real deploy would; a redeploy the compat gate would refuse reports the break instead of applying it. `check` is an accepted alias.",
     ),
   check: z.boolean().optional().describe("Alias for `dry_run`."),
   manifest: jsonObjectSchema.describe(
@@ -298,7 +298,7 @@ const deployAppShape = {
     .boolean()
     .optional()
     .describe(
-      "REDEPLOY only. Bypass the compat gate on a narrowing manifest change (a removed/narrowed collection is detached, never deleted).",
+      "REDEPLOY only. Bypass the compat gate, whether it fired on a stranded-rows narrowing or on a widening of what the install screen discloses (a removed collection is detached, never deleted).",
     ),
   assets: z
     .array(
@@ -494,7 +494,7 @@ const membersShape = {
   action: z
     .enum(["add", "list", "set_role", "remove", "roles"])
     .describe(
-      "add: invite-or-attach a member by email (app_id+email; optional custom_role). list: the app's owner + members (app_id). set_role: change an existing member's custom role in place without signing them out (app_id+human_id+custom_role, null to clear). remove: drop a member (app_id+human_id). roles: the app's declared roles with, per collection, the EFFECTIVE access a holder has (separately for members and grant-link holders, whose role floors differ) plus how many members and live grant links hold each role (app_id).",
+      "add: invite-or-attach a member by email (app_id+email; optional custom_roles). list: the app's owner + members (app_id). set_role: replace an existing member's declared roles in place without signing them out (app_id+human_id+custom_roles, an empty list to clear). remove: drop a member (app_id+human_id). roles: the app's declared roles with what each one includes and, per collection, the EFFECTIVE access a holder has (separately for members and grant-link holders, whose role floors differ) plus how many members and live grant links hold each role (app_id).",
     ),
   app_id: z.string().min(1).describe("The app id."),
   email: z
@@ -509,12 +509,11 @@ const membersShape = {
     .describe(
       "add only. Defaults to 'member' server-side — no other role is assignable via this API (ownership transfer is not available here).",
     ),
-  custom_role: z
-    .string()
-    .nullable()
+  custom_roles: z
+    .array(z.string())
     .optional()
     .describe(
-      "add (optional) and set_role (required). A DECLARED custom role (an x-homespun-manifest.roles key) attached to the member ALONGSIDE their base member powers. A built-in/reserved role or an undeclared role is rejected. Omit on add for an ordinary member; pass null on set_role to clear the role back to a plain member.",
+      "add (optional) and set_role (required). The DECLARED roles (x-homespun-manifest.roles keys) attached to the member ALONGSIDE their base member powers. A member may hold several and holds the union of what each grants, plus everything those roles `includes`. A built-in/reserved role or an undeclared role is rejected. Omit on add for an ordinary member; pass [] on set_role to clear the roles back to a plain member.",
     ),
   human_id: z
     .string()
@@ -1063,7 +1062,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "deploy_app",
     description:
-      'Deploy a v2 app: an HTML document + a capability manifest, hosted at its own URL. The manifest has eight extension keys: app metadata; collections (+ per-collection write/update/read/delete role lists, where write gates creates and also updates unless the optional update list is declared; declare update:["creator"] on any collection whose rows belong to one person, or every caller admitted by write can overwrite every row); externalHosts (fetch allowlist); cdn (allow CDN scripts/styles); capabilities (Permissions-Policy opt-ins); embeds (iframe frame-src allowlist); notify (email-on-row rules); webhooks (signed HTTP POST on-row rules). Pass EITHER no `app_id` (create, mints a slug + URL) OR `app_id` (redeploy an existing app with new content). Supply the HTML as INLINE `html` OR as `html_path` (an absolute path read on the MCP-SERVER host, which is the relay for a hosted connector or your CLI host for a locally-run one, NOT the remote agent\'s machine; use it to avoid retransmitting a large HTML file every deploy, but only a locally-run connector can read it, and if both are given inline `html` wins). Pass `dry_run:true` (alias `check`) to VALIDATE ONLY: it runs the full manifest + asset-shape validation, the redeploy compat gate, and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } WITHOUT creating a version or mutating anything. A redeploy that NARROWS the manifest (drops a collection, tightens a schema, revokes a role) is refused with manifest_incompatible_redeploy unless force:true; a narrowed collection is then detached, never deleted. Ship images/fonts/audio/video/data FILES with the app in the SAME call via `assets[]`: each is validated + stored app-scoped and served at its `path` on the app\'s own origin, so the HTML references it by a stable same-origin path (`<img src="frames/000.jpg">`, `<video src="media/clip.mp4">`), media and font paths support HTTP Range for seeking. A redeploy\'s assets replace the previous version\'s set. BEFORE authoring: call get_skill for the manifest grammar. Returns { app_id, slug, url, version, visibility, created } (create) or { app_id, version, compat, breaks? } (redeploy).',
+      'Deploy a v2 app: an HTML document + a capability manifest, hosted at its own URL. The manifest has eight extension keys: app metadata; collections (+ per-collection write/update/read/delete role lists, where write gates creates and also updates unless the optional update list is declared; declare update:["creator"] on any collection whose rows belong to one person, or every caller admitted by write can overwrite every row); externalHosts (fetch allowlist); cdn (allow CDN scripts/styles); capabilities (Permissions-Policy opt-ins); embeds (iframe frame-src allowlist); notify (email-on-row rules); webhooks (signed HTTP POST on-row rules). Pass EITHER no `app_id` (create, mints a slug + URL) OR `app_id` (redeploy an existing app with new content). Supply the HTML as INLINE `html` OR as `html_path` (an absolute path read on the MCP-SERVER host, which is the relay for a hosted connector or your CLI host for a locally-run one, NOT the remote agent\'s machine; use it to avoid retransmitting a large HTML file every deploy, but only a locally-run connector can read it, and if both are given inline `html` wins). Pass `dry_run:true` (alias `check`) to VALIDATE ONLY: it runs the full manifest + asset-shape validation, the redeploy compat gate, and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } WITHOUT creating a version or mutating anything. A redeploy is refused with manifest_incompatible_redeploy (unless force:true) when it would strand rows already written (drops a collection, tightens a schema, flips appendOnly) or when it would WIDEN what the app\'s install screen discloses (some collection reaching further than the live manifest, e.g. read going to ["anyone"]); the break quotes the sentence a user would now be asked to approve. Taking access away never asks: dropping a role, or adding update:["creator"] to a write:["anyone"] collection, redeploys clean. A removed collection is detached, never deleted. Ship images/fonts/audio/video/data FILES with the app in the SAME call via `assets[]`: each is validated + stored app-scoped and served at its `path` on the app\'s own origin, so the HTML references it by a stable same-origin path (`<img src="frames/000.jpg">`, `<video src="media/clip.mp4">`), media and font paths support HTTP Range for seeking. A redeploy\'s assets replace the previous version\'s set. BEFORE authoring: call get_skill for the manifest grammar. Returns { app_id, slug, url, version, visibility, created } (create) or { app_id, version, compat, breaks? } (redeploy).',
     inputSchema: deployAppShape,
     annotations: {
       title: "Deploy App",
@@ -1486,8 +1485,12 @@ export const TOOLS: ToolDef[] = [
                 ...(args["role"] !== undefined
                   ? { role: args["role"] as "member" }
                   : {}),
-                ...(args["custom_role"] !== undefined
-                  ? { customRole: String(args["custom_role"]) }
+                ...(args["custom_roles"] !== undefined
+                  ? {
+                      customRoles: (args["custom_roles"] as unknown[]).map(
+                        String,
+                      ),
+                    }
                   : {}),
               }),
             );
@@ -1500,17 +1503,17 @@ export const TOOLS: ToolDef[] = [
             if (str(args, "human_id") === undefined) {
               return invalidArgs("set_role requires `human_id`");
             }
-            // The key must be PRESENT: null means "clear the role", which is a
+            // The key must be PRESENT: [] means "clear the roles", which is a
             // real instruction, so an omitted key cannot be read as one.
-            const role = args["custom_role"];
-            if (role === undefined) {
+            const roles = args["custom_roles"];
+            if (!Array.isArray(roles)) {
               return invalidArgs(
-                "set_role requires `custom_role` (a declared role name, or null to clear it)",
+                "set_role requires `custom_roles` (a list of declared role names, or [] to clear them)",
               );
             }
             return jsonResult(
               await client.setAppMemberRole(appId, String(args["human_id"]), {
-                customRole: role === null ? null : String(role),
+                customRoles: roles.map(String),
               }),
             );
           }
