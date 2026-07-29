@@ -24,6 +24,9 @@ const watchFakeClient = {
   getApp: vi.fn(),
   getAppFeed: vi.fn(),
   deleteApp: vi.fn(),
+  getAppDomain: vi.fn(),
+  setAppDomain: vi.fn(),
+  deleteAppDomain: vi.fn(),
 };
 
 vi.mock("../config.js", () => ({
@@ -293,4 +296,107 @@ describe("runApps dispatch — 'apps watch' WS-connect-failure -> long-poll fall
       expect(JSON.parse(stdout.trim().split("\n")[0]!)).toEqual(entry);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// `apps domain` — the CLI half of custom domains.
+// ---------------------------------------------------------------------------
+
+describe("runApps dispatch — 'apps domain'", () => {
+  let stdout: string;
+  let exitCode: number | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stdout = "";
+    exitCode = undefined;
+    watchFakeClient.getApp.mockResolvedValue({ id: "app_1", slug: "shop" });
+    vi.spyOn(process.stdout, "write").mockImplementation((s) => {
+      stdout += String(s);
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Error(`__exit_${code}__`);
+    }) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("add binds the domain and prints the DNS records to publish", async () => {
+    // The records ARE the output: nothing works until the domain owner
+    // publishes them, so a silent success would be useless.
+    watchFakeClient.setAppDomain.mockResolvedValue({
+      domain: "shop.example.com",
+      status: "pending",
+      dns_records: [
+        {
+          type: "CNAME",
+          name: "shop.example.com",
+          value: "cname.homespunapps.com",
+          purpose: "routing",
+        },
+      ],
+    });
+    await runApps(makeArgs(["domain", "add", "shop", "shop.example.com"]));
+    expect(watchFakeClient.setAppDomain).toHaveBeenCalledWith(
+      "app_1",
+      "shop.example.com",
+    );
+    expect(stdout).toContain("cname.homespunapps.com");
+    expect(stdout).toContain("pending");
+  });
+
+  it("show prints the serving domain with its aliases", async () => {
+    watchFakeClient.getAppDomain.mockResolvedValue({
+      domain: "example.com",
+      status: "active",
+      dns_records: [],
+      aliases: [
+        {
+          domain: "www.example.com",
+          status: "active",
+          redirect_to: "example.com",
+        },
+      ],
+    });
+    await runApps(makeArgs(["domain", "show", "shop"]));
+    expect(stdout).toContain("www.example.com");
+    expect(stdout).toContain("example.com");
+  });
+
+  it("remove with no domain unbinds them all", async () => {
+    watchFakeClient.deleteAppDomain.mockResolvedValue(undefined);
+    await runApps(makeArgs(["domain", "remove", "shop"]));
+    expect(watchFakeClient.deleteAppDomain).toHaveBeenCalledWith(
+      "app_1",
+      undefined,
+    );
+    expect(stdout).toContain("all");
+  });
+
+  it("remove with a domain unbinds only that one", async () => {
+    watchFakeClient.deleteAppDomain.mockResolvedValue(undefined);
+    await runApps(makeArgs(["domain", "remove", "shop", "www.example.com"]));
+    expect(watchFakeClient.deleteAppDomain).toHaveBeenCalledWith(
+      "app_1",
+      "www.example.com",
+    );
+    expect(stdout).toContain("www.example.com");
+  });
+
+  it("rejects add without a domain, and an unknown action", async () => {
+    await expect(runApps(makeArgs(["domain", "add", "shop"]))).rejects.toThrow(
+      "__exit_1__",
+    );
+    expect(exitCode).toBe(1);
+    expect(watchFakeClient.setAppDomain).not.toHaveBeenCalled();
+
+    await expect(
+      runApps(makeArgs(["domain", "rotate", "shop"])),
+    ).rejects.toThrow("__exit_1__");
+  });
 });

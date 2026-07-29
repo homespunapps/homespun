@@ -869,15 +869,19 @@ export class HomespunClient {
   }
 
   // -------------------------------------------------------------------------
-  // Custom domains (Cloudflare for SaaS). One primary domain per app. The
-  // relay rejects setAppDomain with `custom_domains_not_enabled` (501) when
-  // the deployment has no Cloudflare configuration.
+  // Custom domains (Cloudflare for SaaS). An app holds one domain that SERVES
+  // plus any number of aliases that redirect to it; the first domain bound
+  // becomes the serving one. The relay rejects setAppDomain with
+  // `custom_domains_not_enabled` (501) when the deployment has no Cloudflare
+  // configuration.
   // -------------------------------------------------------------------------
 
   /**
-   * POST /v1/apps/:id/domain - bind a custom domain to the app. Returns the
-   * record including `dns_records`: the DNS entries the domain owner must
-   * publish (the routing CNAME plus any Cloudflare validation records).
+   * POST /v1/apps/:id/domain - bind a custom domain to the app. The FIRST
+   * domain bound serves the app; every one after it becomes an alias that
+   * redirects there (`redirect_to`). Returns the record including
+   * `dns_records`: the DNS entries the domain owner must publish (the routing
+   * CNAME plus any Cloudflare validation records).
    */
   async setAppDomain(appId: string, domain: string): Promise<AppDomain> {
     const r = await this.call(
@@ -890,9 +894,10 @@ export class HomespunClient {
   }
 
   /**
-   * GET /v1/apps/:id/domain - the app's domain record, live-refreshed against
-   * Cloudflare when the feature is enabled (status/last_error/last_checked_at
-   * update as a side effect).
+   * GET /v1/apps/:id/domain - the app's SERVING domain at the top level with
+   * its `aliases` beside it, live-refreshed against Cloudflare when the
+   * feature is enabled (status/last_error/last_checked_at update as a side
+   * effect).
    */
   async getAppDomain(appId: string): Promise<AppDomain> {
     const r = await this.call(
@@ -1946,10 +1951,18 @@ export interface AppDomain {
   status: "pending" | "active" | "error" | "removed";
   dns_records: AppDomainDnsRecord[];
   cf_hostname_id: string | null;
+  cf_worker_route_id?: string | null;
+  /** Null on the serving domain; on an alias, the domain it redirects to. */
+  redirect_to?: string | null;
   last_error: string | null;
   last_checked_at: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Present on the GET response only: the app's other domains, each of which
+   * redirects to the one carried at the top level.
+   */
+  aliases?: AppDomain[];
 }
 
 /**

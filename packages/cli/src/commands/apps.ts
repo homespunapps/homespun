@@ -34,7 +34,7 @@ export async function runApps(args: ParsedArgs): Promise<void> {
   }
   if (verb === undefined) {
     fail(
-      "missing verb: homespun apps <list|show|update|share-link|delete|wake|watch>",
+      "missing verb: homespun apps <list|show|update|share-link|delete|wake|watch|domain>",
       "invalid_args",
     );
   }
@@ -63,9 +63,11 @@ export async function runApps(args: ParsedArgs): Promise<void> {
       return runWake(sub);
     case "watch":
       return runWatch(sub);
+    case "domain":
+      return runDomain(sub);
     default:
       fail(
-        `unknown verb '${verb}': homespun apps <list|show|update|share-link|delete|wake|watch>`,
+        `unknown verb '${verb}': homespun apps <list|show|update|share-link|delete|wake|watch|domain>`,
         "invalid_args",
       );
   }
@@ -446,4 +448,50 @@ async function runWatch(args: ParsedArgs): Promise<void> {
   await new Promise<void>(() => {
     /* never resolves — SIGINT or a terminal condition exits */
   });
+}
+
+// ---------------------------------------------------------------------------
+// `homespun apps domain <show|add|remove> <app> [domain]`
+//
+// Binding a domain is a two-party job: this side creates the certificate and
+// the routing, and the DOMAIN OWNER publishes the DNS records that prove they
+// hold it. `add` therefore prints those records as its whole point, and
+// `show` reprints them for as long as the domain has not gone active.
+// ---------------------------------------------------------------------------
+
+const DOMAIN_USAGE =
+  "usage: homespun apps domain <show|add|remove> <app> [domain]";
+
+async function runDomain(args: ParsedArgs): Promise<void> {
+  const action = args.positionals[0];
+  if (action !== "show" && action !== "add" && action !== "remove") {
+    fail(DOMAIN_USAGE, "invalid_args");
+  }
+  assertKnownFlags(args, ...specFor("apps", "domain"));
+  const appArg = args.positionals[1];
+  if (!appArg) fail(DOMAIN_USAGE, "invalid_args");
+  const domain = args.positionals[2];
+  if (action === "add" && !domain) {
+    fail("usage: homespun apps domain add <app> <domain>", "invalid_args");
+  }
+
+  const client = makeClient(args);
+  const id = await resolveAppId(client, appArg!);
+  try {
+    if (action === "show") {
+      printJson(await client.getAppDomain(id));
+      return;
+    }
+    if (action === "add") {
+      printJson(await client.setAppDomain(id, domain!));
+      return;
+    }
+    // remove: a bare `remove` unbinds every domain the app holds, which is
+    // what "remove the custom domain" means to someone who never asked for
+    // aliases. Naming one removes just that binding.
+    await client.deleteAppDomain(id, domain);
+    printJson({ app_id: id, removed: domain ?? "all" });
+  } catch (e) {
+    failFromError(e);
+  }
 }

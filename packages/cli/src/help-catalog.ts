@@ -87,7 +87,7 @@ const APPS: NounSpec = {
   tagline: "app lifecycle management",
   group: "app",
   rootSummary:
-    "App lifecycle: list, show, update, delete, wake, watch (stream the app's change feed as JSON-lines).",
+    "App lifecycle: list, show, update, delete, wake, domain (custom domains), watch (stream the app's change feed as JSON-lines).",
   verbs: [
     {
       verb: "list",
@@ -145,6 +145,12 @@ const APPS: NounSpec = {
       verb: "wake",
       positionals: "<app>",
       summary: "Wakes a dormant app.",
+    },
+    {
+      verb: "domain",
+      positionals: "<show|add|remove> <app> [domain]",
+      summary:
+        "Manages the app's custom domains. The first domain added serves the app; later ones redirect to it. `add` prints the DNS records the domain owner must publish. `remove` with no domain unbinds them all.",
     },
     {
       verb: "watch",
