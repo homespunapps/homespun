@@ -123,6 +123,49 @@ Set me up with Homespun: read https://homespun.dev/skills/homespun/SKILL.md and 
 
 ---
 
+## Gemini CLI
+
+**Gemini CLI only.** Gemini CLI speaks streamable HTTP and discovers the OAuth
+endpoints from the server itself, so one command is the whole setup:
+
+```sh
+gemini mcp add --transport http homespun https://homespun.dev/mcp
+```
+
+That writes the entry to `~/.gemini/settings.json` (or `.gemini/settings.json`
+if you scope it to one project). The first call opens your browser for the same
+email login + consent screen as every other client, and the token is cached and
+refreshed for you.
+
+**The Gemini app is a different story.** The consumer Gemini app does not accept
+arbitrary custom MCP connectors: custom MCP arrived inside Gemini Spark against
+a curated set of partner connectors, and connecting an arbitrary MCP server of
+your own is a Gemini Enterprise feature. There is no URL you can paste into the
+Gemini app today to reach Homespun. If that is where you are, use
+[Claude](#claude-web-desktop-mobile) on your phone instead, which takes the
+connector URL directly, or drive Homespun from a coding agent.
+
+---
+
+## Codex
+
+Codex configures MCP servers from `~/.codex/config.toml`. Add:
+
+```toml
+[mcp_servers.homespun]
+url = "https://homespun.dev/mcp"
+```
+
+The transport is chosen by **which key is present**: `url` selects streamable
+HTTP, `command` would select a local stdio server. So there is deliberately no
+`command` key here.
+
+Restart Codex, then authenticate when it prompts: it opens a browser for the
+login + consent flow and caches the token, refreshing it automatically. There is
+no API key or client secret to paste.
+
+---
+
 ## ChatGPT and other MCP-capable chat apps
 
 Any chat client that supports **remote MCP / custom connectors** can use Homespun.
