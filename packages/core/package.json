@@ -1,6 +1,6 @@
 {
   "name": "@homespunapps/core",
-  "version": "1.6.30",
+  "version": "1.6.31",
   "description": "Homespun relay client: typed HTTP + WebSocket operations against a Homespun relay. Framework-free.",
   "license": "MIT",
   "type": "module",
@@ -11,7 +11,7 @@
     "relay",
     "human-in-the-loop"
   ],
-  "homepage": "https://docs.homespun.dev",
+  "homepage": "https://homespun.dev",
   "bugs": {
     "url": "https://github.com/homespunapps/homespun/issues"
   },
