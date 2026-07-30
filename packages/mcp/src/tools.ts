@@ -264,7 +264,7 @@ const deployAppShape = {
     .min(1)
     .optional()
     .describe(
-      "The app's UI as a complete HTML document (single file, up to the relay's size cap), sent INLINE. Provide EITHER this or `html_path`. Inline is required for a hosted/remote connector that has no filesystem. If both are given, inline `html` wins.",
+      "The app's UI as a complete HTML document (single file, up to the relay's size cap), sent inline. Provide either this or `html_path`. Inline is required for a hosted or remote connector that has no filesystem. If both are given, inline `html` wins.",
     ),
   html_path: z
     .string()
@@ -307,7 +307,7 @@ const deployAppShape = {
           path: z
             .string()
             .describe(
-              "App-relative, same-origin reference the HTML uses, e.g. 'frames/000.jpg' or 'media/intro.mp4'. Relative ONLY: no leading '/', no '..' segment, no backslash, charset [A-Za-z0-9._/-], not under a reserved prefix (_hs, b).",
+              "App-relative, same-origin reference the HTML uses, for example 'frames/000.jpg' or 'media/intro.mp4'. Must be relative: no leading '/', no '..' segment, no backslash, charset [A-Za-z0-9._/-], and not under a reserved prefix (_hs, b).",
             ),
           content_base64: z
             .string()
@@ -627,7 +627,7 @@ const attachmentsShape = {
       "list_tokens",
     ])
     .describe(
-      "Binary attachment operations. For ANY real image or media (anything beyond a tiny icon) PREFER a ZERO-CONTEXT path so the bytes never enter the model context and cost NO tokens: `fetch` when you have a URL (the relay downloads it server-side; you send only the URL string), or presign + finalize when the client can PUT the raw bytes out-of-band. upload with `content_base64` sends the bytes INLINE in the tool-call arguments, loading them into the model context at a token cost PROPORTIONAL TO FILE SIZE (even a few-hundred-KB image is very costly, worse on every retry); use it only as a last-resort fallback for small assets or clients that have neither a URL nor an out-of-band PUT. fetch: pass { source_url, scope } and the relay fetches the bytes itself (https only, SSRF-guarded) and runs the same sniff/allowlist/size/quota/scan checks as any upload. upload: `content_base64` (base64 bytes, no filesystem) or `file_path` (absolute, read on the RELAY host); scope agent|app. presign + finalize: (1) presign with { mime, size, sha256, scope }, (2) PUT the bytes to put_url out-of-band, (3) finalize confirms it (re-sniffs + re-checks the bytes). download: fetch bytes by attachment_id to out_path (absolute) or return base64. show: metadata only. list: the agent's attachments. delete: soft-delete. mint_token: mint a /b/<token> capability URL (returned ONCE). revoke_token / list_tokens: manage those tokens.",
+      "Binary attachment operations. The upload path affects token cost: `fetch` and presign plus finalize keep the bytes out of the model context entirely, while upload with `content_base64` carries them in the tool-call arguments at a cost proportional to file size, paid again on every retry. fetch takes { source_url, scope } and the relay downloads the bytes itself (https only, SSRF-guarded), running the same sniff, allowlist, size, quota and scan checks as any upload. upload takes `content_base64` (base64 bytes, no filesystem) or `file_path` (absolute, read on the relay host), scoped agent or app. presign plus finalize is three steps: presign with { mime, size, sha256, scope }, PUT the bytes to put_url out of band, then finalize, which re-sniffs and re-checks them. download fetches bytes by attachment_id to an absolute out_path or returns base64. show returns metadata only. list returns the agent's attachments. delete is a soft-delete. mint_token mints a /b/<token> capability URL, returned once. revoke_token and list_tokens manage those tokens.",
     ),
   size: z
     .number()
@@ -659,13 +659,13 @@ const attachmentsShape = {
     .string()
     .optional()
     .describe(
-      "fetch: an https URL the RELAY downloads server-side, so the bytes NEVER enter the model context (zero token cost). SSRF-guarded: https only, no private/loopback/link-local/metadata hosts, DNS pinned, redirects refused, size-capped, timed out. The downloaded bytes run the same byte-sniff/allowlist/size/quota/scan checks as any upload. Prefer this (or presign+finalize) over `content_base64` for real images/media.",
+      "fetch: an https URL the relay downloads server-side, so the bytes do not enter the model context and cost no tokens. SSRF-guarded: https only, no private, loopback, link-local or metadata hosts, DNS pinned, redirects refused, size-capped and timed out. The downloaded bytes run the same byte-sniff, allowlist, size, quota and scan checks as any upload. This and presign plus finalize are the zero-context paths for real images and media.",
     ),
   content_base64: z
     .string()
     .optional()
     .describe(
-      "upload: the file bytes as base64, sent INLINE with no filesystem access. WARNING: the base64 rides in the tool-call arguments and enters the MODEL CONTEXT, costing tokens PROPORTIONAL TO FILE SIZE (a few-hundred-KB image is already very costly, and it compounds on every retry). PREFER presign + finalize for any real image or media whenever the client can do an out-of-band HTTP PUT; reserve `content_base64` for small assets (a tiny icon) or clients that cannot PUT out-of-band. If both `content_base64` and `file_path` are given, `content_base64` wins. The relay sniffs the real type and enforces the same size/allowlist/quota checks as a file upload.",
+      "upload: the file bytes as base64, sent inline with no filesystem access. The base64 rides in the tool-call arguments and enters the model context, costing tokens proportional to file size; a few-hundred-KB image is already expensive, and the cost repeats on every retry. presign plus finalize avoids that for any real image or media whenever the client can do an out-of-band HTTP PUT, which leaves `content_base64` suited to small assets such as a tiny icon, and to clients that cannot PUT out of band. If both `content_base64` and `file_path` are given, `content_base64` wins. The relay sniffs the real type and enforces the same size, allowlist and quota checks as a file upload.",
     ),
   scope: z
     .enum(["agent", "app"])
@@ -900,7 +900,7 @@ const communityShape = {
           .string()
           .optional()
           .describe(
-            "The manifest `ingest` rule this step wires up. Allowed ONLY on a 'connect' step, optional there; publish rejects a name x-homespun-manifest.ingest does not declare. Each install mints that rule its OWN hook URL, which the installer pastes into the external service.",
+            "The manifest `ingest` rule this step wires up. Allowed only on a 'connect' step, and optional there; publish rejects a name that x-homespun-manifest.ingest does not declare. Each install mints that rule its own hook URL, which the installer pastes into the external service.",
           ),
       }),
     )
@@ -1062,12 +1062,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "deploy_app",
     description:
-      'Deploy a v2 app: an HTML document + a capability manifest, hosted at its own URL. The manifest has eight extension keys: app metadata; collections (+ per-collection write/update/read/delete role lists, where write gates creates and also updates unless the optional update list is declared; declare update:["creator"] on any collection whose rows belong to one person, or every caller admitted by write can overwrite every row); externalHosts (fetch allowlist); cdn (allow CDN scripts/styles); capabilities (Permissions-Policy opt-ins); embeds (iframe frame-src allowlist); notify (email-on-row rules); webhooks (signed HTTP POST on-row rules). Pass EITHER no `app_id` (create, mints a slug + URL) OR `app_id` (redeploy an existing app with new content). Supply the HTML as INLINE `html` OR as `html_path` (an absolute path read on the MCP-SERVER host, which is the relay for a hosted connector or your CLI host for a locally-run one, NOT the remote agent\'s machine; use it to avoid retransmitting a large HTML file every deploy, but only a locally-run connector can read it, and if both are given inline `html` wins). Pass `dry_run:true` (alias `check`) to VALIDATE ONLY: it runs the full manifest + asset-shape validation, the redeploy compat gate, and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } WITHOUT creating a version or mutating anything. A redeploy is refused with manifest_incompatible_redeploy (unless force:true) when it would strand rows already written (drops a collection, tightens a schema, flips appendOnly) or when it would WIDEN what the app\'s install screen discloses (some collection reaching further than the live manifest, e.g. read going to ["anyone"]); the break quotes the sentence a user would now be asked to approve. Taking access away never asks: dropping a role, or adding update:["creator"] to a write:["anyone"] collection, redeploys clean. A removed collection is detached, never deleted. Ship images/fonts/audio/video/data FILES with the app in the SAME call via `assets[]`: each is validated + stored app-scoped and served at its `path` on the app\'s own origin, so the HTML references it by a stable same-origin path (`<img src="frames/000.jpg">`, `<video src="media/clip.mp4">`), media and font paths support HTTP Range for seeking. A redeploy\'s assets replace the previous version\'s set. BEFORE authoring: call get_skill for the manifest grammar. Returns { app_id, slug, url, version, visibility, created } (create) or { app_id, version, compat, breaks? } (redeploy).',
+      "Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL. The manifest carries eight extension keys: app metadata; collections, with per-collection write, update, read and delete role lists, where write gates creates and also gates updates unless an update list is declared; externalHosts, a fetch allowlist; cdn, to allow CDN scripts and styles; capabilities, for Permissions-Policy opt-ins; embeds, an iframe frame-src allowlist; notify, for email-on-row rules; and webhooks, for signed HTTP POST on-row rules. The manifest grammar is documented in the Homespun guide that get_skill returns.\n\nPass no `app_id` to create, which mints a slug and URL, or pass `app_id` to redeploy an existing app with new content. Supply the HTML inline as `html`, or as `html_path`, an absolute path read on the MCP-server host, which is the relay for a hosted connector or the CLI host for a locally-run one, and not the remote agent's machine; it avoids retransmitting a large HTML file on every deploy, only a locally-run connector can read it, and inline `html` wins if both are given. `dry_run:true` (alias `check`) validates only: it runs the full manifest and asset-shape validation, the redeploy compat gate and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } without creating a version or mutating anything.\n\nA redeploy is refused with manifest_incompatible_redeploy, unless force:true, when it would strand rows already written (dropping a collection, tightening a schema, flipping appendOnly), or when it would widen what the app's install screen discloses, such as a collection's read reaching further than the live manifest. The break quotes the sentence a user would now be asked to approve. Taking access away never prompts: dropping a role, or adding update:[\\\"creator\\\"] to a write:[\\\"anyone\\\"] collection, redeploys clean. A removed collection is detached rather than deleted.\n\nImages, fonts, audio, video and data files ship with the app in the same call via `assets[]`. Each is validated and stored app-scoped and served at its `path` on the app's own origin, so the HTML references it by a stable same-origin path such as `<img src=\\\"frames/000.jpg\\\">`; media and font paths support HTTP Range for seeking. A redeploy's assets replace the previous version's set.\n\nReturns { app_id, slug, url, version, visibility, created } on create, or { app_id, version, compat, breaks? } on redeploy.",
     inputSchema: deployAppShape,
     annotations: {
       title: "Deploy App",
       readOnlyHint: false,
-      destructiveHint: true,
+      // Additive: publishes a NEW version. The slug is immutable and prior
+      // versions are retained, so a deploy removes nothing.
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -1174,7 +1176,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "list_rows",
     description:
-      "List rows in a v2 app's mutable collection. This also doubles as the POLL for a collection's current state (no streaming in MCP): pass the prior next_cursor as `since` to fetch only newer/changed rows. Returns { rows, next_cursor, has_more }.",
+      "List rows in a v2 app's mutable collection. This is also how a collection's current state is polled, since MCP has no streaming: pass the prior next_cursor as `since` to fetch only rows that are new or changed. Returns { rows, next_cursor, has_more }.",
     inputSchema: listRowsShape,
     annotations: {
       title: "List Rows",
@@ -1201,7 +1203,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "get_row",
     description:
-      "Fetch a single row by its key from a v2 app collection (a dedicated relay route — not a client-side scan). Returns { row } or an isError row_not_found.",
+      "Fetch a single row by its key from a v2 app collection, through a dedicated relay route rather than a client-side scan. Returns { row }, or an isError row_not_found.",
     inputSchema: getRowShape,
     annotations: {
       title: "Get Row",
@@ -1225,12 +1227,13 @@ export const TOOLS: ToolDef[] = [
   {
     name: "upsert_row",
     description:
-      "Create a row in a v2 app's collection, or return the existing row if `key` is already present (deduped:true). This is the ONLY create-shaped verb for app rows (no separate strict create). Omit `key` to add a new row (server-generates one); pass `key` to ensure a row exists at that key. The collection must be declared in the app's manifest with 'agent' in its `write` list, the list that gates creates. If `key` matches a row the collection's `read` list does not reach for you, the answer is row_not_found rather than the row, matching what get_row would say, so this verb never reads past `read`. Returns { row, deduped? }.",
+      "Create a row in a v2 app's collection, or return the existing row when `key` is already present (deduped:true). Row creation goes through this tool; there is no separate strict-create verb. Omit `key` to add a new row with a server-generated key, or pass `key` to ensure a row exists at that key. The collection must be declared in the app's manifest with 'agent' in its `write` list, which is the list that gates creates. When `key` matches a row the collection's `read` list does not reach for this caller, the result is row_not_found rather than the row, matching what get_row would return, so this never reads past `read`. Returns { row, deduped? }.",
     inputSchema: upsertRowShape,
     annotations: {
       title: "Upsert Row",
       readOnlyHint: false,
-      destructiveHint: true,
+      // Create-or-return-existing. Removes nothing.
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -1255,12 +1258,15 @@ export const TOOLS: ToolDef[] = [
   {
     name: "update_row",
     description:
-      "Update an existing row in a v2 app's collection (replaces its data). Gated by the collection's `update` role list when it declares one, and by its `write` list otherwise, so a collection that scopes updates to the row's `creator` refuses your edit on someone else's row. Pass if_match with the row's current version for an optimistic-locked update: on a version mismatch the relay returns the current row so you can retry. Returns { row }.",
+      "Update an existing row in a v2 app's collection, replacing its data. Gated by the collection's `update` role list when it declares one, and by its `write` list otherwise, so a collection that scopes updates to the row's `creator` refuses an edit on someone else's row. Pass if_match with the row's current version for an optimistic-locked update; on a version mismatch the relay returns the current row, which is what a retry needs. Returns { row }.",
     inputSchema: updateRowShape,
     annotations: {
       title: "Update Row",
       readOnlyHint: false,
-      destructiveHint: true,
+      // Replaces a row's data in place. A replaceable write on a row the
+      // caller names explicitly, not a removal: the row still exists, and
+      // deletion is a separate tool (`delete_row`).
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -1289,11 +1295,12 @@ export const TOOLS: ToolDef[] = [
   {
     name: "delete_row",
     description:
-      "Soft-delete a row from a v2 app's collection. A watcher sees the deletion live (op:delete on the change feed). Pass if_match for an optimistic-locked delete. Returns { deleted: true }.",
+      "Soft-delete a row from a v2 app's collection. A watcher sees the deletion live as op:delete on the change feed. Pass if_match for an optimistic-locked delete. Returns { deleted: true }.",
     inputSchema: deleteRowShape,
     annotations: {
       title: "Delete Row",
       readOnlyHint: false,
+      // Destructive: Removes the row (soft-delete, and watchers see op:delete).
       destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
@@ -1317,7 +1324,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "get_feed_events",
     description:
-      "Poll a v2 app's change feed for what happened (row creates/updates/deletes, from any writer — agent or human). This is the long-poll analogue of `homespun apps watch` — there is no streaming in MCP. Poll loop: call with no `since` first; process the returned entries; remember cursor; call again passing it as `since` to get only newer entries. To WAIT for activity, pass wait (~25) so the relay holds the request open until an entry arrives or it times out. A `since` older than the retention floor returns resync_required — re-list the collection(s) with list_rows instead. Returns { entries, cursor, truncated }.",
+      "Poll a v2 app's change feed for what has happened: row creates, updates and deletes, from any writer, agent or human. It is the long-poll analogue of `homespun apps watch`, since MCP has no streaming. The loop is: call with no `since` first, process the returned entries, keep the cursor, then call again passing it as `since` to get only newer entries. Passing wait (around 25) holds the request open until an entry arrives or it times out, which is how the feed is waited on rather than busy-polled. A `since` older than the retention floor returns resync_required, and the collections are then re-listed with list_rows. Returns { entries, cursor, truncated }.",
     inputSchema: getFeedEventsShape,
     annotations: {
       title: "Get App Feed Events",
@@ -1341,13 +1348,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "apps",
     description:
-      "Manage v2 app lifecycle (deploy_app creates/redeploys; this tool covers the rest). ONE tool with an `action` enum: list (YOUR owning human's apps) | show (full detail incl. manifest, timezone, has_share_token) | update (visibility and/or timezone - slug is immutable; switching TO 'link' returns a share_url once) | share_link_rotate (rotate a 'link' app's share token, returning a new share_url and revoking the old link; also generates one if the app has none) | delete (soft-delete, idempotent) | wake (a dormant app; a no-op reporting the actual status otherwise) | domain_set (bind a custom domain; the FIRST one serves the app and every one after it redirects there, which is how apex + www works; returns the DNS records the domain owner must publish) | domain_status (the serving domain plus its `aliases`, live-refreshed against Cloudflare when enabled; inspect last_error when one is not activating) | domain_remove (unbind one domain, or all of them when no `domain` is given; idempotent).",
+      "The v2 app lifecycle apart from creation and redeploy, which deploy_app covers. Actions: list returns the owning human's apps; show returns full detail including manifest, timezone and has_share_token; update changes visibility and timezone, the slug being immutable, and switching to 'link' returns a share_url once; share_link_rotate issues a new share token for a 'link' app, returning a new share_url and revoking the old link, and generates one if the app has none; delete is an idempotent soft-delete; wake wakes a dormant app and is otherwise a no-op that reports the actual status; domain_set binds a custom domain and returns the DNS records the domain owner must publish, where the first domain bound serves the app and every later one redirects to it, which is how apex plus www is configured; domain_status returns the serving domain and its `aliases`, live-refreshed against Cloudflare when that is enabled, with last_error carrying the reason a domain is not activating; domain_remove unbinds one domain, or all of them when no `domain` is given, and is idempotent.",
     inputSchema: appsShape,
     // Consolidated tool: read actions (list/show) + mutating ones (update/
     // delete/wake). Hint reflects delete, the most-privileged action.
     annotations: {
       title: "Manage Apps",
       readOnlyHint: false,
+      // Destructive: `delete` removes an app.
       destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
@@ -1462,13 +1470,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "members",
     description:
-      "Manage a v2 app's membership (auth spec §6) — who besides the app's owner can sign in to a private app / write to member-scoped collections. ONE tool with an `action` enum: add (invite-or-attach a member by email — attaches immediately if the email already has a Human, otherwise the relay emails a magic-link invite) | list (the app's owner + members) | set_role (change an existing member's declared custom role in place, or null to clear it — does NOT revoke their sessions, so use this rather than remove-then-add to re-role someone) | remove (idempotent; also revokes the human's live sessions on this app — the app owner cannot be removed) | roles (the derived roles summary: per declared role and collection, the EFFECTIVE access a holder actually has, reported separately for signed-in members and for grant-link holders since their role floors differ, plus member and active-grant-link counts).",
+      "A v2 app's membership (auth spec section 6): who besides the owner can sign in to a private app and write to member-scoped collections. Actions: add invites or attaches a member by email, attaching immediately when the email already has a Human and otherwise sending a magic-link invite; list returns the app's owner and members; set_role changes an existing member's declared custom role in place, or clears it when null, and leaves their sessions intact, which is what makes it the way to re-role someone rather than removing and re-adding them; remove is idempotent and also revokes the human's live sessions on this app, and the app owner cannot be removed; roles returns the derived roles summary, giving the effective access a holder actually has per declared role and collection, reported separately for signed-in members and for grant-link holders because their role floors differ, along with member and active-grant-link counts.",
     inputSchema: membersShape,
     // Consolidated tool: read action (list) + mutating ones (add/remove).
     // Hint reflects remove, the most-privileged action.
     annotations: {
       title: "Manage App Members",
       readOnlyHint: false,
+      // Destructive: `remove` revokes a member's access.
       destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
@@ -1546,13 +1555,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "grants",
     description:
-      "Manage a v2 app's grant links (M5). A grant link is a capability URL that confers a DECLARED custom role (x-homespun-manifest.roles) on a stable, per-holder anonymous identity, so the holder's own rows are isolated by author/:own scoping. A grant NEVER escalates to owner/member/agent. ONE tool with an `action` enum: mint (create a link; returns a `grant_url` carrying the token in its #g= fragment, shown ONCE, never recoverable) | list (the app's links, never any token) | revoke (idempotent). mode once = one-time (first-browser-claims), multi = shared (capped by max_uses within expiry). An optional pin (pin_row_key OR pin_where) NARROWS the holder to specific rows, never widens. Note: a write-only grant pinned to a single row key can still read that row's existing data back via create dedup, so a 'write-only to slot X' grant exposes slot X's current contents to the holder.",
+      "A v2 app's grant links (M5). A grant link is a capability URL that confers a declared custom role (x-homespun-manifest.roles) on a stable per-holder anonymous identity, so a holder's own rows are isolated by author/:own scoping. A grant does not escalate to owner, member or agent. Actions: mint creates a link and returns a `grant_url` carrying the token in its #g= fragment, shown once and not recoverable afterwards; list returns the app's links and never a token; revoke is idempotent. mode 'once' is one-time, claimed by the first browser to open it; 'multi' is shared, capped by max_uses within expiry. An optional pin (pin_row_key or pin_where) narrows a holder to specific rows and never widens their access. One consequence worth knowing when minting: a write-only grant pinned to a single row key can still read that row's existing data back through create dedup, so such a grant exposes that row's current contents to the holder.",
     inputSchema: grantsShape,
     // Consolidated tool: read action (list) + mutating ones (mint/revoke).
     // Hint reflects revoke, the most-privileged action.
     annotations: {
       title: "Manage App Grant Links",
       readOnlyHint: false,
+      // Destructive: `revoke` kills a live capability URL.
       destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
@@ -1628,7 +1638,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "ingest",
     description:
-      "Manage a v2 app's inbound catch-hooks (inbound-webhooks). A catch-hook lets an EXTERNAL system (Stripe, Zapier, Make, Home Assistant, an email router) POST JSON to a secret URL that writes into a declared collection, so the app receives data even with no agent online. Hooks are DECLARED IN THE MANIFEST (x-homespun-manifest.ingest) and materialized at deploy, so this tool has no create/delete: use it to READ BACK the URL, rotate a leaked one, and manage the opt-in signing secret. ONE tool with an `action` enum: list (the app's hooks, each with its full secret URL, current rule collection/mode/wake/handshake, per-status delivery counts, and signing-secret state) | rotate (mint a fresh URL secret for one hook by name and return its NEW url once; the old url stops working immediately, no redeploy needed) | set_signing_secret (provision/rotate a hook's signing secret, a DIFFERENT secret from the URL: what a provider HMACs the body with; omit `secret` to mint one returned ONCE, or pass `secret` to store a provider value verbatim, never echoed) | clear_signing_secret (remove it). Signature verification ships DARK for now: nothing verifies a signature yet. After deploying a manifest that declares a hook, run list and tell the owner the exact url to paste into the external system.",
+      "A v2 app's inbound catch-hooks (inbound-webhooks). A catch-hook lets an external system such as Stripe, Zapier, Make, Home Assistant or an email router POST JSON to a secret URL that writes into a declared collection, so the app receives data with no agent online. Hooks are declared in the manifest (x-homespun-manifest.ingest) and materialized at deploy, so this tool has no create or delete: it reads back the URL, rotates a leaked one, and manages the opt-in signing secret. After deploying a manifest that declares a hook, list is what yields the exact URL to paste into the external system. Actions: list returns the app's hooks, each with its full secret URL, current rule collection, mode, wake and handshake settings, per-status delivery counts and signing-secret state; rotate mints a fresh URL secret for one hook by name and returns the new url once, after which the old url stops working immediately with no redeploy needed; set_signing_secret provisions or rotates a hook's signing secret, which is a different secret from the URL and is what a provider HMACs the body with, minting one returned once when `secret` is omitted or storing a provider value verbatim when it is passed, and never echoing it back; clear_signing_secret removes it. Signature verification currently ships dark: nothing verifies a signature yet.",
     inputSchema: ingestShape,
     // Consolidated tool: read action (list) + a mutating one (rotate). Marked
     // destructive (not read-only) because rotate invalidates the old URL, which
@@ -1638,6 +1648,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Manage App Inbound Hooks",
       readOnlyHint: false,
+      // Destructive: `rotate` and `clear_signing_secret` invalidate a
+      // secret an external system is actively signing with.
       destructiveHint: true,
       openWorldHint: false,
     },
@@ -1695,7 +1707,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "attachments",
     description:
-      "Binary attachments (images, PDFs, audio, video) referenced from event payloads / input_data via `format: homespun-attachment-id`. ONE tool with an `action` enum: upload | fetch | presign | finalize | download | show | list | delete | mint_token | revoke_token | list_tokens. TOKEN COST, READ FIRST: an inline `upload` with `content_base64` carries the bytes in the tool-call arguments, so they enter the MODEL CONTEXT and cost tokens PROPORTIONAL TO FILE SIZE (a few-hundred-KB image is already very costly, worse on every retry). For ANY real image or media (anything beyond a tiny icon) use a ZERO-CONTEXT path instead: `fetch` when you have a URL (the relay downloads it server-side, you send only the URL string), or presign + finalize when the client can PUT the raw bytes out-of-band. fetch: { source_url (https), scope } — the relay downloads the URL itself behind an SSRF guard (https only, no private/loopback/metadata hosts, DNS pinned, redirects refused, size-capped, timed out) and runs the same byte-sniff + allowlist + size + quota + scan checks as any upload; works on any storage backend. upload (inline) takes EITHER `content_base64` (base64 bytes, no filesystem; last-resort for small assets or clients with neither a URL nor an out-of-band PUT) OR `file_path` (ABSOLUTE path read on the RELAY host, only usable when the file is local to the relay). presign + finalize (token-free, for images/video/big audio): (1) presign with { mime, size, sha256, scope } returns { put_url, attachment_id }; (2) YOU PUT the raw bytes to put_url over plain HTTP out-of-band; (3) finalize with the attachment_id. At finalize the relay re-reads the stored bytes, BYTE-SNIFFS the real type, and enforces the same allowlist + size + sha256 + quota + scan checks as any upload, so a presign that lies about its mime is caught and never served inline. The presigned path requires the Azure storage backend; a filesystem self-host returns a clear not-supported error (use fetch or inline upload there). download writes to an ABSOLUTE out_path (or returns base64). Scope an upload to agent (default, reusable) or app. mint_token returns a /b/<token> capability URL (ONCE) a browser can GET without your API key.",
+      "Binary attachments (images, PDFs, audio, video) referenced from event payloads and input_data via `format: homespun-attachment-id`. Actions: upload, fetch, presign, finalize, download, show, list, delete, mint_token, revoke_token, list_tokens.\n\nChoosing an upload path matters for cost. An inline upload with `content_base64` carries the bytes in the tool-call arguments, so they enter the model context at a token cost proportional to file size, paid again on every retry; a few-hundred-KB image is already expensive. Two paths avoid that entirely: fetch, when the bytes are reachable at a URL, and presign plus finalize, when the client can PUT the raw bytes out of band. Inline upload suits small assets and clients that have neither a URL nor an out-of-band PUT.\n\nfetch takes { source_url (https), scope } and the relay downloads the URL itself behind an SSRF guard (https only, no private, loopback or metadata hosts, DNS pinned, redirects refused, size-capped and timed out), then runs the same byte-sniff, allowlist, size, quota and scan checks as any upload. It works on any storage backend. upload takes either `content_base64` (base64 bytes, no filesystem) or `file_path` (an absolute path read on the relay host, so it only applies when the file is local to the relay). presign plus finalize is token-free: presign with { mime, size, sha256, scope } returns { put_url, attachment_id }, the caller PUTs the raw bytes to put_url over plain HTTP out of band, then finalize with the attachment_id. At finalize the relay re-reads the stored bytes, sniffs the real type, and enforces the same allowlist, size, sha256, quota and scan checks, so a presign that misstates its mime is caught and never served inline. The presigned path requires the Azure storage backend; a filesystem self-host returns a clear not-supported error and fetch or inline upload apply there instead. download writes to an absolute out_path or returns base64. An upload is scoped to agent (the default, reusable) or app. mint_token returns a /b/<token> capability URL, shown once, that a browser can GET without the caller's API key.",
     inputSchema: attachmentsShape,
     // Consolidated tool: read actions (download/show/list/list_tokens) +
     // mutating ones (upload/delete/mint_token/revoke_token). openWorld:true
@@ -1704,6 +1716,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Manage Attachments",
       readOnlyHint: false,
+      // Destructive: `delete` removes an attachment and `revoke_token`
+      // kills a live capability URL.
       destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
@@ -1920,13 +1934,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "taste",
     description:
-      "Read / write / clear the agent's freeform UI taste notes (a small markdown document of presentation preferences learned from human feedback — 'denser layout', 'no rounded corners'). ONE tool with an `action` enum: get | set | clear. Call `get` BEFORE generating an app so prior feedback shapes the output; `set` does a whole-document replace (not append). Keep entries about UI/presentation only.",
+      "The agent's UI taste notes: a short freeform markdown document of presentation preferences gathered from human feedback, such as 'denser layout' or 'no rounded corners'. Reading it before generating or revising an app is what carries earlier feedback into new output. Actions: get returns the current document; set replaces it in whole, so it does not append; clear discards it. Scoped to presentation preferences rather than general storage.",
     inputSchema: tasteShape,
     // Consolidated tool: read action (get) + mutating ones (set replaces the
     // doc, clear deletes it). Hint reflects the destructive action.
     annotations: {
       title: "Manage UI Taste Notes",
       readOnlyHint: false,
+      // Destructive: `clear` discards the stored notes.
       destructiveHint: true,
       idempotentHint: false,
       openWorldHint: false,
@@ -1959,7 +1974,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "key",
     description:
-      "Inspect, mint, or revoke the calling agent's API key. ONE tool with an `action` enum: list (key info: agent_id, key_prefix, timestamps) | mint (mint a NEW sibling API key for YOUR OWN agent identity, same scope/ownership, and return its raw value ONCE, the way an MCP-driven agent bootstraps a CLI/child-process credential; the raw key is never retrievable again, the sibling appears in a `list` made WITH it, and the owner can revoke it) | revoke (self-destruct the agent's OWN key; it stops working immediately and is irreversible, so pass confirm:true). The relay derives identity from the caller's token, so every action acts only on the caller's own agent, and mint can never target another agent's id.",
+      "The calling agent's API key. Actions: list returns key info (agent_id, key_prefix, timestamps); mint creates a sibling API key for the caller's own agent identity with the same scope and ownership and returns its raw value once, which is how an MCP-driven agent hands a CLI or child process a working credential, and the raw value is not retrievable afterwards, the sibling appears in a later list made with it, and the owner can revoke it; revoke destroys the agent's own key, which stops working immediately and cannot be undone, so it requires confirm:true. The relay derives identity from the caller's token, so every action applies to the caller's own agent and mint cannot target another agent's id.",
     inputSchema: keyShape,
     // Consolidated tool: read action (list) + a mutating one (revoke
     // self-destructs the agent's own key). Hint reflects the destructive
@@ -1967,6 +1982,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Manage API Key",
       readOnlyHint: false,
+      // Destructive: `revoke` is irreversible and stops the key working
+      // immediately (already gated behind confirm:true).
       destructiveHint: true,
       idempotentHint: false,
       openWorldHint: false,
@@ -2004,14 +2021,15 @@ export const TOOLS: ToolDef[] = [
   {
     name: "feedback",
     description:
-      "Send or list feedback to the relay operator. ONE tool with an `action` enum: create (a bug|feature|note with a message, optional app_id) | list (the agent's own submissions, newest first, paginated by before).",
+      "Feedback to the relay operator. Actions: create records a bug, feature or note with a message and an optional app_id; list returns the agent's own submissions, newest first, paginated by `before`.",
     inputSchema: feedbackShape,
     // Consolidated tool: read action (list) + a side-effecting one (create
     // submits feedback to the relay operator). Hint reflects the write action.
     annotations: {
       title: "Manage Feedback",
       readOnlyHint: false,
-      destructiveHint: true,
+      // create + list only. Nothing can be edited or withdrawn.
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: false,
     },
@@ -2054,7 +2072,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "agent",
     description:
-      "Agent identity + binding. ONE tool with an `action` enum: whoami (the resolved relay URL, active profile, whether a key is configured — no network, no secrets) | claim (bind this agent to a human via a one-shot claim code from their Settings UI; one-way) | logout (clear the locally-saved key/profile; does NOT revoke it on the relay — use the `key` tool's revoke for that).",
+      "Agent identity and binding. Actions: whoami returns the resolved relay URL, the active profile and whether a key is configured, with no network call and no secrets; claim binds this agent to a human using a one-shot claim code from their Settings UI, and is one-way; logout clears the locally saved key and profile but does not revoke it on the relay, which is what the `key` tool's revoke action does.",
     inputSchema: agentShape,
     // Consolidated tool: read action (whoami) + mutating ones (claim binds
     // this agent to a human, logout clears the local profile). Hint reflects
@@ -2062,7 +2080,9 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Manage Agent Identity",
       readOnlyHint: false,
-      destructiveHint: true,
+      // whoami | claim | logout. `logout` ends the local binding and is
+      // reversible by claiming again; no stored data is removed.
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: false,
     },
@@ -2092,14 +2112,17 @@ export const TOOLS: ToolDef[] = [
   {
     name: "community",
     description:
-      "Publish an app you own as a COMMUNITY TEMPLATE, install a template into your own account, and (relay operators only) review submissions. ONE tool with an `action` enum: publish | get_config_contract | install | list_pending | get_submission | approve | reject | set_trust_level. publish captures your live app (html + manifest + the seed rows of its seedOnInstall collections + listing metadata) into a PENDING template - installable by the returned direct link but NOT listed in the public gallery until an operator approves it; you must have a verified email and at most a few pending submissions at once. PRIVACY: an approved template's content AND its captured seed rows become PUBLIC to every platform user, so never publish an app whose seedOnInstall collections hold real personal data - seed data must be example-only. Pass attest_example_only:true to attest you checked this. Optionally give the template a per-publisher `slug` (namespaced id <your-handle>/<slug>) and a semver `version` (default 1.0.0): a republish under the same slug must bump the version. get_config_contract reads what a template needs at install (its settings collection + ordered config/upload steps) by `ref`; install creates a fresh PRIVATE copy of a template for YOUR owning human, passing the answers as `config` (a 'config' value is a string, an 'upload' value is a pre-uploaded attachment id from the attachments tool). The review actions are limited to the relay's configured community reviewers: list_pending (the queue), get_submission (a submission's full content by snapshot_id), approve (list it in the gallery; a re-publish supersedes your app's prior approved version), reject (with a required note that lands in the publisher's app feed).",
+      "Publishing an app as a community template, installing a template, and, for relay operators, reviewing submissions. Actions: publish, get_config_contract, install, list_pending, get_submission, approve, reject, set_trust_level.\n\npublish captures a live app (html, manifest, the seed rows of its seedOnInstall collections, and listing metadata) into a pending template. It is installable by the returned direct link but is not listed in the public gallery until an operator approves it, and it requires a verified email and no more than a few pending submissions at once. Privacy consequence: an approved template's content and its captured seed rows become public to every platform user, so seed data in a published app must be example-only rather than real personal data. attest_example_only:true records that this was checked. A template may take a per-publisher `slug` (namespaced as <handle>/<slug>) and a semver `version` defaulting to 1.0.0, and a republish under the same slug must bump the version.\n\nget_config_contract reads what a template needs at install, meaning its settings collection and its ordered config and upload steps, by `ref`. install creates a fresh private copy of a template for the caller's owning human, passing answers as `config`, where a 'config' value is a string and an 'upload' value is a pre-uploaded attachment id from the attachments tool.\n\nThe review actions are limited to the relay's configured community reviewers: list_pending returns the queue; get_submission returns a submission's full content by snapshot_id; approve lists it in the gallery, where a re-publish supersedes the app's prior approved version; reject takes a required note that lands in the publisher's app feed.",
     inputSchema: communityShape,
     // Consolidated tool: read actions (list_pending/get_submission) + mutating
     // ones (publish/approve/reject). Hint reflects the most-privileged action.
     annotations: {
       title: "Community Templates",
       readOnlyHint: false,
-      destructiveHint: true,
+      // publish | install | the operator review actions. `approve`, `reject`
+      // and `set_trust_level` move a submission between states; the
+      // submission itself survives every one of them.
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -2219,7 +2242,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "publisher",
     description:
-      "Manage YOUR community publisher identity: the @-handle and public profile you present in the template gallery. ONE tool with an `action` enum: claim | get | update. get returns your profile (handle, whether it is claimed yet, tenure, and the rating/template counters). claim sets your handle exactly ONCE (it is permanent afterwards) from a lowercase 3-to-32-char string; a handle that is reserved (platform or role words) or already taken is refused. update changes your public display_name, bio, or url at any time. claim and update require a verified email; an existing publisher may already have a provisional `maker-...` handle (auto-assigned) that claim renames the one allowed time.",
+      "The caller's community publisher identity: the @-handle and public profile shown in the template gallery. Actions: get returns the profile, including the handle, whether it has been claimed, tenure, and the rating and template counters; claim sets the handle from a lowercase 3-to-32-character string and may be used only once, after which the handle is permanent, and it refuses a handle that is reserved or already taken; update changes display_name, bio or url at any time. claim and update require a verified email. An existing publisher may hold a provisional `maker-...` handle assigned automatically, which claim renames on its one allowed use.",
     inputSchema: publisherShape,
     // Consolidated tool: a read action (get) plus mutating ones (claim/update).
     // claim is irreversible (the handle is permanent), so the hint reflects the
@@ -2227,7 +2250,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Publisher Profile",
       readOnlyHint: false,
-      destructiveHint: true,
+      // claim | get | update on the caller's own profile. No delete action.
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -2272,7 +2296,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "review",
     description:
-      "Rate and review community templates you have USED, respond to reviews of your own templates, and (relay operators only) moderate. ONE tool with an `action` enum: create | respond | report | remove | unhold. create leaves a 1-to-5 star rating plus an optional written body on a template you have installed - identify the template by `template` (\"<handle>/<slug>\") or by `handle`+`slug`; you need a verified email, and each install yields exactly one review (the aggregate carries across template versions). A body that contains a link or a contact email is AUTO-HELD for a moderator before it appears. respond replies to a review of YOUR OWN template line (review_id + response; null clears it), one editable response per review. report flags a review for the relay's moderators (review_id + reason), deduped per account. remove and unhold are limited to the relay's configured community reviewers: remove takes a review down and adjusts the rating aggregate; unhold publishes a previously auto-held review into the aggregate.",
+      "Ratings and reviews of community templates, responses from a template's own publisher, and, for relay operators, moderation. Actions: create leaves a 1-to-5 star rating and an optional written body on a template the caller has installed, identifying it by `template` (\\\"<handle>/<slug>\\\") or by `handle` plus `slug`, and requires a verified email; each install yields exactly one review, and the aggregate carries across template versions. A body containing a link or a contact email is held automatically for a moderator before it appears. respond replies to a review of the caller's own template line (review_id plus response, or null to clear it), with one editable response per review. report flags a review for the relay's moderators (review_id plus reason) and is deduped per account. remove and unhold are limited to the relay's configured community reviewers: remove takes a review down and adjusts the rating aggregate, and unhold publishes a previously held review into the aggregate.",
     inputSchema: reviewShape,
     // Consolidated tool: a write action (create), publisher/reporter actions,
     // and operator moderation (remove/unhold). Hint reflects remove, the most
@@ -2280,6 +2304,7 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Community Reviews",
       readOnlyHint: false,
+      // Destructive: `remove` takes a review down.
       destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
@@ -2358,7 +2383,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "get_skill",
     description:
-      "Fetch the relay's auto-updating SKILL.md (the full Homespun usage guide) — UNAUTHENTICATED, needs no API key. Call this to self-teach the Homespun workflow (events vs records, schema grammars, the poll loop) before driving the other tools. Pass version_only:true to get just the relay's skill version string (to check if a cached copy is stale).",
+      "The relay's SKILL.md, a generated guide to the Homespun workflow covering events versus records, the schema grammars and the poll loop. Needs no API key. Useful when working out how the other tools fit together, or to refresh a cached copy. Pass version_only:true to return just the relay's skill version string, which is enough to tell whether a cached copy is current.",
     inputSchema: getSkillShape,
     annotations: {
       title: "Get Skill Guide",

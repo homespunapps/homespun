@@ -123,10 +123,25 @@ describe("tool listing", () => {
       expect(t.annotations.title![0]).toBe(
         t.annotations.title![0]!.toUpperCase(),
       );
-      // Exactly one of readOnly / destructive describes the tool's privilege.
+      // Every tool states BOTH hints explicitly. `destructiveHint` defaults to
+      // true in the MCP spec, so an omitted flag silently reads as destructive,
+      // and requiring it to be present is what keeps the default from deciding.
+      //
+      // Note what is deliberately NOT asserted here: that a tool is either
+      // read-only or destructive. That invariant used to exist, and it made
+      // "writes, but destroys nothing" structurally unrepresentable, so every
+      // non-read tool was forced to destructiveHint:true, 16 of 20 of them.
+      // MCP has exactly that middle category (readOnlyHint:false +
+      // destructiveHint:false) and the three groups below use it.
       const ro = t.annotations.readOnlyHint === true;
       const destructive = t.annotations.destructiveHint === true;
-      expect(ro || destructive).toBe(true);
+      expect(typeof t.annotations.readOnlyHint, t.name).toBe("boolean");
+      // Per the spec destructiveHint is meaningful only when readOnlyHint is
+      // false, but there it MUST be explicit, because the spec default is
+      // true and an omission would quietly re-create the over-flagging.
+      if (!ro) {
+        expect(typeof t.annotations.destructiveHint, t.name).toBe("boolean");
+      }
       // A read-only tool must not ALSO claim to be destructive.
       if (ro) expect(destructive).toBe(false);
     }
@@ -141,29 +156,60 @@ describe("tool listing", () => {
     }
   });
 
-  it("mutating + consolidated tools are destructive and not readOnly", () => {
-    const DESTRUCTIVE = [
-      // discrete mutators
-      "deploy_app",
-      "upsert_row",
-      "update_row",
-      "delete_row",
-      // consolidated action-enum tools (most-privileged action is a write/delete)
-      "attachments",
-      "taste",
-      "key",
-      "feedback",
-      "agent",
-      "apps",
-      "members",
-      "grants",
-      "ingest",
-    ];
+  // The rule, applied to every non-read tool: destructiveHint is true iff the
+  // tool exposes at least one action that REMOVES or IRREVERSIBLY INVALIDATES
+  // existing state. It is not "the tool writes something", and it is not "the
+  // most-privileged action is a write". Either of those collapses the middle
+  // category and flags almost the whole surface, which is what a connector
+  // review flagged: 16 of 20 tools claiming to be destructive makes the hint
+  // carry no information and trains people to click through the prompt.
+  //
+  // These two lists must together cover every non-read-only tool; the
+  // exhaustiveness check below enforces that, so a new tool cannot be added
+  // without landing in one of them on purpose.
+  const DESTRUCTIVE = [
+    "delete_row", // removes the row
+    "apps", // delete
+    "members", // remove
+    "grants", // revoke (kills a live capability URL)
+    "ingest", // rotate / clear_signing_secret
+    "attachments", // delete, revoke_token
+    "taste", // clear
+    "key", // revoke (irreversible, confirm-gated)
+    "review", // remove
+  ];
+
+  const ADDITIVE_WRITE = [
+    "deploy_app", // new version; slug immutable, prior versions retained
+    "upsert_row", // create-or-return-existing
+    "update_row", // replaces one named row's data; the row survives
+    "feedback", // create + list only
+    "agent", // whoami | claim | logout, all reversible
+    "community", // publish | install | state-moving review actions
+    "publisher", // claim | get | update on the caller's own profile
+  ];
+
+  it("tools that can remove or invalidate state are destructive", () => {
     for (const name of DESTRUCTIVE) {
       const a = tool(name).annotations;
       expect(a.destructiveHint, name).toBe(true);
       expect(a.readOnlyHint, name).toBe(false);
     }
+  });
+
+  it("tools whose every action is additive are NOT destructive", () => {
+    for (const name of ADDITIVE_WRITE) {
+      const a = tool(name).annotations;
+      expect(a.destructiveHint, name).toBe(false);
+      expect(a.readOnlyHint, name).toBe(false);
+    }
+  });
+
+  it("every tool is classified exactly once", () => {
+    const READ_ONLY = ["get_skill", "list_rows", "get_row", "get_feed_events"];
+    const all = [...READ_ONLY, ...DESTRUCTIVE, ...ADDITIVE_WRITE].sort();
+    expect(new Set(all).size, "a tool appears in two groups").toBe(all.length);
+    expect(all).toEqual(TOOLS.map((t) => t.name).sort());
   });
 
   it("idempotent mutators set idempotentHint", () => {
@@ -195,13 +241,23 @@ describe("tool listing", () => {
       idempotentHint: true,
       openWorldHint: false,
     });
-    // Consolidated action-enum tool (CAN delete → destructive).
+    // Consolidated action-enum tool that CAN delete → destructive.
     expect(tool("apps").annotations).toEqual({
       title: "Manage Apps",
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
+    });
+    // The middle category: writes, but every action is additive. This sample
+    // is the regression guard for the over-flagging fix. `deploy_app` is the
+    // single most-called tool on the surface and used to prompt on every call.
+    expect(tool("deploy_app").annotations).toEqual({
+      title: "Deploy App",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     });
   });
 });

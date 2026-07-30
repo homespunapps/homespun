@@ -62,13 +62,18 @@ describe("MCP handshake", () => {
     const { tools } = await mcp.listTools();
     const byName = new Map(tools.map((t) => [t.name, t]));
 
-    // Every tool has a title + a privilege hint over the wire.
+    // Every tool has a title + an explicit privilege hint over the wire. A
+    // non-read tool must state destructiveHint rather than let the MCP spec
+    // default (true) stand in for it. See the classification rule in
+    // tools.test.ts. Notably NOT asserted: that a tool is read-only or
+    // destructive. Additive writers are legitimately neither.
     for (const t of tools) {
       expect(t.annotations, t.name).toBeTruthy();
       expect(typeof t.annotations!.title, t.name).toBe("string");
       const ro = t.annotations!.readOnlyHint === true;
-      const destructive = t.annotations!.destructiveHint === true;
-      expect(ro || destructive, t.name).toBe(true);
+      if (!ro) {
+        expect(typeof t.annotations!.destructiveHint, t.name).toBe("boolean");
+      }
     }
 
     // Read-only sample.
@@ -88,6 +93,13 @@ describe("MCP handshake", () => {
       title: "Manage Apps",
       readOnlyHint: false,
       destructiveHint: true,
+    });
+    // Additive-write sample: writes, destroys nothing. Must survive the
+    // transport as an explicit `false`, not as an absent field.
+    expect(byName.get("deploy_app")!.annotations).toMatchObject({
+      title: "Deploy App",
+      readOnlyHint: false,
+      destructiveHint: false,
     });
   });
 
