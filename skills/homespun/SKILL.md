@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.26 -->
+<!-- homespun skill v1.6.27 -->
 
 # homespun
 
@@ -967,7 +967,14 @@ Fields, exactly:
       `["author"]`) scopes reads to the caller's *own* rows: a list returns only
       the rows that match, and a get on a row that does not returns `404
       row_not_found` (the same error a missing key returns) rather than a 403,
-      deliberately, so a caller cannot probe which keys exist. **Prefer
+      deliberately, so a caller cannot probe which keys exist. **Every other
+      verb answers the same way**: an update, a delete, and a keyed upsert that
+      lands on an existing row all return `404 row_not_found` for a row `read`
+      does not reach for you, rather than a 403 (or, for the upsert, rather than
+      the row body). The write doors never confirm a key the read door refused
+      to confirm. On a row you *can* read, a refused update or delete still
+      returns the honest `403 collection_write_forbidden` /
+      `collection_delete_forbidden` with the roles that were consulted. **Prefer
       `creator`**: `editor` and `author` both mean "wrote it last", so the first
       time anyone else touches a row it drops out of its original writer's view.
       An anonymous visitor to a public/link app satisfies these through the
@@ -2359,7 +2366,10 @@ ignores that can silently drop every row it writes:
 - `POST /v1/apps/:id/collections/:name` (create/upsert) returns
   `{ "row": { key, data, version, author, created_at, updated_at, deleted_at } }`
   (plus `"deduped": true` when an upsert matched an existing key). The row lives
-  under `.row`, not at the top level. **Watch out:** the browser SDK's
+  under `.row`, not at the top level. A keyed upsert that matches a row the
+  collection's `read` list does not reach for you returns `404 row_not_found`
+  instead of the body, the same answer a `GET` on that key gives, so the create
+  door cannot be used to read past `read`. **Watch out:** the browser SDK's
   `homespun.collections.create()` hands back the row FLAT (`row.key`), so code
   written against the SDK shape reads `undefined` when pointed at the REST
   endpoint. Read `response.row`, not `response`.

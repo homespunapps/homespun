@@ -373,7 +373,7 @@ const upsertRowShape = {
     .string()
     .optional()
     .describe(
-      "Optional stable key. Reusing an existing key returns the existing row (deduped:true).",
+      "Optional stable key. Reusing an existing key returns the existing row (deduped:true), or row_not_found when the collection's read list does not reach that row for you.",
     ),
   data: jsonValueSchema.describe(
     "The row body - any JSON value valid against the collection's row schema (an object, or any JSON value for a schemaless collection).",
@@ -1225,7 +1225,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "upsert_row",
     description:
-      "Create a row in a v2 app's collection, or return the existing row if `key` is already present (deduped:true). This is the ONLY create-shaped verb for app rows (no separate strict create). Omit `key` to add a new row (server-generates one); pass `key` to ensure a row exists at that key. The collection must be declared in the app's manifest with 'agent' in its `write` list, the list that gates creates. Returns { row, deduped? }.",
+      "Create a row in a v2 app's collection, or return the existing row if `key` is already present (deduped:true). This is the ONLY create-shaped verb for app rows (no separate strict create). Omit `key` to add a new row (server-generates one); pass `key` to ensure a row exists at that key. The collection must be declared in the app's manifest with 'agent' in its `write` list, the list that gates creates. If `key` matches a row the collection's `read` list does not reach for you, the answer is row_not_found rather than the row, matching what get_row would say, so this verb never reads past `read`. Returns { row, deduped? }.",
     inputSchema: upsertRowShape,
     annotations: {
       title: "Upsert Row",

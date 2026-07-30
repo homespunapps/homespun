@@ -107,7 +107,7 @@ To keep the tool list compact (a flat 50+ tools would bloat client context and d
 | `deploy_app` | Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL. Omit `app_id` to create, pass it to redeploy in place (same URL, same data, same members). Takes `html` or `html_path`, optional `assets`, `visibility`, `slug`, `dry_run`, `force`. |
 | `list_rows` | List rows in a collection. Doubles as the poll for a collection's current state: pass the prior `next_cursor` as `since`. |
 | `get_row` | Fetch one row by `key` (a dedicated relay route, not a client-side scan). |
-| `upsert_row` | Create a row, or return the existing one if `key` is already present (`deduped: true`). The only create-shaped verb. |
+| `upsert_row` | Create a row, or return the existing one if `key` is already present (`deduped: true`), or `row_not_found` when the collection's `read` list does not reach that row for you. The only create-shaped verb. |
 | `update_row` | Replace an existing row's `data`. Optional `if_match` optimistic lock. |
 | `delete_row` | Soft-delete a row. Optional `if_match`. |
 | `get_feed_events` | Poll the app's change feed for row creates/updates/deletes from any writer, human or agent. Optional `wait` (0-30s) long-poll. |

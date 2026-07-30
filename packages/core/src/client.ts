@@ -1336,6 +1336,11 @@ export class HomespunClient {
    * existing row when `key` collides — `deduped: true`). §8 ruling 4: this is
    * the ONLY create-shaped verb — there is no strict create that errors on
    * an existing key.
+   *
+   * A collision on a row the collection's `read` list does not reach for this
+   * caller answers `row_not_found` (404) rather than the row, exactly as a get
+   * on that key would, so the create door never returns a body the read door
+   * would have withheld.
    */
   async upsertAppRow(
     appId: string,
