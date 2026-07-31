@@ -194,7 +194,7 @@ const DATA: NounSpec = {
   tagline: "collection row CRUD for an app",
   group: "app",
   rootSummary:
-    "Collection row CRUD for an app: list, get, upsert, update, delete, purge, import, plus retention (owner override).",
+    "Collection row CRUD for an app: list, get, upsert, update, delete, restore, deleted, purge, import, plus retention (owner override).",
   // The data parser is verb-LAST: `homespun data <app> <collection> <verb>`
   // (see commands/data.ts, which reads the verb from positionals[2]). Every
   // other noun is verb-first. Each verb below carries only the positionals that
@@ -286,6 +286,29 @@ const DATA: NounSpec = {
       bools: [{ name: "yes", description: "Skip the confirmation prompt" }],
     },
     {
+      verb: "restore",
+      summary: "Restores a soft-deleted row. Owner and agent only.",
+      flags: [
+        {
+          name: "key",
+          value: "<key>",
+          description: "Key of the deleted row to restore (required)",
+        },
+      ],
+    },
+    {
+      verb: "deleted",
+      summary: "Lists recoverable deleted rows. Owner and agent only.",
+      flags: [
+        { name: "limit", value: "<n>", description: "Max rows (default 100)" },
+        {
+          name: "before",
+          value: "<iso>",
+          description: "Page cursor: the previous page's next_before",
+        },
+      ],
+    },
+    {
       verb: "purge",
       summary: "Removes one row even from an append-only collection.",
       flags: [
@@ -368,7 +391,7 @@ const DATA: NounSpec = {
   notes: [
     "<app> accepts either the app_id or its slug. upsert is the ONLY create-shaped verb: omit --key to add a new row (the server generates the key); pass --key to ensure a row exists at that key (returns the existing row with deduped:true on a collision). A collision on a row the collection's read list does not reach for you is row_not_found (404) instead of the row, the same answer a get on that key gives, so upsert cannot read past read. Pass --on <field> to upsert on a manifest-declared UNIQUE field instead of the key: the row whose <field> value matches is updated in place (idempotent re-import), else created.",
     "list --where takes a JSON array of {field, op, value} conditions (ANDed), op one of eq, neq, in, notIn, gt, lt, gte, lte (in and notIn take an array value). --sort takes a JSON array of {field, dir} (dir asc or desc). Filtering is applied AFTER the read permission and author scoping, so a filtered list is always a subset of what you could already read. Comparisons are same-type only (no coercion); dates compare as ISO-8601 strings. A custom --sort cannot be combined with --since.",
-    "purge removes ONE row by --key even in an append-only collection. Owner and agent only (never members or anyone); it bypasses append-only and the collection delete list on purpose, and writes an audited delete feed entry.",
+    "delete is RECOVERABLE: it tombstones the row, `deleted` lists what can still be brought back, and `restore` brings one back for 30 days. purge is the permanent one: it removes ONE row by --key even in an append-only collection, scrubs its contents immediately, and cannot be restored. Both are owner and agent only (never members or anyone); purge bypasses append-only and the collection delete list on purpose, and both write an audited delete feed entry.",
     "import reads NDJSON (one JSON object per line) OR a JSON array from --file and bulk-writes it in chunks via the batch API, in ONE process. Each object is a row's data. Pass --key-field to derive the row key from a field: an existing row at that key is LEFT UNCHANGED, so this is create-or-skip-by-id, not overwrite, and re-importing changed data for a known key does not update it. A skipped row is reported as a per-row row_not_found rather than an ok when the collection's read list does not reach that row for you (the row is still left unchanged); list 'agent' in read if you want the skip reported as a success. Import DEFAULTS TO SILENT (it suppresses notify and webhooks, since a bulk import is a migration); pass --emit-effects to fire them. A per-row failure is listed in the summary WITHOUT aborting the import.",
     "retention is an OWNER control: the author declares default retention in the manifest, and this tightens or loosens it per collection at runtime WITHOUT a redeploy. Effective retention is per-axis override-or-author-default: --max-rows/--max-age-days set an axis override, --clear-rows/--clear-age revert an axis to the author default, and with no flag (or --show) it just reads. The response reports the effective bounds, the author default, the override, and wouldPrune (how many live rows the effective bound would prune on the next sweep). The override survives redeploys and effective maxRows is capped at MAX_ROWS_PER_APP.",
   ],
@@ -1188,7 +1211,7 @@ const TEMPLATE: NounSpec = {
   tagline: "community marketplace templates",
   group: "other",
   rootSummary:
-    "Community marketplace templates: publish an owned app, read a template's config-contract, install one, and the operator review queue (list-pending, show, approve, reject).",
+    "Community marketplace templates: publish an owned app, unpublish your own listing, read a template's config-contract, install one, and the operator review queue (list-pending, show, approve, reject).",
   verbs: [
     {
       verb: "publish",
@@ -1249,6 +1272,11 @@ const TEMPLATE: NounSpec = {
       ],
     },
     {
+      verb: "unpublish",
+      positionals: "<snapshot-id>",
+      summary: "Takes your own live listing out of the public gallery.",
+    },
+    {
       verb: "config-contract",
       positionals: "<ref>",
       summary: "Shows a template's install-time config contract.",
@@ -1299,6 +1327,7 @@ const TEMPLATE: NounSpec = {
   notes: [
     "A template <ref> is a namespaced <handle>/<slug> or a community snapshot id, passed straight to the relay. publish resolves <app> by id or slug, the same way apps and data do.",
     "publish, config-contract, and install act as the calling agent's owning human. Install always creates a new owned app and returns its id, slug, and url; use config-contract first to discover what config an install needs.",
+    "unpublish takes one of YOUR OWN live listings down: it leaves the public gallery, search, and the direct snapshot install link. Existing installs keep working, because an install is a fresh private copy and not a live reference. It is idempotent, and it reports not_found for a snapshot that is not yours. Republish a new version to put a listing back.",
     "list-pending, show, approve, and reject drive the operator review queue and are operator-gated server-side. reject requires --note, which is delivered to the publisher's app feed.",
   ],
 };

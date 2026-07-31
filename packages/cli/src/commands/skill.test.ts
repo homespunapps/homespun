@@ -63,10 +63,9 @@ afterEach(() => {
 
 function stubFetch(
   res:
-    | { status: number; ok?: boolean; body?: string; json?: unknown }
-    | "throw",
+    { status: number; ok?: boolean; body?: string; json?: unknown } | "throw",
 ): void {
-  // Replace global fetch (Node 20+ has it; tests run on Node 20+).
+  // Replace global fetch (built into every Node the engines field allows).
   // @ts-expect-error — overriding the global for test scope.
   globalThis.fetch = async (
     url: string,
@@ -115,8 +114,7 @@ describe("runSkill", () => {
     stubFetch({ status: 200, body: "ok\n" });
     await run(["show"]);
     const headers = lastFetchInit?.headers as
-      | Record<string, string>
-      | undefined;
+      Record<string, string> | undefined;
     expect(headers?.["x-homespun-cli-version"]).toBe("9.9.9");
   });
 
@@ -190,8 +188,7 @@ describe("runSkill — version subcommand", () => {
     stubFetch({ status: 200, body: JSON.stringify({ version: "1.0.0" }) });
     await run(["version"]);
     const headers = lastFetchInit?.headers as
-      | Record<string, string>
-      | undefined;
+      Record<string, string> | undefined;
     expect(headers?.["x-homespun-cli-version"]).toBe("9.9.9");
   });
 

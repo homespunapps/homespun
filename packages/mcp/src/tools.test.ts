@@ -25,7 +25,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HomespunApiError } from "@homespunapps/core";
-import { TOOLS } from "./tools.js";
+import {
+  TOOLS,
+  runTool,
+  toolErrorCode,
+  type ToolCallReport,
+  type ToolEnv,
+} from "./tools.js";
 
 /** Find a tool by name (throws if absent — keeps the tests honest). */
 function tool(name: string) {
@@ -50,6 +56,8 @@ const EXPECTED_TOOLS = [
   "upsert_row",
   "update_row",
   "delete_row",
+  "restore_row",
+  "list_deleted_rows",
   "get_feed_events",
   // consolidated action-enum tools
   "apps",
@@ -108,10 +116,10 @@ describe("tool listing", () => {
     }
   });
 
-  it("registers exactly 20 tools", () => {
+  it("registers exactly 22 tools", () => {
     // Pinned so the directory-readiness annotation sweep can't silently lose or
     // duplicate a tool.
-    expect(TOOLS).toHaveLength(20);
+    expect(TOOLS).toHaveLength(22);
   });
 
   it("every tool carries a Title-Case title and behavioural hints", () => {
@@ -148,7 +156,13 @@ describe("tool listing", () => {
   });
 
   it("pure-read tools are readOnly and never destructive", () => {
-    const READ_ONLY = ["get_skill", "list_rows", "get_row", "get_feed_events"];
+    const READ_ONLY = [
+      "get_skill",
+      "list_rows",
+      "get_row",
+      "get_feed_events",
+      "list_deleted_rows",
+    ];
     for (const name of READ_ONLY) {
       const a = tool(name).annotations;
       expect(a.readOnlyHint, name).toBe(true);
@@ -168,7 +182,10 @@ describe("tool listing", () => {
   // exhaustiveness check below enforces that, so a new tool cannot be added
   // without landing in one of them on purpose.
   const DESTRUCTIVE = [
-    "delete_row", // removes the row
+    // Still destructive despite being recoverable: it removes the row from the
+    // app now, and a caller has to know to go and undo it. restore_row is the
+    // safety net, not a reason to downgrade the warning.
+    "delete_row", // removes the row (recoverable for 30 days via restore_row)
     "apps", // delete
     "members", // remove
     "grants", // revoke (kills a live capability URL)
@@ -177,15 +194,16 @@ describe("tool listing", () => {
     "taste", // clear
     "key", // revoke (irreversible, confirm-gated)
     "review", // remove
+    "community", // unpublish (takes a live listing out of the gallery)
   ];
 
   const ADDITIVE_WRITE = [
     "deploy_app", // new version; slug immutable, prior versions retained
     "upsert_row", // create-or-return-existing
     "update_row", // replaces one named row's data; the row survives
+    "restore_row", // brings a deleted row back; only ever adds
     "feedback", // create + list only
     "agent", // whoami | claim | logout, all reversible
-    "community", // publish | install | state-moving review actions
     "publisher", // claim | get | update on the caller's own profile
   ];
 
@@ -206,7 +224,13 @@ describe("tool listing", () => {
   });
 
   it("every tool is classified exactly once", () => {
-    const READ_ONLY = ["get_skill", "list_rows", "get_row", "get_feed_events"];
+    const READ_ONLY = [
+      "get_skill",
+      "list_rows",
+      "get_row",
+      "get_feed_events",
+      "list_deleted_rows",
+    ];
     const all = [...READ_ONLY, ...DESTRUCTIVE, ...ADDITIVE_WRITE].sort();
     expect(new Set(all).size, "a tool appears in two groups").toBe(all.length);
     expect(all).toEqual(TOOLS.map((t) => t.name).sort());
@@ -1541,5 +1565,172 @@ describe("community publish PII warning (marketplace PR 10)", () => {
       attestExampleOnly?: boolean;
     };
     expect(arg.attestExampleOnly).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runTool: per-call outcome reporting (issue #1287)
+//
+// A tool failure is `isError: true` inside an HTTP 200 JSON-RPC result, so a
+// host that just awaits tool.handler() cannot tell a failed deploy_app from a
+// successful one. runTool is the seam that reports (tool, outcome, code, ms)
+// without the host re-parsing the serialized JSON text.
+// ---------------------------------------------------------------------------
+
+describe("runTool outcome reporting", () => {
+  /** Collect every report a run produces. */
+  function sink(): { reports: ToolCallReport[]; env: ToolEnv } {
+    const reports: ToolCallReport[] = [];
+    return {
+      reports,
+      env: { onToolResult: (r) => reports.push(r) },
+    };
+  }
+
+  it("reports ok for a handler that returns a normal result", async () => {
+    const { reports, env } = sink();
+    const client = fakeClient({
+      listAppRows: vi.fn().mockResolvedValue({ rows: [], has_more: false }),
+    });
+    const result = await runTool(
+      tool("list_rows"),
+      client,
+      { app_id: "a", collection: "c" },
+      env,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ tool: "list_rows", outcome: "ok" });
+    expect(reports[0]!.errorCode).toBeUndefined();
+    expect(typeof reports[0]!.ms).toBe("number");
+  });
+
+  it("reports the relay's structured code for a HomespunApiError", async () => {
+    const { reports, env } = sink();
+    const client = fakeClient({
+      listAppRows: vi
+        .fn()
+        .mockRejectedValue(new HomespunApiError(404, "not_found", "nope")),
+    });
+    const result = await runTool(
+      tool("list_rows"),
+      client,
+      { app_id: "a", collection: "c" },
+      env,
+    );
+    expect(result.isError).toBe(true);
+    expect(reports[0]).toMatchObject({
+      tool: "list_rows",
+      outcome: "error",
+      errorCode: "not_found",
+    });
+  });
+
+  it("reports internal for a non-ApiError throw inside the handler", async () => {
+    const { reports, env } = sink();
+    const client = fakeClient({
+      listAppRows: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    await runTool(
+      tool("list_rows"),
+      client,
+      { app_id: "a", collection: "c" },
+      env,
+    );
+    expect(reports[0]).toMatchObject({
+      outcome: "error",
+      errorCode: "internal",
+    });
+  });
+
+  it("reports invalid_args for a handler-level argument rejection", async () => {
+    const { reports, env } = sink();
+    // hostFsReads:false is the hosted-relay setting; html_path is refused.
+    const result = await runTool(
+      tool("deploy_app"),
+      fakeClient({}),
+      { html_path: "/etc/passwd" },
+      { ...env, hostFsReads: false },
+    );
+    expect(result.isError).toBe(true);
+    expect(reports[0]).toMatchObject({
+      tool: "deploy_app",
+      outcome: "error",
+      errorCode: "invalid_args",
+    });
+  });
+
+  it("reports exception and rethrows when the handler itself throws", async () => {
+    const { reports, env } = sink();
+    const throwing = {
+      ...tool("list_rows"),
+      handler: () => {
+        throw new Error("handler blew up");
+      },
+    };
+    await expect(runTool(throwing, fakeClient({}), {}, env)).rejects.toThrow(
+      "handler blew up",
+    );
+    expect(reports[0]).toMatchObject({
+      tool: "list_rows",
+      outcome: "exception",
+      errorCode: "internal",
+    });
+  });
+
+  it("never changes the wire format: the error code is a hidden symbol", async () => {
+    const result = await tool("deploy_app").handler(
+      fakeClient({}),
+      { html_path: "/etc/passwd" },
+      { hostFsReads: false },
+    );
+    // Tagged for the host...
+    expect(toolErrorCode(result)).toBe("invalid_args");
+    // ...but invisible to every path that could put it on the wire.
+    expect(Object.keys(result)).toEqual(["content", "isError"]);
+    expect(JSON.parse(JSON.stringify(result))).toEqual({
+      content: result.content,
+      isError: true,
+    });
+    // Object.keys/JSON.stringify skip ALL symbol keys unconditionally, even
+    // an ENUMERABLE one, so the two assertions above would pass even if
+    // `tagErrorCode` mistakenly set `enumerable: true`. The property that
+    // actually depends on the enumerable flag is whether the symbol survives
+    // an object SPREAD: the SDK's task-result path (shared/protocol.js) does
+    // `{...result}` when relaying a task result, so a spread copy is a real
+    // path a future SDK version could take on the non-task path too. Assert
+    // that directly, since it is the one thing a regression here would
+    // actually change.
+    expect(Object.getOwnPropertySymbols(result)).toHaveLength(1);
+    expect(Object.getOwnPropertySymbols({ ...result })).toHaveLength(0);
+  });
+
+  it("is a no-op without an onToolResult hook (the stdio path)", async () => {
+    const client = fakeClient({
+      listAppRows: vi.fn().mockResolvedValue({ rows: [] }),
+    });
+    const result = await runTool(tool("list_rows"), client, {
+      app_id: "a",
+      collection: "c",
+    });
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("survives a throwing onToolResult hook", async () => {
+    const client = fakeClient({
+      listAppRows: vi.fn().mockResolvedValue({ rows: [] }),
+    });
+    await expect(
+      runTool(
+        tool("list_rows"),
+        client,
+        { app_id: "a", collection: "c" },
+        {
+          onToolResult: () => {
+            throw new Error("telemetry is broken");
+          },
+        },
+      ),
+    ).resolves.toBeTruthy();
   });
 });

@@ -55,6 +55,118 @@ export interface ToolResult {
 }
 
 /**
+ * Where errorResult()/invalidArgs() stash the STRUCTURED error code they
+ * already computed, so a host can report it without re-parsing the serialized
+ * JSON text back out of `content[0].text` (issue #1287).
+ *
+ * A Symbol, set non-enumerable, on purpose: it is invisible to
+ * JSON.stringify, to `{...result}`, to Object.keys, and to the MCP SDK's Zod
+ * passthrough copy — so tagging cannot change a single byte on the wire. Only
+ * runTool() below (and toolErrorCode(), for tests) ever reads it.
+ *
+ * Tagging the returned OBJECT rather than threading `env` through all 100-odd
+ * errorResult()/invalidArgs() call sites keeps this a ~10-line change, and it
+ * attributes the code to the result actually returned rather than to whatever
+ * an async scope happened to see last.
+ */
+const TOOL_ERROR_CODE = Symbol("homespun.toolErrorCode");
+
+/** Tag a result with its structured error code and return it unchanged. */
+function tagErrorCode(result: ToolResult, code: string): ToolResult {
+  Object.defineProperty(result, TOOL_ERROR_CODE, {
+    value: code,
+    enumerable: false,
+    writable: false,
+    configurable: true,
+  });
+  return result;
+}
+
+/**
+ * Read the structured error code off a ToolResult produced by
+ * errorResult()/invalidArgs(). Undefined for a success, and for an `isError`
+ * result built by hand somewhere else.
+ */
+export function toolErrorCode(result: ToolResult): string | undefined {
+  const code = (result as unknown as Record<symbol, unknown>)[TOOL_ERROR_CODE];
+  return typeof code === "string" ? code : undefined;
+}
+
+/** Outcome of one tool invocation, as reported to {@link ToolEnv.onToolResult}. */
+export interface ToolCallReport {
+  /** Registered tool name (a bounded set — safe as a metric label). */
+  tool: string;
+  /**
+   * `ok`        — handler returned without `isError`.
+   * `error`     — handler returned a structured `isError` result.
+   * `exception` — handler THREW. Always a bug: every handler is meant to
+   *               catch and return errorResult().
+   */
+  outcome: "ok" | "error" | "exception";
+  /**
+   * Structured code for a failure: the relay's ApiError code for a
+   * HomespunApiError, "invalid_args" for a rejected argument, "internal" for a
+   * bare throw. Undefined on success, and on an `isError` result that carries
+   * no tag.
+   */
+  errorCode?: string;
+  /** Wall-clock milliseconds the handler took. */
+  ms: number;
+}
+
+/**
+ * Invoke a tool handler and report its outcome to `env.onToolResult`.
+ *
+ * The seam that makes remote MCP calls observable (issue #1287): a tool
+ * failure is an `isError` result inside an HTTP 200, so a host that just
+ * awaits `tool.handler(...)` cannot tell a failed deploy_app from a successful
+ * one. This times the call, catches a throw, and reads the structured error
+ * code off the returned result.
+ *
+ * Transport-agnostic by construction: `onToolResult` is optional, so the stdio
+ * CLI server can keep calling `tool.handler` directly (or adopt this and opt
+ * in later) with no behaviour change. The handler's result — or its thrown
+ * error — is passed through untouched.
+ */
+export async function runTool(
+  tool: ToolDef,
+  client: HomespunClient,
+  args: Record<string, unknown>,
+  env?: ToolEnv,
+): Promise<ToolResult> {
+  const started = Date.now();
+  let result: ToolResult;
+  try {
+    result = await tool.handler(client, args, env);
+  } catch (e) {
+    report(env, {
+      tool: tool.name,
+      outcome: "exception",
+      errorCode: "internal",
+      ms: Date.now() - started,
+    });
+    throw e;
+  }
+  report(env, {
+    tool: tool.name,
+    outcome: result.isError === true ? "error" : "ok",
+    errorCode: result.isError === true ? toolErrorCode(result) : undefined,
+    ms: Date.now() - started,
+  });
+  return result;
+}
+
+/** Fire the reporting callback; telemetry must never break a tool call. */
+function report(env: ToolEnv | undefined, r: ToolCallReport): void {
+  if (!env?.onToolResult) return;
+  try {
+    env.onToolResult(r);
+  } catch {
+    // Swallow: a broken observability hook must not fail the tool.
+  }
+}
+
+/**
  * Host-supplied capabilities for the handful of tools that aren't pure
  * HomespunClient wrappers. The stdio server leaves this undefined and the
  * handlers fall back to the CLI config store + a network skill fetch; the
@@ -91,6 +203,17 @@ export interface ToolEnv {
    * e.g. deploy_app html_path=/app/.env.
    */
   hostFsReads?: boolean;
+  /**
+   * Optional per-call observability hook, fired by {@link runTool} once the
+   * handler settles (issue #1287). The hosted relay uses it to log the tool
+   * name, outcome and structured error code, and to tick its
+   * homespun_mcp_tool_calls_total counter — none of which is recoverable from
+   * the HTTP 200 the transport returns for a failed call.
+   *
+   * NEVER hand this the arguments or the result body: they carry user app
+   * content. The report is deliberately just (tool, outcome, code, duration).
+   */
+  onToolResult?: (report: ToolCallReport) => void;
 }
 
 /** One registered tool: name, human/LLM description, Zod input shape, handler. */
@@ -147,21 +270,27 @@ function errorResult(e: unknown): ToolResult {
     if (e.hint) payload["hint"] = e.hint;
     if (e.details !== undefined) payload["details"] = e.details;
     if (e.retryable !== undefined) payload["retryable"] = e.retryable;
-    return {
-      content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-      isError: true,
-    };
+    return tagErrorCode(
+      {
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        isError: true,
+      },
+      e.code,
+    );
   }
   const message = e instanceof Error ? e.message : String(e);
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({ error: "internal", message }, null, 2),
-      },
-    ],
-    isError: true,
-  };
+  return tagErrorCode(
+    {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: "internal", message }, null, 2),
+        },
+      ],
+      isError: true,
+    },
+    "internal",
+  );
 }
 
 /**
@@ -169,15 +298,18 @@ function errorResult(e: unknown): ToolResult {
  * consolidated tools. Mirrors the relay's envelope so the model self-corrects.
  */
 function invalidArgs(message: string): ToolResult {
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({ error: "invalid_args", message }, null, 2),
-      },
-    ],
-    isError: true,
-  };
+  return tagErrorCode(
+    {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: "invalid_args", message }, null, 2),
+        },
+      ],
+      isError: true,
+    },
+    "invalid_args",
+  );
 }
 
 /** Read a required string arg; returns undefined when absent/empty. */
@@ -421,6 +553,28 @@ const deleteRowShape = {
     .int()
     .optional()
     .describe("Optional optimistic-lock version."),
+};
+
+const restoreRowShape = {
+  app_id: z.string().min(1).describe("The app id."),
+  collection: z.string().min(1).describe("The collection name."),
+  key: z.string().min(1).describe("The key of the deleted row to restore."),
+};
+
+const listDeletedRowsShape = {
+  app_id: z.string().min(1).describe("The app id."),
+  collection: z.string().min(1).describe("The collection name."),
+  limit: z
+    .number()
+    .int()
+    .optional()
+    .describe("Max rows to return (default 100)."),
+  before: z
+    .string()
+    .optional()
+    .describe(
+      "Cursor for the next page: pass back the previous page's next_before.",
+    ),
 };
 
 const getFeedEventsShape = {
@@ -798,6 +952,7 @@ const communityShape = {
   action: z
     .enum([
       "publish",
+      "unpublish",
       "get_config_contract",
       "install",
       "list_pending",
@@ -807,7 +962,7 @@ const communityShape = {
       "set_trust_level",
     ])
     .describe(
-      "publish: publish one of YOUR apps as a community template (app_id; optional title/description/category/tags). PRIVACY: publishing makes the template content AND the captured seed rows (the LIVE rows of every seedOnInstall collection, captured at publish time) PUBLIC to every platform user once approved. Do NOT publish an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private): seed data must be example-only. Pass attest_example_only:true to attest you have checked this. The capture (html + manifest + seed rows) lands PENDING review, installable by its returned direct link but not listed until approved; an ESTABLISHED publisher is fast-tracked (the response's expedited/auto_approved tell you which). get_config_contract: read a template's install-time config contract by `ref` (a namespaced '<handle>/<slug>' or a snapshot id): its settings_collection, ordered config_steps (each with key/kind/required/secret/choices/default), and connect_steps (inbound hooks the app receives on). An 'upload' step wants a file; pre-upload it with the attachments tool (scope agent) and pass its attachment id. After installing a template with connect_steps, run the `ingest` tool's list action on the new app_id to read its freshly provisioned hook URLs, and wire each into the external service. install: install a template by `ref` for YOU (your owning human becomes the owner). Pass `config` as { stepKey: value } from the contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. A required step you omit is rejected. Returns the new app's id, slug, and url; installs always create a fresh private copy. list_pending / get_submission / approve / reject / set_trust_level are RELAY-OPERATOR-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows plus external_destinations, the hosts it can send data to or pull data from, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').",
+      "publish: publish one of YOUR apps as a community template (app_id; optional title/description/category/tags). PRIVACY: publishing makes the template content AND the captured seed rows (the LIVE rows of every seedOnInstall collection, captured at publish time) PUBLIC to every platform user once approved. Do NOT publish an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private): seed data must be example-only. Pass attest_example_only:true to attest you have checked this. The capture (html + manifest + seed rows) lands PENDING review, installable by its returned direct link but not listed until approved; an ESTABLISHED publisher is fast-tracked (the response's expedited/auto_approved tell you which). unpublish: take one of YOUR OWN published templates back down (snapshot_id). It removes the listing from the public gallery, from search, and from the direct snapshot install link. Existing installs keep working untouched, because an install is a fresh private copy rather than a live reference. It is idempotent (unpublishing an already-unpublished template is a no-op), and a snapshot that does not exist OR is not yours reads as not found either way. Publish a new version to put the listing back. get_config_contract: read a template's install-time config contract by `ref` (a namespaced '<handle>/<slug>' or a snapshot id): its settings_collection, ordered config_steps (each with key/kind/required/secret/choices/default), and connect_steps (inbound hooks the app receives on). An 'upload' step wants a file; pre-upload it with the attachments tool (scope agent) and pass its attachment id. After installing a template with connect_steps, run the `ingest` tool's list action on the new app_id to read its freshly provisioned hook URLs, and wire each into the external service. install: install a template by `ref` for YOU (your owning human becomes the owner). Pass `config` as { stepKey: value } from the contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. A required step you omit is rejected. Returns the new app's id, slug, and url; installs always create a fresh private copy. list_pending / get_submission / approve / reject / set_trust_level are RELAY-OPERATOR-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows plus external_destinations, the hosts it can send data to or pull data from, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').",
     ),
   ref: z
     .string()
@@ -940,7 +1095,7 @@ const communityShape = {
     .string()
     .optional()
     .describe(
-      "Required for get_submission/approve/reject. The submission's snapshot id (from publish's response or list_pending).",
+      "Required for get_submission/unpublish/approve/reject. The submission's snapshot id (from publish's response or list_pending).",
     ),
   note: z
     .string()
@@ -1149,10 +1304,7 @@ export const TOOLS: ToolDef[] = [
           }
           const slug = str(args, "slug");
           const visibility = args["visibility"] as
-            | "private"
-            | "link"
-            | "public"
-            | undefined;
+            "private" | "link" | "public" | undefined;
           if (slug !== undefined && visibility === "link") {
             return invalidArgs(
               "a `slug` is not allowed with visibility 'link' (link slugs are server-generated); drop visibility 'link', or omit slug",
@@ -1327,7 +1479,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "delete_row",
     description:
-      "Soft-delete a row from a v2 app's collection. A watcher sees the deletion live as op:delete on the change feed. Pass if_match for an optimistic-locked delete. Returns { deleted: true }.",
+      "Soft-delete a row from a v2 app's collection. RECOVERABLE: the row is tombstoned, not destroyed, and restore_row brings it back for 30 days (see list_deleted_rows). A watcher sees the deletion live as op:delete on the change feed. Pass if_match for an optimistic-locked delete. Returns { deleted: true }.",
     inputSchema: deleteRowShape,
     annotations: {
       title: "Delete Row",
@@ -1348,6 +1500,63 @@ export const TOOLS: ToolDef[] = [
             : {},
         );
         return jsonResult({ deleted: true, key: args["key"] });
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  },
+  {
+    name: "list_deleted_rows",
+    description:
+      "List a collection's recently deleted rows: the recovery bin. Deleting a row is a SOFT delete, so it can be restored with restore_row until recoverable_until passes (30 days after deletion by default). Owner or agent only, and deliberately independent of the collection's read permissions. Rows already purged appear with purged:true and cannot be restored. Returns { rows, next_before }.",
+    inputSchema: listDeletedRowsShape,
+    annotations: {
+      title: "List Deleted Rows",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    handler: async (client, args) => {
+      try {
+        const opts: { limit?: number; before?: string } = {};
+        if (args["limit"] !== undefined) opts.limit = args["limit"] as number;
+        if (args["before"] !== undefined) opts.before = String(args["before"]);
+        return jsonResult(
+          await client.listDeletedAppRows(
+            String(args["app_id"]),
+            String(args["collection"]),
+            opts,
+          ),
+        );
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  },
+  {
+    name: "restore_row",
+    description:
+      "Restore a soft-deleted row, undoing delete_row. The row comes back with its original data and creator, its version bumped. Find restorable keys with list_deleted_rows. Owner or agent only. Fails with restore_expired if the row was purged, or restore_conflict if another live row took a unique value this one held while it was deleted. Returns { row }.",
+    inputSchema: restoreRowShape,
+    annotations: {
+      title: "Restore Row",
+      readOnlyHint: false,
+      // Brings a row BACK. It writes, but it only ever adds; nothing is
+      // removed or overwritten, which is the opposite of destructive.
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    handler: async (client, args) => {
+      try {
+        return jsonResult(
+          await client.restoreAppRow(
+            String(args["app_id"]),
+            String(args["collection"]),
+            String(args["key"]),
+          ),
+        );
       } catch (e) {
         return errorResult(e);
       }
@@ -1430,9 +1639,7 @@ export const TOOLS: ToolDef[] = [
                 ...(args["visibility"] !== undefined
                   ? {
                       visibility: args["visibility"] as
-                        | "private"
-                        | "link"
-                        | "public",
+                        "private" | "link" | "public",
                     }
                   : {}),
                 ...(args["timezone"] !== undefined
@@ -2144,17 +2351,20 @@ export const TOOLS: ToolDef[] = [
   {
     name: "community",
     description:
-      "Publishing an app as a community template, installing a template, and, for relay operators, reviewing submissions. Actions: publish, get_config_contract, install, list_pending, get_submission, approve, reject, set_trust_level.\n\npublish captures a live app (html, manifest, the seed rows of its seedOnInstall collections, and listing metadata) into a pending template. It is installable by the returned direct link but is not listed in the public gallery until an operator approves it, and it requires a verified email and no more than a few pending submissions at once. Privacy consequence: an approved template's content and its captured seed rows become public to every platform user, so seed data in a published app must be example-only rather than real personal data. attest_example_only:true records that this was checked. A template may take a per-publisher `slug` (namespaced as <handle>/<slug>) and a semver `version` defaulting to 1.0.0, and a republish under the same slug must bump the version.\n\nget_config_contract reads what a template needs at install, meaning its settings collection and its ordered config and upload steps, by `ref`. install creates a fresh private copy of a template for the caller's owning human, passing answers as `config`, where a 'config' value is a string and an 'upload' value is a pre-uploaded attachment id from the attachments tool.\n\nThe review actions are limited to the relay's configured community reviewers: list_pending returns the queue; get_submission returns a submission's full content by snapshot_id; approve lists it in the gallery, where a re-publish supersedes the app's prior approved version; reject takes a required note that lands in the publisher's app feed.",
+      "Publishing an app as a community template, taking your own listing back down, installing a template, and, for relay operators, reviewing submissions. Actions: publish, unpublish, get_config_contract, install, list_pending, get_submission, approve, reject, set_trust_level.\n\npublish captures a live app (html, manifest, the seed rows of its seedOnInstall collections, and listing metadata) into a pending template. It is installable by the returned direct link but is not listed in the public gallery until an operator approves it, and it requires a verified email and no more than a few pending submissions at once. Privacy consequence: an approved template's content and its captured seed rows become public to every platform user, so seed data in a published app must be example-only rather than real personal data. attest_example_only:true records that this was checked. A template may take a per-publisher `slug` (namespaced as <handle>/<slug>) and a semver `version` defaulting to 1.0.0, and a republish under the same slug must bump the version.\n\nunpublish is the publisher's own undo for a live listing, taken down by snapshot_id: it leaves the public gallery, search, and the direct snapshot install link. It works only on your own submissions, and a snapshot that does not exist or belongs to someone else reads as not found either way. Existing installs are unaffected, because an install is a fresh private copy rather than a live reference, so unpublishing never breaks an app someone already installed. It is idempotent, and publishing a new version is the way to put the listing back.\n\nget_config_contract reads what a template needs at install, meaning its settings collection and its ordered config and upload steps, by `ref`. install creates a fresh private copy of a template for the caller's owning human, passing answers as `config`, where a 'config' value is a string and an 'upload' value is a pre-uploaded attachment id from the attachments tool.\n\nThe review actions are limited to the relay's configured community reviewers: list_pending returns the queue; get_submission returns a submission's full content by snapshot_id; approve lists it in the gallery, where a re-publish supersedes the app's prior approved version; reject takes a required note that lands in the publisher's app feed.",
     inputSchema: communityShape,
     // Consolidated tool: read actions (list_pending/get_submission) + mutating
-    // ones (publish/approve/reject). Hint reflects the most-privileged action.
+    // ones (publish/unpublish/approve/reject). Hint reflects the
+    // most-privileged action.
     annotations: {
       title: "Community Templates",
       readOnlyHint: false,
-      // publish | install | the operator review actions. `approve`, `reject`
-      // and `set_trust_level` move a submission between states; the
-      // submission itself survives every one of them.
-      destructiveHint: false,
+      // `approve`, `reject` and `set_trust_level` only move a submission
+      // between states and the submission itself survives every one of them,
+      // but `unpublish` REMOVES a live listing from the public gallery, from
+      // search, and from its direct install link. That is existing state
+      // going away, so the tool is destructive.
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -2187,6 +2397,15 @@ export const TOOLS: ToolDef[] = [
               }),
             );
           }
+          case "unpublish":
+            if (str(args, "snapshot_id") === undefined) {
+              return invalidArgs("unpublish requires `snapshot_id`");
+            }
+            return jsonResult(
+              await client.unpublishCommunityTemplate(
+                String(args["snapshot_id"]),
+              ),
+            );
           case "get_config_contract": {
             const ref = str(args, "ref");
             if (ref === undefined) {

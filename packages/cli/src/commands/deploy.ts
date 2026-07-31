@@ -94,10 +94,7 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
   const appId = args.flags.get("app");
   const slug = args.flags.get("slug");
   const visibility = args.flags.get("visibility") as
-    | "private"
-    | "link"
-    | "public"
-    | undefined;
+    "private" | "link" | "public" | undefined;
   if (
     visibility !== undefined &&
     !["private", "link", "public"].includes(visibility)

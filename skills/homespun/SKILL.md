@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.38 -->
+<!-- homespun skill v1.6.39 -->
 
 # homespun
 
@@ -1132,6 +1132,22 @@ Fields, exactly:
     agent), `owner` (the human who owns the app), `member` (a human invited
     as a collaborator), `anyone` (any authenticated-or-not visitor, subject
     to the app's visibility), plus three **row-scoped** subjects decided per
+    **`owner` does NOT include `agent`.** The two are separate subjects and
+    neither implies the other, so a list of `["owner"]` refuses YOU, the owning
+    agent, even though the human who owns the app is the human who owns you.
+    There is no role hierarchy and no inheritance: a caller matches a list only
+    by being named in it. **List every subject that should have the verb**, and
+    when the owner says "only I should be able to do this", ask whether they
+    mean only the human (`["owner"]`) or themselves and their tooling
+    (`["owner", "agent"]`). They usually mean the second. The same applies to
+    `member` and to any custom role you declare: you never hold them.
+
+    One exception worth knowing rather than relying on: `purge` and `restore`
+    are gated on owner-or-agent DIRECTLY, not on the collection's lists, so you
+    can always remove or bring back a row regardless of what `delete` says.
+    Do not treat that as a reason to omit `agent` from a `delete` list you
+    intend to use; use the honest verb.
+
     target row rather than carried by the caller: `creator` (created the row),
     `editor` (wrote the row last), and `author` (an older name for `editor`,
     still accepted, discouraged because the word reads like "creator" and does
@@ -1139,6 +1155,18 @@ Fields, exactly:
     rejected in `write` and `countRead`. **`creator` is the one to reach for**;
     see "Who may change a row" below for the full table and why the distinction
     is a security property, not a naming preference.
+- **Deleting is recoverable, purging is not.** `delete_row` writes a soft
+  tombstone: the row keeps its data, its creator and its history, and
+  `restore_row` brings it back with its version bumped. `list_deleted_rows` is
+  the recovery bin and reports a `recoverable_until` per row (30 days after the
+  delete by default). Both are owner-or-agent only and are independent of the
+  collection's permission lists. `purge` is the permanent verb: it scrubs the
+  row's contents immediately and `restore_row` refuses it. Two restore failures
+  are worth handling rather than retrying: `restore_conflict` (another live row
+  took a `unique` value this one held while it was deleted) and a quota refusal
+  (the app filled up after the delete released its slot). Both leave the row
+  tombstoned and still recoverable.
+
 - **`x-homespun-manifest.externalHosts`**: an array of `https://` origins
   (DNS name, optional single leftmost `*.` wildcard, no path/query/IP
   literal) the page's `fetch`/`XMLHttpRequest` is allowed to reach. This is
@@ -1890,9 +1918,9 @@ aggregate with `countRead` while keeping `read` locked down:
   "signups": {
     "schema": { "$ref": "#/$defs/Signup" },
     "write": ["anyone"],
-    "update": ["owner"],
-    "delete": ["owner"],
-    "read": ["owner"],
+    "update": ["owner", "agent"],
+    "delete": ["owner", "agent"],
+    "read": ["owner", "agent"],
     "countRead": ["anyone"]
   }
 }
@@ -2406,12 +2434,12 @@ homespun data grocery-list items delete milk --yes
 `homespun deploy --app`, and every `homespun apps` subcommand resolve a slug via a
 lookup automatically.
 
-**Raw REST envelopes (only if you skip the CLI and SDK and call the HTTP API
-directly).** The `homespun data` CLI and the browser `homespun.collections` SDK
-both hand you the row shape directly, but the underlying REST endpoints WRAP it,
-and a write and a list wrap it differently. If you call the API yourself, match
-these exactly. Reading the wrong key gives you `undefined`, and a loop that
-ignores that can silently drop every row it writes:
+**REST envelopes (these apply to `homespun data` too, not just raw HTTP).** The
+browser `homespun.collections` SDK hands you the row shape FLAT, but the REST
+endpoints WRAP it, and a write and a list wrap it differently. **`homespun data`
+prints the REST envelope unchanged**, so parse these shapes whether you call the
+API yourself or pipe the CLI into `jq`. Reading the wrong key gives you
+`undefined`, and a loop that ignores that can silently drop every row it writes:
 
 - `POST /v1/apps/:id/collections/:name` (create/upsert) returns
   `{ "row": { key, data, version, author, created_at, updated_at, deleted_at } }`
@@ -2424,9 +2452,11 @@ ignores that can silently drop every row it writes:
   written against the SDK shape reads `undefined` when pointed at the REST
   endpoint. Read `response.row`, not `response`.
 - `PATCH .../:key` (update) and `GET .../:key` (point read) also wrap the row as
-  `{ "row": {...} }`.
+  `{ "row": {...} }`. So `homespun data <app> <coll> get <key>` needs
+  `jq .row.data`, not `jq .data`.
 - `GET /v1/apps/:id/collections/:name` (list rows) returns
-  `{ "rows": [...], "next_cursor", "has_more" }`. The array key is **`rows`**.
+  `{ "rows": [...], "next_cursor", "has_more" }`. The array key is **`rows`**,
+  and `homespun data <app> <coll> list` prints exactly that.
 - `GET /v1/apps` (list apps) returns `{ "items": [...], "next_cursor" }`. The
   array key is **`items`**, not `rows`. The two list envelopes deliberately
   differ, so never assume one shape from the other.
@@ -2442,6 +2472,17 @@ homespun apps watch grocery-list --collection items          # filter to one col
 homespun apps watch grocery-list --since <cursor> --once      # replay + exit after one entry
 homespun apps watch grocery-list --timeout 300                # give up after 5 minutes
 ```
+
+Each line is one feed entry, and its keys are **not** the row's keys:
+
+```json
+{ "seq": 12, "op": "upsert", "collection_name": "items", "row_key": "milk",
+  "row_version": 2, "data": { "name": "Milk" }, "author": { "kind": "human", "id": "..." },
+  "ts": "2026-01-31T09:00:00.000Z" }
+```
+
+So filter on `.collection_name` and `.row_key`, not `.collection` or `.key`.
+`row_version` may be absent on an older relay, so treat it as optional.
 
 A dormancy transition mid-watch prints a single `{"type":"_dormant"}` line
 and exits `0`. That's "the app went to sleep," not an error.
@@ -2477,12 +2518,13 @@ in a later `key list` made WITH it, and the owner can `key revoke` it like any
 other key.
 
 **Community templates over MCP, not the CLI.** Publishing an app as a community
-template, reading a template's install-time config contract, and installing a
-template into your own account all work through the `community` tool (MCP), not
-through a `homespun` CLI verb. The `homespun` CLI itself deploys and iterates one
-app at a time with `homespun deploy`; it has no publish/install subcommand, so
-don't tell a human those live as CLI commands. See "Community templates:
-configure and install" below for the install-time config contracts.
+template, taking your own listing back down, reading a template's install-time
+config contract, and installing a template into your own account all work
+through the `community` tool (MCP), not through a `homespun` CLI verb. The
+`homespun` CLI itself deploys and iterates one app at a time with
+`homespun deploy`; it has no publish/unpublish/install subcommand, so don't tell
+a human those live as CLI commands. See "Community templates: configure and
+install" below for the install-time config contracts and for unpublishing.
 
 ## Community templates: configure and install
 
@@ -2540,6 +2582,24 @@ image. It serves under your app's visibility gate.
   its gate. The response carries the new app's `app_id`, `slug`, and `url`.
 
 Installs are agent-key. Trials and "keep my trial" stay human-only web flows.
+
+### Taking your own listing down (unpublish)
+
+A publisher can retire a live listing at any time with `community` action
+`unpublish` and the `snapshot_id` from publish's response (or from the listing
+itself). It removes the template from the public gallery, from search, and from
+the direct snapshot install link, so nobody can install it again.
+
+**Existing installs are unaffected.** An install is a fresh private copy of the
+app, never a live reference to the template, so unpublishing cannot break an app
+someone already installed and cannot reach their data. Tell a worried human that
+plainly.
+
+It only ever touches YOUR OWN submissions: a snapshot that does not exist and a
+snapshot belonging to another publisher both come back as not found, on purpose.
+It is idempotent, so unpublishing an already-unpublished template just succeeds.
+There is no "republish this same snapshot" action; publish a new version under
+the same slug to put a listing back in the gallery.
 
 ### Receiving data from an external service (connect steps)
 

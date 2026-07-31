@@ -1,6 +1,6 @@
-// Tests for `homespun template` — drives real command dispatch (publish/
-// config-contract/install/list-pending/show/approve/reject) against a fake
-// client stubbed via vi.mock on ../config.js, mirroring members.test.ts.
+// Tests for `homespun template`: drives real command dispatch (publish/
+// unpublish/config-contract/install/list-pending/show/approve/reject) against a
+// fake client stubbed via vi.mock on ../config.js, mirroring members.test.ts.
 // Covers each verb calling the right SDK method with the right args, app-ref
 // resolution and JSON flag parsing on publish, the JSON --config on install,
 // reject's required --note, and a relay error surfaced via failFromError.
@@ -12,6 +12,7 @@ const fakeClient = {
   getApp: vi.fn(),
   listApps: vi.fn(),
   publishCommunityTemplate: vi.fn(),
+  unpublishCommunityTemplate: vi.fn(),
   getCommunityConfigContract: vi.fn(),
   installCommunityTemplate: vi.fn(),
   listCommunitySubmissions: vi.fn(),
@@ -124,6 +125,26 @@ describe("runTemplate dispatch", () => {
     expect(exitCode).toBe(1);
     expect(stderr).toContain("usage");
     expect(fakeClient.publishCommunityTemplate).not.toHaveBeenCalled();
+  });
+
+  // ----- unpublish ---------------------------------------------------------
+
+  it("unpublish takes the listing down by snapshot id", async () => {
+    fakeClient.unpublishCommunityTemplate.mockResolvedValue({
+      snapshot_id: "s1",
+      review_status: "unpublished",
+    });
+    await run(["unpublish", "s1"]);
+    expect(exitCode).toBeUndefined();
+    expect(fakeClient.unpublishCommunityTemplate).toHaveBeenCalledWith("s1");
+    expect(JSON.parse(stdout).review_status).toBe("unpublished");
+  });
+
+  it("unpublish requires the snapshot-id positional", async () => {
+    await run(["unpublish"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("usage");
+    expect(fakeClient.unpublishCommunityTemplate).not.toHaveBeenCalled();
   });
 
   // ----- config-contract ---------------------------------------------------

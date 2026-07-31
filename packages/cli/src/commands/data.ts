@@ -29,7 +29,7 @@ export async function runData(args: ParsedArgs): Promise<void> {
   }
   if (!appArg || !collection || !verb) {
     fail(
-      "usage: homespun data <app> <collection> <list|get|upsert|update|delete|purge|import|retention>",
+      "usage: homespun data <app> <collection> <list|get|upsert|update|delete|restore|deleted|purge|import|retention>",
       "invalid_args",
     );
   }
@@ -54,6 +54,10 @@ export async function runData(args: ParsedArgs): Promise<void> {
       return runUpdate(appArg!, collection!, sub);
     case "delete":
       return runDelete(appArg!, collection!, sub);
+    case "restore":
+      return runRestore(appArg!, collection!, sub);
+    case "deleted":
+      return runListDeleted(appArg!, collection!, sub);
     case "purge":
       return runPurge(appArg!, collection!, sub);
     case "import":
@@ -62,7 +66,7 @@ export async function runData(args: ParsedArgs): Promise<void> {
       return runRetention(appArg!, collection!, sub);
     default:
       fail(
-        `unknown verb '${verb}': homespun data <app> <collection> <list|get|upsert|update|delete|purge|import|retention>`,
+        `unknown verb '${verb}': homespun data <app> <collection> <list|get|upsert|update|delete|restore|deleted|purge|import|retention>`,
         "invalid_args",
       );
   }
@@ -252,6 +256,60 @@ async function runDelete(
       ...(ifMatch !== undefined ? { ifMatch } : {}),
     });
     printJson({ deleted: true, key });
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// `homespun data <app> <coll> restore --key <key>`: undo a delete. Owner/agent
+// only, and --key rather than a positional for the same reason purge uses one:
+// the verb reads deliberately at the call site.
+async function runRestore(
+  appArg: string,
+  collection: string,
+  args: ParsedArgs,
+): Promise<void> {
+  assertKnownFlags(args, ...specFor("data", "restore"));
+  const key = args.flags.get("key");
+  if (!key) {
+    fail(
+      "usage: homespun data <app> <collection> restore --key <key>",
+      "invalid_args",
+    );
+  }
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg);
+  try {
+    printJson(await client.restoreAppRow(appId, collection, key!));
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// `homespun data <app> <coll> deleted`: the recovery bin, newest deletion
+// first. Owner/agent only. Paged with --before, which takes the previous
+// page's `next_before`.
+async function runListDeleted(
+  appArg: string,
+  collection: string,
+  args: ParsedArgs,
+): Promise<void> {
+  assertKnownFlags(args, ...specFor("data", "deleted"));
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg);
+  const limitRaw = args.flags.get("limit");
+  const before = args.flags.get("before");
+  const opts: { limit?: number; before?: string } = {};
+  if (limitRaw !== undefined) {
+    const n = Number(limitRaw);
+    if (!Number.isInteger(n) || n < 1) {
+      fail("--limit must be a positive integer", "invalid_args");
+    }
+    opts.limit = n;
+  }
+  if (before !== undefined) opts.before = before;
+  try {
+    printJson(await client.listDeletedAppRows(appId, collection, opts));
   } catch (e) {
     failFromError(e);
   }

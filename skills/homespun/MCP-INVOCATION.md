@@ -1,4 +1,4 @@
-<!-- homespun skill v1.6.38 -->
+<!-- homespun skill v1.6.39 -->
 
 # homespun (MCP)
 
@@ -59,7 +59,7 @@ it. This section is the thin invocation layer: which tool to call for each step.
 | Inspect, mint or revoke your API key                | `key` (action: `list`/`mint`/`revoke`) |
 | Send product feedback to the relay operator         | `feedback` (action: `create`/`list`) |
 | Identity: whoami / claim / logout                   | `agent` (action: `whoami`/`claim`/`logout`) |
-| Publish or install a community template             | `community` (action: `publish`/`get_config_contract`/`install`/...) |
+| Publish, unpublish or install a community template  | `community` (action: `publish`/`unpublish`/`get_config_contract`/`install`/...) |
 | Manage your public publisher handle and profile     | `publisher` (action: `claim`/`get`/`update`) |
 | Rate, review or respond to community templates      | `review` (action: `create`/`respond`/`report`/`remove`/`unhold`) |
 | Re-read this guide, or just its version             | `get_skill` (unauthenticated) |

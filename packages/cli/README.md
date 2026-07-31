@@ -16,18 +16,22 @@ npx @homespunapps/cli <command>
 
 The binary is `homespun`.
 
-## Try it
+## Quickstart
 
-Register once, then `homespun demo` spins up a short-lived sample app on the hosted
-relay, opens it in your browser, and prints the structured event back in your
-terminal the moment you interact (the demo app is cleaned up on exit):
+Register once, then deploy:
 
 ```sh
 npx @homespunapps/cli agent register --name "my-agent"   # one-time, hosted relay
-npx @homespunapps/cli demo                               # Node 20+ — round-trip in ~60s
+npx @homespunapps/cli deploy ./my-app   # Node 20+, reads ./my-app/index.html + manifest.json
 ```
 
-Add `--no-open` on a headless / SSH box and it just prints the URL.
+`agent register` uses browser approval by default: it prints a link and a short
+code, you approve on any device, and the agent comes out already bound to your
+account and ready to deploy. See [Setup](#setup) for the direct-registration
+path and the one-time `agent claim` it needs.
+
+New apps are private by default: only you and the people you invite can open
+them. Pass `--visibility link` or `--visibility public` to share wider.
 
 ## Setup
 
@@ -53,41 +57,69 @@ Override per-invocation with `--url <url>` and `--api-key <key>`.
 
 ## Commands
 
-Uniform `homespun <noun> <verb> [options]`:
+Uniform `homespun <noun> <verb> [options]` (`data` takes its collection
+before the verb: `homespun data <app> <collection> <verb>`).
+
+App commands, each operating on a deployed app:
 
 ```
-homespun demo                      Zero-setup guided tour — see the round-trip live
-homespun agent register            Provision an agent API key (browser approval
-                                   by default; --no-device for direct) and save it
-homespun agent claim <code>        Bind this agent to a human via a one-shot code
-homespun agent logout              Clear the locally-saved URL + API key
-homespun create            Create an app — returns app_id, urls, tokens
-homespun show <id>         Non-blocking snapshot: metadata + event log
-homespun send <id>         Emit an agent event into an app
-homespun watch <id>        Stream an app's events as JSON-lines on stdout
-homespun delete <id>       Close / delete an app
-homespun template <verb>           Manage reusable, versioned templates
-homespun key list | revoke         Inspect or revoke your agent's API key
-homespun taste get | set | clear   Read / write / clear UI-taste notes
-homespun feedback create | list    Submit / list one-shot feedback to the operator
-homespun config show               Show the resolved relay config (no network call)
-homespun skill show | version      Fetch the relay's SKILL.md (or its version)
+homespun deploy [dir|file]  Create or redeploy an app (POST /v1/apps, or
+                            /v1/apps/:id/versions with --app)
+homespun apps <verb>        App lifecycle: list, show, update, share-link,
+                            delete, wake, domain, watch (the change feed as
+                            JSON-lines)
+homespun data <app> <collection> <verb>
+                            Collection row CRUD: list, get, upsert, update,
+                            delete, purge, import, retention
+homespun members <verb>     App membership: add, list, set-role, remove, roles
+homespun grants <verb>      Grant-link management: mint, list, revoke
+homespun ingest <verb>      Inbound catch-hook management: list, rotate,
+                            signing-secret, backfill
+```
+
+Other command groups:
+
+```
+homespun publisher <verb>  Your community publisher identity: claim, show,
+                           update, set-trust
+homespun template <verb>   Community marketplace templates: publish,
+                           unpublish, config-contract, install, list-pending,
+                           show, approve, reject
+homespun review <verb>     Community template reviews: create, respond,
+                           report, remove, unhold
+homespun key <verb>        Your agent's own API key: list, mint, revoke
+homespun taste <verb>      Your agent's UI taste notes: get, set, clear
+homespun feedback <verb>   One-shot feedback to the relay operator: create, list
+homespun attachment <verb> Binary attachments: upload, download, show, list,
+                           delete, token mint | revoke | list
+homespun agent <verb>      This agent's identity on the relay: register,
+                           claim, set-key, logout
+homespun config <verb>     CLI config and profile management: show, list,
+                           use, add, rm
+homespun skill <verb>      The relay's SKILL.md: show, version
 ```
 
 Run `homespun <noun> --help` for that noun's verbs, and
-`homespun <noun> <verb> --help` for verb-specific options.
+`homespun <noun> <verb> --help` for verb-specific options. The same table
+also drives the generated [CLI reference](https://docs.homespun.dev/agents/cli-reference/).
 
 ## Output
 
-stdout is machine-readable JSON. Errors go to stderr as
-`{"error":{"code","message"}}` with a non-zero exit.
+stdout is JSON. Errors go to stderr as `{"error":{"code","message"}}` with a
+non-zero exit. A deploy, then a read of the data it wrote back:
 
 ```sh
-SESSION=$(homespun create --template ./form.html --name "Quick poll" --event-schema ./q.json | jq -r .app_id)
-homespun watch "$SESSION" | jq 'select(.type == "human_response")'
+homespun deploy ./grocery-list
+# -> { app_id, slug, url, version, visibility: "private", created: true }
+
+homespun data grocery-list items upsert --data '{"name":"Milk","checked":false}'
+# -> { row: { key, data: { name: "Milk", checked: false }, version: 1, author, created_at, updated_at } }
+
+homespun data grocery-list items list
+# -> { rows: [...], next_cursor, has_more }
 ```
 
 ## Links
 
 - Docs: <https://docs.homespun.dev>
-- License: MIT
+- License: [MIT](LICENSE)

@@ -1,10 +1,11 @@
 // `homespun template` (issue #890) community marketplace templates: publish an
-// owned app as a pending template, read a template's install-time config
-// contract, install a template for the caller, and (operator) list/show/approve/
-// reject pending submissions. Publish/config-contract/install act AS the calling
-// agent's owning human; list-pending/show/approve/reject are operator-gated
-// server-side. A template <ref> is a namespaced <handle>/<slug> or a snapshot id,
-// passed straight to the SDK.
+// owned app as a pending template, unpublish your own live listing (#1299),
+// read a template's install-time config contract, install a template for the
+// caller, and (operator) list/show/approve/reject pending submissions.
+// Publish/unpublish/config-contract/install act AS the calling agent's owning
+// human; list-pending/show/approve/reject are operator-gated server-side. A
+// template <ref> is a namespaced <handle>/<slug> or a snapshot id, passed
+// straight to the SDK.
 
 import type { ParsedArgs } from "../argv.js";
 import { assertKnownFlags } from "../argv.js";
@@ -23,7 +24,7 @@ export async function runTemplate(args: ParsedArgs): Promise<void> {
   }
   if (verb === undefined) {
     fail(
-      "missing verb: homespun template <publish|config-contract|install|list-pending|show|approve|reject>",
+      "missing verb: homespun template <publish|unpublish|config-contract|install|list-pending|show|approve|reject>",
       "invalid_args",
     );
   }
@@ -40,6 +41,8 @@ export async function runTemplate(args: ParsedArgs): Promise<void> {
   switch (verb) {
     case "publish":
       return runPublish(sub);
+    case "unpublish":
+      return runUnpublish(sub);
     case "config-contract":
       return runConfigContract(sub);
     case "install":
@@ -54,7 +57,7 @@ export async function runTemplate(args: ParsedArgs): Promise<void> {
       return runReject(sub);
     default:
       fail(
-        `unknown verb '${verb}' (homespun template <publish|config-contract|install|list-pending|show|approve|reject>)`,
+        `unknown verb '${verb}' (homespun template <publish|unpublish|config-contract|install|list-pending|show|approve|reject>)`,
         "invalid_args",
       );
   }
@@ -127,6 +130,24 @@ async function runPublish(args: ParsedArgs): Promise<void> {
         ...(attestExampleOnly ? { attestExampleOnly: true } : {}),
       }),
     );
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// unpublish
+// ---------------------------------------------------------------------------
+
+async function runUnpublish(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("template", "unpublish"));
+  const snapshotId = args.positionals[0];
+  if (!snapshotId) {
+    fail("usage: homespun template unpublish <snapshot-id>", "invalid_args");
+  }
+  const client = makeClient(args);
+  try {
+    printJson(await client.unpublishCommunityTemplate(snapshotId!));
   } catch (e) {
     failFromError(e);
   }

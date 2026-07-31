@@ -687,3 +687,25 @@ describe("community install methods send the right path (#921)", () => {
     ]);
   });
 });
+
+describe("unpublishCommunityTemplate (#1299)", () => {
+  it("POSTs the submission unpublish path with no body and encodes the id", async () => {
+    const seen: { url: string; method?: string; body?: unknown }[] = [];
+    const c = clientWith(async (input, init) => {
+      seen.push({
+        url: String(input),
+        ...(init?.method !== undefined ? { method: init.method } : {}),
+        ...(init?.body !== undefined ? { body: init.body } : {}),
+      });
+      return res({ status: 200, body: JSON.stringify({ snapshot_id: "s1" }) });
+    });
+    await c.unpublishCommunityTemplate("cmrw5ukvw002w1qs5u61qd5xi");
+    await c.unpublishCommunityTemplate("a b/c");
+    expect(seen.map((s) => s.url)).toEqual([
+      "https://relay.test/v1/community/submissions/cmrw5ukvw002w1qs5u61qd5xi/unpublish",
+      "https://relay.test/v1/community/submissions/a%20b%2Fc/unpublish",
+    ]);
+    expect(seen[0]!.method).toBe("POST");
+    expect(seen[0]!.body).toBeUndefined();
+  });
+});

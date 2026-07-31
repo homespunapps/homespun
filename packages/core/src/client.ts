@@ -1395,6 +1395,49 @@ export class HomespunClient {
     if (!r.ok) this.fail(r);
   }
 
+  /**
+   * POST /v1/apps/:id/collections/:name/:key/restore: undo a soft delete.
+   *
+   * Owner/agent only, independent of the collection's permission lists. A row
+   * that was PURGED is not restorable (410 `restore_expired`), and a restore
+   * can legitimately fail on quota or on a unique value another live row took
+   * while this one was deleted (409 `restore_conflict`).
+   */
+  async restoreAppRow(
+    appId: string,
+    collection: string,
+    key: string,
+  ): Promise<{ row: AppRow }> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/collections/${encodeURIComponent(collection)}/${encodeURIComponent(key)}/restore`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ row: AppRow }>(r);
+  }
+
+  /**
+   * GET /v1/apps/:id/collections/:name/deleted: the recovery bin, newest
+   * deletion first. Owner/agent only. Page with `before`, passing back the
+   * previous page's `next_before`.
+   */
+  async listDeletedAppRows(
+    appId: string,
+    collection: string,
+    opts: { limit?: number; before?: string } = {},
+  ): Promise<DeletedAppRowsPage> {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.before !== undefined) q.set("before", opts.before);
+    const qs = q.toString();
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/collections/${encodeURIComponent(collection)}/deleted${qs ? `?${qs}` : ""}`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<DeletedAppRowsPage>(r);
+  }
+
   /** PATCH /v1/apps/:id/collections/:name/:key — optimistic-locked update. */
   async updateAppRow(
     appId: string,
@@ -1570,6 +1613,23 @@ export class HomespunClient {
       path,
       review.decision === "reject" ? { note: review.note } : undefined,
     );
+    if (!r.ok) this.fail(r);
+    return this.asObject<CommunitySubmissionDetail>(r);
+  }
+
+  /**
+   * POST /v1/community/submissions/:id/unpublish (publisher): take your own
+   * live listing down. It leaves the public gallery, search, and the direct
+   * snapshot install link; existing installs are untouched, because an install
+   * is a fresh private copy rather than a live reference. Idempotent, and 404
+   * when the snapshot does not exist OR is not yours (indistinguishable on
+   * purpose). Republish a new version to undo it.
+   */
+  async unpublishCommunityTemplate(
+    snapshotId: string,
+  ): Promise<CommunitySubmissionDetail> {
+    const path = `/v1/community/submissions/${encodeURIComponent(snapshotId)}/unpublish`;
+    const r = await this.call("POST", path);
     if (!r.ok) this.fail(r);
     return this.asObject<CommunitySubmissionDetail>(r);
   }
@@ -2115,8 +2175,7 @@ export interface AppRoleSummary {
  * immediately (existing Human) or an invite email was sent (no Human yet).
  */
 export type AddAppMemberResult =
-  | { member: AppMember }
-  | { ok: true; invited: string; expires_at: string };
+  { member: AppMember } | { ok: true; invited: string; expires_at: string };
 
 /** `POST /v1/apps/:id/grants` response. `grant_url` carries the raw link token
  * in its #g= fragment and is shown ONCE (it is never recoverable afterward). */
@@ -2155,6 +2214,28 @@ export interface AppRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+}
+
+/** One tombstoned row as the recovery bin reports it. */
+export interface DeletedAppRow {
+  key: string;
+  data: unknown;
+  version: number;
+  /** Who removed it. */
+  author: { kind: string; id: string };
+  /** Who created it; null on rows predating the creator columns. */
+  creator: { kind: string; id: string } | null;
+  created_at: string;
+  deleted_at: string;
+  /** When this row stops being recoverable. */
+  recoverable_until: string;
+  /** True once purged: contents already scrubbed, and restore refuses it. */
+  purged: boolean;
+}
+
+export interface DeletedAppRowsPage {
+  rows: DeletedAppRow[];
+  next_before: string | null;
 }
 
 export interface AppRowsPage {

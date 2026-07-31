@@ -77,8 +77,8 @@ export function validateIconEmoji(
     };
   }
 
-  // Count grapheme clusters. Intl.Segmenter is available in Node 20+ and all
-  // evergreen browsers (our targets); guard defensively anyway.
+  // Count grapheme clusters. Intl.Segmenter is available in every supported
+  // Node and all evergreen browsers (our targets); guard defensively anyway.
   let graphemeCount: number;
   if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
     const seg = new Intl.Segmenter("en", { granularity: "grapheme" });

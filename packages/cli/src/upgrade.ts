@@ -20,11 +20,7 @@ import { HomespunApiError } from "@homespunapps/core";
  * `"unknown"` and the upgrade message tells the human to handle it.
  */
 export type InstallMethod =
-  | "npm-global"
-  | "bun-global"
-  | "volta"
-  | "vendored"
-  | "unknown";
+  "npm-global" | "bun-global" | "volta" | "vendored" | "unknown";
 
 /**
  * Detection rules, ordered most-specific to least. Each rule looks at the

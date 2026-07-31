@@ -80,11 +80,7 @@ export async function runApps(args: ParsedArgs): Promise<void> {
 async function runList(args: ParsedArgs): Promise<void> {
   assertKnownFlags(args, ...specFor("apps", "list"));
   const status = args.flags.get("status") as
-    | "active"
-    | "dormant"
-    | "archived"
-    | "all"
-    | undefined;
+    "active" | "dormant" | "archived" | "all" | undefined;
   if (
     status !== undefined &&
     !["active", "dormant", "archived", "all"].includes(status)

@@ -125,7 +125,7 @@ To keep the tool list compact (a flat 50+ tools would bloat client context and d
 | `key` | `list` · `mint` · `revoke` |
 | `feedback` | `create` · `list` |
 | `agent` | `whoami` · `claim` · `logout` |
-| `community` | `publish` · `get_config_contract` · `install` · `list_pending` · `get_submission` · `approve` · `reject` · `set_trust_level` |
+| `community` | `publish` · `unpublish` · `get_config_contract` · `install` · `list_pending` · `get_submission` · `approve` · `reject` · `set_trust_level` |
 | `publisher` | `claim` · `get` · `update` |
 | `review` | `create` · `respond` · `report` · `remove` · `unhold` |
 
