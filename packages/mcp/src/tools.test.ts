@@ -734,6 +734,96 @@ describe("deploy_app tool", () => {
     });
   });
 
+  // Inherit on omit (#1272): a redeploy sends only what changed, and the tool
+  // must let it through rather than insisting on a full bundle.
+  it("redeploys with html alone, leaving the manifest to be inherited", async () => {
+    const redeployApp = vi
+      .fn()
+      .mockResolvedValue({ app_id: "app_1", version: 3, compat: "clean" });
+    const res = await tool("deploy_app").handler(fakeClient({ redeployApp }), {
+      app_id: "app_1",
+      html: "<html>v3</html>",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(redeployApp).toHaveBeenCalledWith("app_1", {
+      html: "<html>v3</html>",
+      manifest: undefined,
+      force: undefined,
+      assets: undefined,
+    });
+  });
+
+  it("redeploys with manifest alone, leaving the html to be inherited", async () => {
+    const redeployApp = vi
+      .fn()
+      .mockResolvedValue({ app_id: "app_1", version: 3, compat: "clean" });
+    const res = await tool("deploy_app").handler(fakeClient({ redeployApp }), {
+      app_id: "app_1",
+      manifest: { "x-homespun-manifest": { app: { name: "Same" } } },
+    });
+    expect(res.isError).toBeUndefined();
+    expect(redeployApp).toHaveBeenCalledWith("app_1", {
+      html: undefined,
+      manifest: { "x-homespun-manifest": { app: { name: "Same" } } },
+      force: undefined,
+      assets: undefined,
+    });
+  });
+
+  it("treats `manifest: null` as omitted rather than passing null through", async () => {
+    const redeployApp = vi
+      .fn()
+      .mockResolvedValue({ app_id: "app_1", version: 3, compat: "clean" });
+    await tool("deploy_app").handler(fakeClient({ redeployApp }), {
+      app_id: "app_1",
+      html: "<html>v3</html>",
+      manifest: null,
+    });
+    expect(redeployApp).toHaveBeenCalledWith("app_1", {
+      html: "<html>v3</html>",
+      manifest: undefined,
+      force: undefined,
+      assets: undefined,
+    });
+  });
+
+  it("refuses a redeploy that would change nothing, without a round trip", async () => {
+    const redeployApp = vi.fn();
+    const res = await tool("deploy_app").handler(fakeClient({ redeployApp }), {
+      app_id: "app_1",
+    });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0]!.text).error).toBe("invalid_args");
+    expect(redeployApp).not.toHaveBeenCalled();
+  });
+
+  it("`assets: []` counts as a change (it is the explicit clear)", async () => {
+    const redeployApp = vi
+      .fn()
+      .mockResolvedValue({ app_id: "app_1", version: 3, compat: "clean" });
+    const res = await tool("deploy_app").handler(fakeClient({ redeployApp }), {
+      app_id: "app_1",
+      assets: [],
+    });
+    expect(res.isError).toBeUndefined();
+    expect(redeployApp).toHaveBeenCalledWith("app_1", {
+      html: undefined,
+      manifest: undefined,
+      force: undefined,
+      assets: [],
+    });
+  });
+
+  it("still requires a manifest on create, which can inherit nothing", async () => {
+    const deployApp = vi.fn();
+    const res = await tool("deploy_app").handler(fakeClient({ deployApp }), {
+      html: "<html></html>",
+    });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0]!.text).error).toBe("invalid_args");
+    expect(deployApp).not.toHaveBeenCalled();
+  });
+
   it("rejects slug/visibility on redeploy", async () => {
     const redeployApp = vi.fn();
     const res = await tool("deploy_app").handler(fakeClient({ redeployApp }), {
@@ -1354,18 +1444,30 @@ describe("members tool actions", () => {
 });
 
 describe("v2 tool schema validation", () => {
-  it("deploy_app requires manifest; html is optional at the schema level (html/html_path enforced by the handler)", () => {
+  it("deploy_app html and manifest are both optional at the schema level (the handler enforces what each mode needs)", () => {
     const schema = z.object(tool("deploy_app").inputSchema);
-    // manifest is still required by the schema.
-    expect(schema.safeParse({ html: "<html></html>" }).success).toBe(false);
-    // html is now OPTIONAL at the schema level (an html_path-only call is valid
-    // to the SDK); the handler enforces "html or html_path".
+    // html is OPTIONAL at the schema level (an html_path-only call is valid to
+    // the SDK); the handler enforces "html or html_path" on create.
     expect(
       schema.safeParse({ manifest: {}, html_path: "/abs/index.html" }).success,
     ).toBe(true);
+    // manifest is optional too, since a redeploy inherits an omitted one
+    // (#1272). The handler still refuses a CREATE without it.
+    expect(schema.safeParse({ html: "<html></html>" }).success).toBe(true);
     expect(
       schema.safeParse({ html: "<html></html>", manifest: {} }).success,
     ).toBe(true);
+    // `manifest: null` is how several clients express "not sending this", so it
+    // must survive SDK-side validation and arrive as an omission, not an error.
+    const nulled = schema.safeParse({
+      app_id: "app_1",
+      html: "<html></html>",
+      manifest: null,
+    });
+    expect(nulled.success).toBe(true);
+    expect(
+      (nulled.data as Record<string, unknown>)["manifest"],
+    ).toBeUndefined();
   });
 
   it("get_feed_events caps wait at 30", () => {

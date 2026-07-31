@@ -12,15 +12,37 @@ import { fail, failFromError, printJson } from "../output.js";
 import { resolveJson } from "../input.js";
 import { resolveAppId } from "../resolve-app.js";
 
+// What this invocation is shipping. On a REDEPLOY either half may be absent,
+// and absent means "keep what is live" (issue #1272), so both are optional
+// here; the create path checks that it has both before it calls the relay.
 interface DeployBundle {
-  html: string;
-  manifest: unknown;
+  html?: string;
+  manifest?: unknown;
 }
 
 function readBundle(
-  source: string,
+  source: string | undefined,
   manifestFlag: string | undefined,
+  isRedeploy: boolean,
 ): DeployBundle {
+  // No source at all: only a redeploy can do this, and only to change the
+  // manifest alone (the live document is inherited).
+  if (source === undefined) {
+    if (!isRedeploy) {
+      fail(
+        "usage: homespun deploy <dir|file> [--app <id>] ...",
+        "invalid_args",
+      );
+    }
+    if (manifestFlag === undefined) {
+      fail(
+        "nothing to deploy: pass a directory or file, or --manifest <path|json> for a manifest-only redeploy",
+        "invalid_args",
+      );
+    }
+    return { manifest: resolveJson(manifestFlag!, "--manifest") };
+  }
+
   if (!existsSync(source)) {
     fail(`no such file or directory: ${source}`, "invalid_args");
   }
@@ -48,9 +70,16 @@ function readBundle(
       manifest: JSON.parse(readFileSync(manifestPath, "utf8")),
     };
   }
-  // Single-file escape hatch.
+  // Single-file escape hatch. A create must pair it with --manifest; a
+  // redeploy may omit --manifest, which keeps the live manifest.
   if (manifestFlag === undefined) {
-    fail("single-file deploy requires --manifest <path|json>", "invalid_args");
+    if (!isRedeploy) {
+      fail(
+        "single-file deploy requires --manifest <path|json>",
+        "invalid_args",
+      );
+    }
+    return { html: readFileSync(source, "utf8") };
   }
   return {
     html: readFileSync(source, "utf8"),
@@ -62,10 +91,6 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
   assertKnownFlags(args, ...specFor("deploy"));
 
   const source = args.positionals[0];
-  if (!source) {
-    fail("usage: homespun deploy <dir|file> [--app <id>] ...", "invalid_args");
-  }
-
   const appId = args.flags.get("app");
   const slug = args.flags.get("slug");
   const visibility = args.flags.get("visibility") as
@@ -82,7 +107,11 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
   const force = args.bools.has("force");
   const check = args.bools.has("check");
 
-  const bundle = readBundle(source!, args.flags.get("manifest"));
+  const bundle = readBundle(
+    source,
+    args.flags.get("manifest"),
+    appId !== undefined,
+  );
   const client = makeClient(args);
 
   // Dry run (--check): validate + report what a real deploy would do, persist
@@ -94,8 +123,8 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
         appId !== undefined ? await resolveAppId(client, appId) : undefined;
       const result = await client.checkDeploy({
         ...(id !== undefined ? { app_id: id } : {}),
-        html: bundle.html,
-        manifest: bundle.manifest,
+        ...(bundle.html !== undefined ? { html: bundle.html } : {}),
+        ...(bundle.manifest !== undefined ? { manifest: bundle.manifest } : {}),
         ...(force ? { force } : {}),
       });
       printJson(result);
@@ -115,8 +144,11 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
       );
     }
     try {
+      // readBundle guarantees both halves on the create path (a create can
+      // inherit nothing), so the non-null assertions are the type system
+      // catching up with a check that already ran.
       const out = await client.deployApp({
-        html: bundle.html,
+        html: bundle.html!,
         manifest: bundle.manifest,
         visibility,
         slug,
@@ -143,9 +175,13 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
   }
   const id = await resolveAppId(client, appId);
   try {
+    // Only what this invocation actually read is sent: an omitted html or
+    // manifest keeps what is live, so `homespun deploy ./index.html --app <id>`
+    // ships the document alone and `--manifest` with no file ships the
+    // manifest alone.
     const redeployed = await client.redeployApp(id, {
-      html: bundle.html,
-      manifest: bundle.manifest,
+      ...(bundle.html !== undefined ? { html: bundle.html } : {}),
+      ...(bundle.manifest !== undefined ? { manifest: bundle.manifest } : {}),
       force,
     });
     const app = await client.getApp(id);

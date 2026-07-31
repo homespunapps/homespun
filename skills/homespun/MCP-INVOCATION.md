@@ -1,4 +1,4 @@
-<!-- homespun skill v1.6.35 -->
+<!-- homespun skill v1.6.36 -->
 
 # homespun (MCP)
 
@@ -21,6 +21,15 @@ it. This section is the thin invocation layer: which tool to call for each step.
    either `html` (inline) or `html_path`. Omit `app_id` to create; pass `app_id`
    to redeploy the same app to the same URL. Add `dry_run: true` to validate the
    bundle without shipping it.
+   **On a redeploy, send only what changed.** Every content field is optional
+   once `app_id` is given, and an omitted one keeps what is live: omit
+   `manifest` for an HTML-only change, omit `html` for a manifest-only change,
+   omit `assets` to keep the current files. That is the whole saving, because an
+   omitted field costs no output tokens at all, so a one-line edit should never
+   resend the document and a manifest edit should never resend it either.
+   `assets: []` clears the asset set, and omitting all three is refused (there
+   would be nothing to change). A create requires both `html` and `manifest`:
+   there is nothing to inherit yet.
 2. **Give the URL to the owner**, and have them invite anyone else with
    **`members`** (`action: add`) or mint a link with **`grants`**.
 3. **Read and write the app's data** with `list_rows`, `get_row`, `upsert_row`,

@@ -698,7 +698,13 @@ export class HomespunClient {
     return this.asObject<DeployAppResponse>(r);
   }
 
-  /** POST /v1/apps/:id/versions — redeploy (compat-gated unless force). */
+  /**
+   * POST /v1/apps/:id/versions: redeploy (compat-gated unless force).
+   *
+   * An omitted field keeps what is live (html, manifest and assets alike), so
+   * send only what changes. Undefined fields are dropped by the JSON encoder,
+   * which is exactly the "omitted" the relay reads.
+   */
   async redeployApp(
     appId: string,
     req: RedeployAppRequest,
@@ -1813,15 +1819,26 @@ export interface DeployAppResponse {
   warnings?: string[];
 }
 
-/** Request body for `POST /v1/apps/:id/versions` — redeploy (compat-gated). */
+/**
+ * Request body for `POST /v1/apps/:id/versions`: redeploy (compat-gated).
+ *
+ * Every content field is optional, and an OMITTED one keeps what is live: the
+ * relay carries the current version's html / manifest / assets forward. Send
+ * only what changes. At least one of the three is required; a body that omits
+ * all three is refused as `invalid_args` rather than minting a no-op version.
+ */
 export interface RedeployAppRequest {
-  html: string;
-  manifest: unknown;
+  /** Omit to keep the live document (a manifest-only change needs no HTML). */
+  html?: string;
+  /** Omit to keep the live manifest (an HTML-only change needs no manifest). */
+  manifest?: unknown;
   /** Bypass the compat gate; a removed collection is detached, not deleted. */
   force?: boolean;
   /**
-   * Optional asset bundle for this version. Replaces the previous version's asset
-   * set atomically (the new version carries its own map; old assets are detached).
+   * Optional asset bundle for this version. Present, it replaces the previous
+   * version's asset set atomically (the new version carries its own map; old
+   * assets are detached). Omitted, the live asset set is carried forward; `[]`
+   * is the explicit "clear the assets".
    */
   assets?: AppAsset[];
 }
@@ -1873,8 +1890,10 @@ export interface DeployCheckResult {
  */
 export interface DeployCheckRequest {
   app_id?: string;
-  html: string;
-  manifest: unknown;
+  /** Required to check a create; omit on a redeploy check to inherit the live document. */
+  html?: string;
+  /** Required to check a create; omit on a redeploy check to inherit the live manifest. */
+  manifest?: unknown;
   force?: boolean;
   assets?: AppAsset[];
 }

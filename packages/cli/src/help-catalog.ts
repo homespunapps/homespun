@@ -892,7 +892,7 @@ const DEPLOY: NounSpec = {
   verbs: [
     {
       verb: "",
-      positionals: "<dir|file>",
+      positionals: "[dir|file]",
       summary:
         "Creates a new app, or redeploys an existing one when --app is given.",
       flags: [
@@ -933,7 +933,8 @@ const DEPLOY: NounSpec = {
   notes: [
     "Packaging has one canonical shape and one escape hatch. A directory deploy (homespun deploy ./my-app) reads ./my-app/index.html and ./my-app/manifest.json: fixed filenames, no discovery heuristics, and both files are required. The single-file escape hatch (homespun deploy ./index.html --manifest ./manifest.json) takes the manifest from --manifest, which accepts a file path or inline JSON.",
     "Create versus redeploy is decided by the presence of --app, not by two verbs. With no --app this creates an app (POST /v1/apps); new apps default to private (owner plus invited members, sign-in gated), --slug is accepted with private or public visibility including the default, and an explicit --visibility link always gets a server-generated slug and rejects --slug. With --app <id> this redeploys (POST /v1/apps/:id/versions), where --slug and --visibility are rejected because the slug is immutable and visibility changes go through 'homespun apps update'.",
-    "--check is a dry run. It runs the full manifest and asset-shape validation, the redeploy compat gate (with --app), and the schedule-timezone advisory, then prints { ok, warnings, compat, breaks } without creating a version or mutating anything. An invalid manifest fails the same way a real deploy would, and a redeploy the compat gate would refuse reports the break instead of applying it.",
+    "On redeploy, what you do not send is kept. 'homespun deploy ./index.html --app <id>' ships the document alone and keeps the live manifest; 'homespun deploy --app <id> --manifest ./manifest.json' ships the manifest alone and keeps the live document, with no file argument at all; a directory deploy still ships both. The live asset set is carried forward either way. A create can inherit nothing, so it still needs both halves.",
+    "--check is a dry run. It runs the full manifest and asset validation (shape and MIME), the redeploy compat gate (with --app), and the schedule-timezone advisory, then prints { ok, warnings, compat, breaks } without creating a version or mutating anything. An invalid manifest fails the same way a real deploy would, and a redeploy the compat gate would refuse reports the break instead of applying it. It resolves omitted fields exactly as a real redeploy would, so it reports on the deploy that would actually run.",
   ],
   outputNote:
     'Output is JSON: { app_id, slug, url, version, visibility, created, share_url, compat, breaks, warnings }. share_url is present only when creating a link-visibility app: it carries the app share token in its #k= fragment and is shown ONCE, it is not recoverable later, and it can be rotated with \'homespun apps share-link rotate <app>\'. warnings flags non-fatal issues, for example an app that declares schedules with no timezone set (reminders fire at 08:00 UTC until one is set). Errors go to stderr as {"error":{"code","message"}} with a non-zero exit.',

@@ -264,7 +264,7 @@ const deployAppShape = {
     .min(1)
     .optional()
     .describe(
-      "The app's UI as a complete HTML document (single file, up to the relay's size cap), sent inline. Provide either this or `html_path`. Inline is required for a hosted or remote connector that has no filesystem. If both are given, inline `html` wins.",
+      "The app's UI as a complete HTML document (single file, up to the relay's size cap), sent inline. Provide either this or `html_path`. Inline is required for a hosted or remote connector that has no filesystem. If both are given, inline `html` wins. ON REDEPLOY, omit it entirely to keep the live document: a manifest-only change (adding a collection, widening externalHosts) then costs nothing in HTML.",
     ),
   html_path: z
     .string()
@@ -279,9 +279,25 @@ const deployAppShape = {
       "Validate only: run the full manifest + asset-shape validation, the compat gate (for a redeploy), and the schedule-timezone advisory, then return { ok, warnings, compat?, breaks? } WITHOUT creating a version or mutating anything. An invalid manifest returns the SAME error a real deploy would; a redeploy the compat gate would refuse reports the break instead of applying it. `check` is an accepted alias.",
     ),
   check: z.boolean().optional().describe("Alias for `dry_run`."),
-  manifest: jsonObjectSchema.describe(
-    "The x-homespun-manifest capability document (a JSON object). Eight extension keys: app metadata; collections (+ per-collection write/update/read/delete role lists, where write gates creates and also updates unless the optional update list is declared); externalHosts (fetch allowlist); cdn (allow CDN scripts/styles); capabilities (Permissions-Policy opt-ins); embeds (iframe frame-src allowlist); notify (email-on-row rules); webhooks (signed HTTP POST on-row rules). Call get_skill for the full grammar before authoring one from scratch.",
-  ),
+  // Optional at the SCHEMA level because a redeploy inherits an omitted
+  // manifest (#1272); the handler still refuses a create without one.
+  //
+  // `z.preprocess` rather than `.nullish()` on purpose. MCP clients routinely
+  // send `manifest: null` instead of dropping the key, and the SDK validates
+  // arguments against this shape before the handler ever runs, so null has to
+  // be acceptable here. But `.nullish()` emits `anyOf:[{type:"object"},
+  // {type:"null"}]`, which loses the plain top-level `type: "object"` that
+  // stops a harness from stringifying the manifest (the reported bug the
+  // advertised-schema test guards). Preprocessing keeps the emitted schema
+  // exactly `type: "object"` AND turns a null into an omission.
+  manifest: z
+    .preprocess(
+      (v) => (v === null ? undefined : v),
+      jsonObjectSchema.optional(),
+    )
+    .describe(
+      "The x-homespun-manifest capability document (a JSON object). REQUIRED to create; ON REDEPLOY, omit it to keep the live manifest, which is what most redeploys want (the manifest was byte-identical to the previous version in 71% of real redeploys). Eight extension keys: app metadata; collections (+ per-collection write/update/read/delete role lists, where write gates creates and also updates unless the optional update list is declared); externalHosts (fetch allowlist); cdn (allow CDN scripts/styles); capabilities (Permissions-Policy opt-ins); embeds (iframe frame-src allowlist); notify (email-on-row rules); webhooks (signed HTTP POST on-row rules). Call get_skill for the full grammar before authoring one from scratch.",
+    ),
   visibility: z
     .enum(["private", "link", "public"])
     .optional()
@@ -335,7 +351,7 @@ const deployAppShape = {
     )
     .optional()
     .describe(
-      "Optional bundle of files shipped WITH the app in ONE deploy: images, fonts, audio/video, data. Each asset either carries its bytes inline as `content_base64` OR references an already-uploaded attachment by `attachment_id` (prefer the reference form for real images/media: upload once via `attachments fetch` or presign, then bind it here with NO base64 in the deploy body). Each asset is validated + stored app-scoped exactly like a normal attachment (byte-sniff, allowlist, size cap, quota, scan) and served at its `path` on the app's OWN origin, so the page references it by a stable same-origin path (`<img src=\"frames/000.jpg\">`, `<video src=\"media/intro.mp4\">`; media/font paths support HTTP Range). The whole deploy is rejected atomically if any asset fails validation. A redeploy's assets REPLACE the previous version's set. Bounded by the relay's per-deploy asset-count cap; total bytes by the per-app blob quota.",
+      'Optional bundle of files shipped WITH the app in ONE deploy: images, fonts, audio/video, data. Each asset either carries its bytes inline as `content_base64` OR references an already-uploaded attachment by `attachment_id` (prefer the reference form for real images/media: upload once via `attachments fetch` or presign, then bind it here with NO base64 in the deploy body). Each asset is validated + stored app-scoped exactly like a normal attachment (byte-sniff, allowlist, size cap, quota, scan) and served at its `path` on the app\'s OWN origin, so the page references it by a stable same-origin path (`<img src="frames/000.jpg">`, `<video src="media/intro.mp4">`; media/font paths support HTTP Range). The whole deploy is rejected atomically if any asset fails validation. ON REDEPLOY, assets you send REPLACE the previous version\'s set, omitting `assets` keeps the live set (no re-upload, no re-encoding), and `assets: []` is the explicit way to clear it. Bounded by the relay\'s per-deploy asset-count cap; total bytes by the per-app blob quota.',
     ),
 };
 
@@ -1062,7 +1078,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "deploy_app",
     description:
-      "Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL. The manifest carries eight extension keys: app metadata; collections, with per-collection write, update, read and delete role lists, where write gates creates and also gates updates unless an update list is declared; externalHosts, a fetch allowlist; cdn, to allow CDN scripts and styles; capabilities, for Permissions-Policy opt-ins; embeds, an iframe frame-src allowlist; notify, for email-on-row rules; and webhooks, for signed HTTP POST on-row rules. The manifest grammar is documented in the Homespun guide that get_skill returns.\n\nPass no `app_id` to create, which mints a slug and URL, or pass `app_id` to redeploy an existing app with new content. Supply the HTML inline as `html`, or as `html_path`, an absolute path read on the MCP-server host, which is the relay for a hosted connector or the CLI host for a locally-run one, and not the remote agent's machine; it avoids retransmitting a large HTML file on every deploy, only a locally-run connector can read it, and inline `html` wins if both are given. `dry_run:true` (alias `check`) validates only: it runs the full manifest and asset-shape validation, the redeploy compat gate and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } without creating a version or mutating anything.\n\nA redeploy is refused with manifest_incompatible_redeploy, unless force:true, when it would strand rows already written (dropping a collection, tightening a schema, flipping appendOnly), or when it would widen what the app's install screen discloses, such as a collection's read reaching further than the live manifest. The break quotes the sentence a user would now be asked to approve. Taking access away never prompts: dropping a role, or adding update:[\\\"creator\\\"] to a write:[\\\"anyone\\\"] collection, redeploys clean. A removed collection is detached rather than deleted.\n\nImages, fonts, audio, video and data files ship with the app in the same call via `assets[]`. Each is validated and stored app-scoped and served at its `path` on the app's own origin, so the HTML references it by a stable same-origin path such as `<img src=\\\"frames/000.jpg\\\">`; media and font paths support HTTP Range for seeking. A redeploy's assets replace the previous version's set.\n\nReturns { app_id, slug, url, version, visibility, created } on create, or { app_id, version, compat, breaks? } on redeploy.",
+      "Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL.\n\nON REDEPLOY, SEND ONLY WHAT CHANGES. Every content field is optional when `app_id` is given, and an omitted one keeps what is live: omit `manifest` for an HTML-only change, omit `html` for a manifest-only change, omit `assets` to keep the current files. This is the cheap path and it is the one to reach for by default, because the omitted field costs no output tokens at all: a one-line colour change should not resend the whole document, and a manifest edit should not resend it either. Send a field only when its content is different from what is live. `assets: []` is the explicit way to clear the asset set, and omitting all three is refused, since there would be nothing to change.\n\nThe manifest carries eight extension keys: app metadata; collections, with per-collection write, update, read and delete role lists, where write gates creates and also gates updates unless an update list is declared; externalHosts, a fetch allowlist; cdn, to allow CDN scripts and styles; capabilities, for Permissions-Policy opt-ins; embeds, an iframe frame-src allowlist; notify, for email-on-row rules; and webhooks, for signed HTTP POST on-row rules. The manifest grammar is documented in the Homespun guide that get_skill returns.\n\nPass no `app_id` to create, which mints a slug and URL and requires both `html` and `manifest`, or pass `app_id` to redeploy an existing app. Supply the HTML inline as `html`, or as `html_path`, an absolute path read on the MCP-server host, which is the relay for a hosted connector or the CLI host for a locally-run one, and not the remote agent's machine; it avoids retransmitting a large HTML file on every deploy, only a locally-run connector can read it, and inline `html` wins if both are given. `dry_run:true` (alias `check`) validates only: it runs the full manifest and asset validation, the redeploy compat gate and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } without creating a version or mutating anything, and it resolves omitted fields the same way a real deploy would, so it reports on exactly the deploy that would run.\n\nA redeploy is refused with manifest_incompatible_redeploy, unless force:true, when it would strand rows already written (dropping a collection, tightening a schema, flipping appendOnly), or when it would widen what the app's install screen discloses, such as a collection's read reaching further than the live manifest. The break quotes the sentence a user would now be asked to approve. Taking access away never prompts: dropping a role, or adding update:[\\\"creator\\\"] to a write:[\\\"anyone\\\"] collection, redeploys clean. A removed collection is detached rather than deleted.\n\nImages, fonts, audio, video and data files ship with the app in the same call via `assets[]`. Each is validated and stored app-scoped and served at its `path` on the app's own origin, so the HTML references it by a stable same-origin path such as `<img src=\\\"frames/000.jpg\\\">`; media and font paths support HTTP Range for seeking. A redeploy's assets replace the previous version's set when sent, carry over when omitted, and are cleared by `assets: []`.\n\nReturns { app_id, slug, url, version, visibility, created } on create, or { app_id, version, compat, breaks? } on redeploy.",
     inputSchema: deployAppShape,
     annotations: {
       title: "Deploy App",
@@ -1107,16 +1123,26 @@ export const TOOLS: ToolDef[] = [
         const dryRun = args["dry_run"] === true || args["check"] === true;
         const assets = args["assets"] as AppAsset[] | undefined;
         const appId = str(args, "app_id");
+        // `manifest: null` is how several MCP clients express "not sending
+        // this" rather than dropping the key, so it means the same as omitted
+        // here (the relay's resolver applies the same rule).
+        const manifestValue =
+          manifest.value === null ? undefined : manifest.value;
 
         if (appId === undefined) {
           if (html === undefined) {
             return invalidArgs("create requires `html` or `html_path`");
           }
+          if (manifestValue === undefined) {
+            return invalidArgs(
+              "create requires `manifest` (there is nothing to inherit on a first deploy; inherit-on-omit applies to a redeploy, which passes `app_id`)",
+            );
+          }
           if (dryRun) {
             return jsonResult(
               await client.checkDeploy({
                 html,
-                manifest: manifest.value,
+                manifest: manifestValue,
                 assets,
               }),
             );
@@ -1135,22 +1161,28 @@ export const TOOLS: ToolDef[] = [
           return jsonResult(
             await client.deployApp({
               html,
-              manifest: manifest.value,
+              manifest: manifestValue,
               visibility,
               slug,
               assets,
             }),
           );
         }
-        if (html === undefined) {
-          return invalidArgs("redeploy requires `html` or `html_path`");
+        // REDEPLOY. Nothing is required individually: an omitted html,
+        // manifest or assets keeps what is live (issue #1272). Only the empty
+        // body is refused, and locally, so the caller gets the reason rather
+        // than a round trip that says the same thing.
+        if (html === undefined && manifestValue === undefined && !assets) {
+          return invalidArgs(
+            "a redeploy must change something: send `html`, `manifest` or `assets` (an omitted field keeps what is live; `assets: []` clears the asset set)",
+          );
         }
         if (dryRun) {
           return jsonResult(
             await client.checkDeploy({
               app_id: appId,
               html,
-              manifest: manifest.value,
+              manifest: manifestValue,
               force: args["force"] as boolean | undefined,
               assets,
             }),
@@ -1163,7 +1195,7 @@ export const TOOLS: ToolDef[] = [
         }
         const redeployed = await client.redeployApp(appId, {
           html,
-          manifest: manifest.value,
+          manifest: manifestValue,
           force: args["force"] as boolean | undefined,
           assets,
         });

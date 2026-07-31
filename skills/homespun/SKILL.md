@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.35 -->
+<!-- homespun skill v1.6.36 -->
 
 # homespun
 
@@ -2209,6 +2209,17 @@ homespun deploy ./my-app --app grocery-list
 # -> { app_id, version, visibility, created: false, compat, breaks? }
 ```
 
+- **Send only what changed.** On a redeploy every content field is optional and
+  an omitted one keeps what is live: the HTML, the manifest and the asset set
+  each carry forward on their own. Ship the document alone with
+  `homespun deploy ./index.html --app grocery-list` (no `--manifest`), or the
+  manifest alone with `homespun deploy --app grocery-list --manifest ./manifest.json`
+  (no file argument at all). A directory deploy still ships both, which is right
+  when both changed. Over MCP the same rule applies to `deploy_app`: omit
+  `manifest` for an HTML-only change, omit `html` for a manifest-only one, and
+  omit `assets` to keep the current files. `assets: []` is the explicit "clear
+  the asset set", and omitting all three is refused, since nothing would change.
+  A create can inherit nothing, so it always needs both halves.
 - `--slug`/`--visibility` cannot be changed here: slug is immutable for the
   app's lifetime; change visibility with `homespun apps update --visibility`.
 - **The compat gate.** By default the relay refuses a redeploy on either of
@@ -2297,9 +2308,12 @@ Rules worth knowing:
   type, over the size cap or quota) the WHOLE deploy is rejected: no app is
   created, or the live version is not advanced. The error names the offending
   path.
-- **Redeploy replaces the set.** A redeploy's `assets[]` becomes the new
-  version's map; the previous version's assets are detached, so a removed path
-  simply stops resolving as an asset.
+- **Redeploy replaces the set, or keeps it.** A redeploy that SENDS `assets[]`
+  makes that the new version's map, and the previous version's assets are
+  detached, so a removed path simply stops resolving as an asset. A redeploy
+  that OMITS `assets` keeps the live set: the same files stay mapped at the same
+  paths with no re-upload and no re-encoding. `assets: []` is the explicit way
+  to clear the set.
 - **Served hardened + Range.** Assets stream through the same responder as
   attachments: `X-Content-Type-Options: nosniff`, a sandbox CSP,
   inline-vs-download disposition (images / fonts / audio / video render inline,

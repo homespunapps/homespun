@@ -231,6 +231,65 @@ describe("create vs redeploy — decided by --app's presence", () => {
   });
 });
 
+// On a redeploy an omitted field keeps what is live (#1272), so the CLI must
+// let a caller ship one half. A create can inherit nothing and still needs both.
+describe("partial redeploys (inherit on omit)", () => {
+  it("a single file with --app and no --manifest ships the document alone", async () => {
+    await runDeploy(argv([join(dir, "index.html"), "--app", CUID_APP]));
+    const redeploy = calls.find((c) => c.method === "redeployApp")!;
+    expect(redeploy.args[1]).toEqual({
+      html: "<html>hi</html>",
+      force: false,
+    });
+  });
+
+  it("--manifest with no file argument ships the manifest alone", async () => {
+    await runDeploy(
+      argv(["--app", CUID_APP, "--manifest", join(dir, "manifest.json")]),
+    );
+    const redeploy = calls.find((c) => c.method === "redeployApp")!;
+    expect(redeploy.args[1]).toEqual({
+      manifest: { "x-homespun-manifest": { app: { name: "Test" } } },
+      force: false,
+    });
+  });
+
+  it("--check on a partial redeploy sends only the half that was read", async () => {
+    await runDeploy(
+      argv([
+        "--app",
+        CUID_APP,
+        "--manifest",
+        join(dir, "manifest.json"),
+        "--check",
+      ]),
+    );
+    const check = calls.find((c) => c.method === "checkDeploy")!;
+    expect(check.args).toEqual([
+      {
+        app_id: CUID_APP,
+        manifest: { "x-homespun-manifest": { app: { name: "Test" } } },
+      },
+    ]);
+  });
+
+  it("--app with neither a file nor --manifest has nothing to deploy", async () => {
+    await expect(runDeploy(argv(["--app", CUID_APP]))).rejects.toThrow(
+      "__exit_1__",
+    );
+    expectExit(1);
+    expect(JSON.parse(stderr).error.message).toContain("nothing to deploy");
+    expect(calls).toEqual([]);
+  });
+
+  it("a create still needs a source, since it can inherit nothing", async () => {
+    await expect(runDeploy(argv([]))).rejects.toThrow("__exit_1__");
+    expectExit(1);
+    expect(JSON.parse(stderr).error.message).toContain("usage:");
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("client-side slug/visibility mutual-exclusion (spec-cli §3.1)", () => {
   it("allows --slug with the default (no --visibility, resolves to private)", async () => {
     await runDeploy(argv([dir, "--slug", "my-slug"]));
