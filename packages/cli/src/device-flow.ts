@@ -113,24 +113,38 @@ function rfcErrorCode(body: unknown): string | null {
   return typeof err === "string" ? err : null;
 }
 
+/** What ONE poll of /v1/device/token learned. */
+export type PollOutcome =
+  | { state: "approved"; agent_id: string; agent_key: string; name: string }
+  | { state: "pending" }
+  /** RFC 8628 §3.5: the caller must lengthen its interval by 5 seconds. */
+  | { state: "slow_down" };
+
+/** Options for a single poll: no printing, no sleeping, no loop. */
+export interface PollOptions {
+  url: string;
+  deviceCode: string;
+  cliVersion?: string;
+  fetchImpl?: typeof fetch;
+}
+
 /**
- * Run the device-authorization flow end to end. Returns `supported: false`
- * when the relay 404s the code request (an older relay - the caller falls
- * back to plain POST /v1/register). Throws HomespunApiError on every other
- * failure, including denial and expiry, with actionable codes:
+ * Request a device_code + user_code pair and PRINT the human's instructions.
+ * Does not poll, so it returns as fast as one HTTP round trip.
  *
- *   device_flow_denied    the human clicked Deny
- *   device_flow_expired   nobody approved within the code's lifetime
+ * Split out of runDeviceFlow so `agent register --start` can hand a coding
+ * agent the link and exit, rather than holding the terminal for up to 15
+ * minutes while a human finds their phone. See pending-device.ts.
  */
-export async function runDeviceFlow(
+export async function startDeviceFlow(
   opts: DeviceFlowOptions,
-): Promise<DeviceFlowResult> {
+): Promise<
+  { supported: false } | { supported: true; code: DeviceCodeResponse }
+> {
   const base = opts.url.replace(/\/$/, "");
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const sleep = opts.sleepImpl ?? defaultSleep;
   const print = opts.print ?? defaultPrint;
 
-  // ---- 1. Request the code pair -----------------------------------------
   const start = await postJson(
     fetchImpl,
     `${base}/v1/device/code`,
@@ -163,7 +177,6 @@ export async function runDeviceFlow(
     );
   }
 
-  // ---- 2. Hand the human their marching orders ---------------------------
   const expiresMin = Math.max(1, Math.round((code.expires_in ?? 900) / 60));
   print("");
   print("To approve this agent, open:");
@@ -175,11 +188,121 @@ export async function runDeviceFlow(
   print(
     "You can open the link on any device (phone or laptop) and sign in there.",
   );
-  print(
-    `Waiting for approval... (expires in ${expiresMin} min; Ctrl-C to abort)`,
+  print(`The code expires in ${expiresMin} min.`);
+
+  return { supported: true, code };
+}
+
+/**
+ * Poll /v1/device/token ONCE.
+ *
+ * Returns rather than loops, so the caller decides whether to wait: the
+ * blocking `runDeviceFlow` loops on it, and `agent register --resume` calls it
+ * exactly once and reports back to the agent. Throws HomespunApiError with an
+ * actionable code on every terminal failure:
+ *
+ *   device_flow_denied    the human clicked Deny
+ *   device_flow_expired   the code died before anyone approved it
+ */
+export async function pollDeviceToken(opts: PollOptions): Promise<PollOutcome> {
+  const base = opts.url.replace(/\/$/, "");
+  const fetchImpl = opts.fetchImpl ?? fetch;
+
+  const poll = await postJson(
+    fetchImpl,
+    `${base}/v1/device/token`,
+    { device_code: opts.deviceCode },
+    opts.cliVersion,
   );
 
-  // ---- 3. Poll until a terminal answer -----------------------------------
+  if (poll.status === 200) {
+    const body = poll.body as {
+      agent_key?: unknown;
+      agent_id?: unknown;
+      name?: unknown;
+    };
+    if (
+      typeof body?.agent_key !== "string" ||
+      typeof body?.agent_id !== "string"
+    ) {
+      throw new HomespunApiError(
+        200,
+        "invalid_response",
+        "relay returned an unexpected /v1/device/token body",
+      );
+    }
+    return {
+      state: "approved",
+      agent_id: body.agent_id,
+      agent_key: body.agent_key,
+      name: typeof body.name === "string" ? body.name : "",
+    };
+  }
+
+  const rfc = rfcErrorCode(poll.body);
+  if (poll.status === 400 && rfc !== null) {
+    switch (rfc) {
+      case "authorization_pending":
+        return { state: "pending" };
+      case "slow_down":
+        return { state: "slow_down" };
+      case "access_denied":
+        throw new HomespunApiError(
+          400,
+          "device_flow_denied",
+          "the approval request was denied in the browser",
+        );
+      case "expired_token":
+        throw new HomespunApiError(
+          400,
+          "device_flow_expired",
+          "the device code expired before it was approved - run 'homespun agent register' again",
+        );
+      default:
+        throw new HomespunApiError(
+          400,
+          rfc,
+          `relay rejected the poll (${rfc})`,
+        );
+    }
+  }
+
+  if (poll.status === 429) {
+    // Transient general rate limit - back off like a slow_down and retry.
+    return { state: "slow_down" };
+  }
+
+  // 426 cli_upgrade_required and anything else: surface the envelope.
+  const env = envelopeError(poll.body);
+  throw new HomespunApiError(
+    poll.status,
+    env?.code ?? "relay_error",
+    env?.message ?? `relay returned ${poll.status} for /v1/device/token`,
+    (poll.body as { error?: { details?: unknown } } | null)?.error?.details,
+  );
+}
+
+/**
+ * Run the device-authorization flow end to end, blocking until the human
+ * answers. Returns `supported: false` when the relay 404s the code request (an
+ * older relay - the caller falls back to plain POST /v1/register).
+ *
+ * This is the path a HUMAN at their own terminal wants: they can see the link
+ * appear and approve it without running a second command. An agent should use
+ * startDeviceFlow + pollDeviceToken instead, because a blocking call cannot
+ * hand the link to anyone until it returns.
+ */
+export async function runDeviceFlow(
+  opts: DeviceFlowOptions,
+): Promise<DeviceFlowResult> {
+  const sleep = opts.sleepImpl ?? defaultSleep;
+  const print = opts.print ?? defaultPrint;
+
+  const started = await startDeviceFlow(opts);
+  if (!started.supported) return { supported: false };
+  const code = started.code;
+  print(`Waiting for approval... (Ctrl-C to abort)`);
+
   let intervalSeconds =
     typeof code.interval === "number" && code.interval > 0 ? code.interval : 5;
   const deadline = Date.now() + (code.expires_in ?? 900) * 1000;
@@ -190,82 +313,23 @@ export async function runDeviceFlow(
     // the code's lifetime (the relay would just answer expired_token).
     if (Date.now() >= deadline) break;
 
-    const poll = await postJson(
-      fetchImpl,
-      `${base}/v1/device/token`,
-      { device_code: code.device_code },
-      opts.cliVersion,
-    );
+    const outcome = await pollDeviceToken({
+      url: opts.url,
+      deviceCode: code.device_code,
+      ...(opts.cliVersion !== undefined ? { cliVersion: opts.cliVersion } : {}),
+      ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
+    });
 
-    if (poll.status === 200) {
-      const body = poll.body as {
-        agent_key?: unknown;
-        agent_id?: unknown;
-        name?: unknown;
-      };
-      if (
-        typeof body?.agent_key !== "string" ||
-        typeof body?.agent_id !== "string"
-      ) {
-        throw new HomespunApiError(
-          200,
-          "invalid_response",
-          "relay returned an unexpected /v1/device/token body",
-        );
-      }
+    if (outcome.state === "approved") {
       print("Approved.");
       return {
         supported: true,
-        agent_id: body.agent_id,
-        agent_key: body.agent_key,
-        name: typeof body.name === "string" ? body.name : opts.name,
+        agent_id: outcome.agent_id,
+        agent_key: outcome.agent_key,
+        name: outcome.name !== "" ? outcome.name : opts.name,
       };
     }
-
-    const rfc = rfcErrorCode(poll.body);
-    if (poll.status === 400 && rfc !== null) {
-      switch (rfc) {
-        case "authorization_pending":
-          continue;
-        case "slow_down":
-          // RFC 8628 §3.5: add 5 seconds to the interval and keep going.
-          intervalSeconds += 5;
-          continue;
-        case "access_denied":
-          throw new HomespunApiError(
-            400,
-            "device_flow_denied",
-            "the approval request was denied in the browser",
-          );
-        case "expired_token":
-          throw new HomespunApiError(
-            400,
-            "device_flow_expired",
-            "the device code expired before it was approved - run 'homespun agent register' again",
-          );
-        default:
-          throw new HomespunApiError(
-            400,
-            rfc,
-            `relay rejected the poll (${rfc})`,
-          );
-      }
-    }
-
-    if (poll.status === 429) {
-      // Transient general rate limit - back off like a slow_down and retry.
-      intervalSeconds += 5;
-      continue;
-    }
-
-    // 426 cli_upgrade_required and anything else: surface the envelope.
-    const env = envelopeError(poll.body);
-    throw new HomespunApiError(
-      poll.status,
-      env?.code ?? "relay_error",
-      env?.message ?? `relay returned ${poll.status} for /v1/device/token`,
-      (poll.body as { error?: { details?: unknown } } | null)?.error?.details,
-    );
+    if (outcome.state === "slow_down") intervalSeconds += 5;
   }
 
   throw new HomespunApiError(

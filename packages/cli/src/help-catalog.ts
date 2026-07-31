@@ -1092,6 +1092,16 @@ const AGENT: NounSpec = {
           description:
             "Skip the browser approval and register directly via POST /v1/register",
         },
+        {
+          name: "start",
+          description:
+            "Print the approval link and code, then exit immediately instead of waiting",
+        },
+        {
+          name: "resume",
+          description:
+            "Collect the key for a link started with --start, once the human has approved it",
+        },
       ],
     },
     {
@@ -1118,6 +1128,7 @@ const AGENT: NounSpec = {
   ],
   notes: [
     "register runs the browser device-authorization flow by default: it prints a link and a short code, the account owner opens the link on any device, signs in and approves, and the agent comes out already linked to that account. Older relays without the flow fall back to plain POST /v1/register automatically, as do --no-device and a supplied registration secret; agents registered that way are unowned until 'homespun agent claim' runs.",
+    "--start and --resume split that wait in two, for a caller that cannot hold a command open. An agent runs register as one blocking tool call, and its harness kills the call long before a human finds their phone; the relay issues the key only to the poller that consumes the approved flow, so the human approves, sees success, and no key is ever written. --start prints the link and code and exits at once, parking the device code in pending-device.json beside the config file (mode 0600, since until it is redeemed that code is what collects the key). --resume polls once and either saves the key or exits not_approved_yet, so the agent can ask its human and try again. The approval waits on the relay for the code's full lifetime, so any gap between the two is fine.",
     "The API key and relay URL are saved under a named profile in the CLI config file (mode 0600), so later commands work with only HOMESPUN_URL set, or with nothing set. The key is never printed unless --print-key is passed. Without --profile the key goes under the currently active profile, or under default on a fresh install; use --profile <name> to keep several environments side by side and switch with 'homespun config use <name>'.",
     "claim is one-way. The human generates a one-shot code (it begins with cc_) in their settings UI, hands it to the agent out of band, and the relay binds the agent to that human and migrates app ownership. There is no unclaim in v1: to rotate the owner, revoke the agent with 'homespun key revoke' and register a new one.",
     "set-key makes no relay round-trip. It is the companion to regenerating a key in the relay's my-agents UI: paste the new key here so later commands authenticate as the same agent. Setting HOMESPUN_API_KEY on the agent process instead works just as well.",

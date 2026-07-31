@@ -4,7 +4,12 @@
 
 import { describe, it, expect } from "vitest";
 import { HomespunApiError } from "@homespunapps/core";
-import { runDeviceFlow, type DeviceCodeResponse } from "./device-flow.js";
+import {
+  runDeviceFlow,
+  startDeviceFlow,
+  pollDeviceToken,
+  type DeviceCodeResponse,
+} from "./device-flow.js";
 
 const CODE_RESPONSE: DeviceCodeResponse = {
   device_code: "dc_test-device-code",
@@ -236,5 +241,93 @@ describe("runDeviceFlow", () => {
     for (const h of headersSeen) {
       expect(h["x-homespun-cli-version"]).toBe("1.2.3");
     }
+  });
+});
+
+describe("startDeviceFlow", () => {
+  it("returns after ONE request, without polling", async () => {
+    // The whole point of the split: an agent needs the link in hand before a
+    // human can act on it. A single poll here would reintroduce the wait.
+    const relay = mockRelay({ status: 200, body: CODE_RESPONSE }, []);
+    const started = await startDeviceFlow(relay.opts);
+    expect(started.supported).toBe(true);
+    if (!started.supported) throw new Error("unreachable");
+    expect(started.code.device_code).toBe("dc_test-device-code");
+    expect(relay.calls).toHaveLength(1);
+    expect(relay.calls[0]!.url).toContain("/v1/device/code");
+    expect(relay.sleeps).toEqual([]);
+  });
+
+  it("prints the link and the code for the human", async () => {
+    const relay = mockRelay({ status: 200, body: CODE_RESPONSE }, []);
+    await startDeviceFlow(relay.opts);
+    const out = relay.printed.join("\n");
+    expect(out).toContain("https://relay.test/device?code=ABCD-EFGH");
+    expect(out).toContain("ABCD-EFGH");
+    // It must NOT claim to be waiting: this call is already over.
+    expect(out).not.toContain("Waiting for approval");
+  });
+
+  it("signals the older-relay fallback on 404", async () => {
+    const relay = mockRelay({ status: 404 }, []);
+    const started = await startDeviceFlow(relay.opts);
+    expect(started.supported).toBe(false);
+  });
+});
+
+describe("pollDeviceToken", () => {
+  /** One-shot relay for a single poll. */
+  function pollOnce(status: number, body: unknown) {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    return pollDeviceToken({
+      url: "https://relay.test",
+      deviceCode: "dc_x",
+      fetchImpl,
+    });
+  }
+
+  it("returns the key when the flow is approved", async () => {
+    await expect(
+      pollOnce(200, { agent_key: "hs_k", agent_id: "agt_1", name: "n" }),
+    ).resolves.toEqual({
+      state: "approved",
+      agent_key: "hs_k",
+      agent_id: "agt_1",
+      name: "n",
+    });
+  });
+
+  it("reports pending rather than waiting for it", async () => {
+    await expect(
+      pollOnce(400, { error: "authorization_pending" }),
+    ).resolves.toEqual({ state: "pending" });
+  });
+
+  it("reports slow_down, and treats a 429 the same way", async () => {
+    await expect(pollOnce(400, { error: "slow_down" })).resolves.toEqual({
+      state: "slow_down",
+    });
+    await expect(pollOnce(429, {})).resolves.toEqual({ state: "slow_down" });
+  });
+
+  it("throws a named error on denial and on expiry", async () => {
+    await expect(
+      pollOnce(400, { error: "access_denied" }),
+    ).rejects.toMatchObject({ code: "device_flow_denied" });
+    await expect(
+      pollOnce(400, { error: "expired_token" }),
+    ).rejects.toMatchObject({ code: "device_flow_expired" });
+  });
+
+  it("surfaces an upgrade requirement rather than swallowing it", async () => {
+    await expect(
+      pollOnce(426, {
+        error: { code: "cli_upgrade_required", message: "too old" },
+      }),
+    ).rejects.toBeInstanceOf(HomespunApiError);
   });
 });

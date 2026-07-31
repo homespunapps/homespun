@@ -24,7 +24,17 @@ import type { ParsedArgs } from "../argv.js";
 import { assertKnownFlags } from "../argv.js";
 import { specFor } from "../help-catalog.js";
 import { DEFAULT_RELAY_URL } from "../config.js";
-import { runDeviceFlow } from "../device-flow.js";
+import {
+  runDeviceFlow,
+  startDeviceFlow,
+  pollDeviceToken,
+} from "../device-flow.js";
+import {
+  readPendingDevice,
+  writePendingDevice,
+  clearPendingDevice,
+  isPendingExpired,
+} from "../pending-device.js";
 import { printJson, fail, failUpgradeRequired } from "../output.js";
 import {
   isValidProfileName,
@@ -55,6 +65,173 @@ export function defaultDeviceAgentName(host: string = hostname()): string {
 /** Compute the display prefix of an API key, mirroring the relay's rule. */
 function apiKeyPrefix(key: string): string {
   return key.startsWith("hs_") ? key.slice(0, 9) : key.slice(0, 8);
+}
+
+/**
+ * `--start`: ask the relay for a code pair, park it, and get out of the way.
+ *
+ * Prints the JSON envelope with the link and code ON STDOUT as well as the
+ * human block on stderr, because the caller here is usually an agent relaying
+ * the link into a conversation, and stdout is the channel it parses.
+ */
+async function runRegisterStart(opts: {
+  url: string;
+  name: string | undefined;
+  profileName: string;
+  printKey: boolean;
+}): Promise<void> {
+  const agentName = opts.name ?? defaultDeviceAgentName();
+  let started;
+  try {
+    started = await startDeviceFlow({
+      url: opts.url,
+      name: agentName,
+      cliVersion: VERSION,
+    });
+  } catch (e) {
+    failFromDeviceError(e, "device authorization");
+  }
+  if (!started.supported) {
+    fail(
+      "this relay does not support browser approval (older relay) - run 'homespun agent register --no-device' and claim the agent afterwards",
+      "device_flow_unsupported",
+    );
+  }
+  const code = started.code;
+  const expiresAt = new Date(
+    Date.now() + (code.expires_in ?? 900) * 1000,
+  ).toISOString();
+  const savedTo = writePendingDevice({
+    device_code: code.device_code,
+    user_code: code.user_code,
+    verification_uri_complete: code.verification_uri_complete,
+    url: opts.url,
+    name: agentName,
+    profile: opts.profileName,
+    expires_at: expiresAt,
+  });
+  printJson({
+    state: "pending_approval",
+    verification_uri_complete: code.verification_uri_complete,
+    user_code: code.user_code,
+    expires_in: code.expires_in ?? 900,
+    expires_at: expiresAt,
+    name: agentName,
+    profile: opts.profileName,
+    pending_saved_to: savedTo,
+    next: "show the link and code to your human, then run 'homespun agent register --resume' once they say they approved it",
+  });
+}
+
+/**
+ * `--resume`: one poll, then a definite answer.
+ *
+ * Deliberately does NOT loop. The caller is an agent in a conversation: it
+ * should ask the human whether they approved and try again, not hold a tool
+ * call open, which is the failure this whole flag pair exists to remove.
+ */
+async function runRegisterResume(opts: {
+  urlFlagGiven: boolean;
+  url: string;
+  printKey: boolean;
+}): Promise<void> {
+  const pending = readPendingDevice();
+  if (pending === null) {
+    fail(
+      "no registration is waiting for approval - run 'homespun agent register --start' first",
+      "no_pending_registration",
+    );
+  }
+  // An explicit --url pointing somewhere else is a mistake worth naming: the
+  // device_code is only valid on the relay that issued it, so polling another
+  // would answer expired_token and read as "the code died" instead of "you
+  // aimed at the wrong relay".
+  if (opts.urlFlagGiven && opts.url !== pending.url) {
+    fail(
+      `the pending registration belongs to ${pending.url}, not ${opts.url} - drop --url, or run --start against this relay`,
+      "invalid_args",
+    );
+  }
+  if (isPendingExpired(pending)) {
+    clearPendingDevice();
+    fail(
+      "the approval link expired before it was approved - run 'homespun agent register --start' again",
+      "device_flow_expired",
+    );
+  }
+
+  let outcome;
+  try {
+    outcome = await pollDeviceToken({
+      url: pending.url,
+      deviceCode: pending.device_code,
+      cliVersion: VERSION,
+    });
+  } catch (e) {
+    // A denial or expiry is terminal: drop the parked flow so the next
+    // --resume says "nothing to resume" rather than re-reporting a dead code.
+    if (
+      e instanceof HomespunApiError &&
+      (e.code === "device_flow_denied" || e.code === "device_flow_expired")
+    ) {
+      clearPendingDevice();
+    }
+    failFromDeviceError(e, "device authorization");
+  }
+
+  if (outcome.state !== "approved") {
+    // Not an error in the flow's terms, but a non-zero exit so a script that
+    // ignores the payload does not sail on believing it is registered.
+    fail(
+      `not approved yet - open ${pending.verification_uri_complete} and confirm the code ${pending.user_code}, then run 'homespun agent register --resume' again`,
+      "not_approved_yet",
+      undefined,
+      { retryable: true },
+    );
+  }
+
+  const savedTo = upsertProfile(
+    pending.profile,
+    { url: pending.url, apiKey: outcome.agent_key },
+    true,
+  );
+  clearPendingDevice();
+  const out: Record<string, unknown> = {
+    agent_id: outcome.agent_id,
+    key_prefix: apiKeyPrefix(outcome.agent_key),
+    profile: pending.profile,
+    saved_to: savedTo,
+    registered_via: "device",
+  };
+  if (opts.printKey) out["api_key"] = outcome.agent_key;
+  printJson(out);
+}
+
+/** Shared error mapping for both halves: same codes the blocking path uses. */
+function failFromDeviceError(e: unknown, what: string): never {
+  if (e instanceof HomespunApiError) {
+    if (e.status === 426 && e.code === "cli_upgrade_required") {
+      failUpgradeRequired(e);
+    }
+    if (e.status === 429) {
+      fail(
+        `${what} rate limit exceeded - try again later`,
+        "rate_limited",
+        undefined,
+        {
+          hint: e.hint,
+          retryable: true,
+          docs_url: e.docsUrl,
+        },
+      );
+    }
+    fail(e.message, e.code, e.details, {
+      hint: e.hint,
+      retryable: e.retryable,
+      docs_url: e.docsUrl,
+    });
+  }
+  fail(e instanceof Error ? e.message : String(e), "internal");
 }
 
 export async function runRegister(args: ParsedArgs): Promise<void> {
@@ -104,6 +281,46 @@ export async function runRegister(args: ParsedArgs): Promise<void> {
     args.flags.get("secret") ??
     process.env.HOMESPUN_REGISTER_SECRET ??
     undefined;
+
+  // ---- Two-phase device flow (--start / --resume) -------------------------
+  //
+  // For callers that CANNOT hold a blocking command open: a coding agent runs
+  // register as one tool call, and the harness kills it long before a human
+  // finds their phone. --start prints the link and exits; --resume collects the
+  // key afterwards. See pending-device.ts for why this is not merely nicer.
+  const wantStart = args.bools.has("start");
+  const wantResume = args.bools.has("resume");
+  if (wantStart && wantResume) {
+    fail(
+      "--start and --resume are the two halves of one flow; run --start, get the link approved, then run --resume",
+      "invalid_args",
+    );
+  }
+  if ((wantStart || wantResume) && args.bools.has("no-device")) {
+    fail(
+      "--no-device registers directly and has no approval step, so there is nothing to --start or --resume",
+      "invalid_args",
+    );
+  }
+  if ((wantStart || wantResume) && secret !== undefined && secret !== "") {
+    fail(
+      "a registration secret uses the direct path, which has no approval step to --start or --resume",
+      "invalid_args",
+    );
+  }
+
+  if (wantStart) {
+    await runRegisterStart({ url, name, profileName, printKey: false });
+    return;
+  }
+  if (wantResume) {
+    await runRegisterResume({
+      urlFlagGiven: args.flags.has("url"),
+      url,
+      printKey: args.bools.has("print-key"),
+    });
+    return;
+  }
 
   // The device flow is the default. A registration secret implies a
   // REGISTRATION_MODE=secret relay whose operator hands out direct access,

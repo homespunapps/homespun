@@ -51,8 +51,9 @@ relay; your chat only makes outbound HTTP calls to it.
 - **Custom / remote MCP connectors** must be supported by your chat app. Claude
   supports them on the web, desktop, and mobile apps, **no paid plan required**
   (the free plan works too). On other apps, check that they support "custom
-  connectors" or "remote MCP servers". Coding agents like Claude Code have it
-  built in.
+  connectors" or "remote MCP servers". If you are in a coding agent rather than
+  a chat app, skip all of this and use the CLI:
+  [Coding agents](#coding-agents-claude-code-cursor-codex-gemini-cli).
 
 The connector URL is always:
 
@@ -87,82 +88,64 @@ and the submitted data comes back into the conversation.
 
 ---
 
-## Claude Code (remote connector, no local server)
+## Coding agents: Claude Code, Cursor, Codex, Gemini CLI
 
-Claude Code can use the hosted connector instead of the stdio server, handy if
-you'd rather not run anything locally:
+**Do not use the connector here.** An agent with a terminal gets the CLI
+instead, and the difference is not cosmetic: the connector answers by
+describing its whole tool surface, which the model must read before it can act,
+where the CLI is three commands and a skill file. Same account, same apps,
+much shorter instruction.
+
+Paste this into the agent and it sets itself up:
+
+```
+Set me up with Homespun: run `npm i -g @homespunapps/cli`, then `homespun agent register --start --name home` and show me the approval link it prints. Once I tell you I have approved it, run `homespun agent register --resume`. Then read https://homespun.dev/skills/homespun/SKILL.md and ask me what app I want to build.
+```
+
+It names the commands rather than only pointing at the skill, so the agent can
+act on the first line instead of reading a 150 KB document to discover that
+there is something to install. The skill URL is still there, at the end,
+because that is what teaches it to build an app: a different job from getting
+connected.
+
+By hand, it is three steps. First the skill, which is what teaches the agent
+every command below. `npx skills add` detects the host it is running in (Claude
+Code, Cursor, Codex, Gemini CLI, Copilot, Windsurf, Continue) and writes the
+skill where that host looks for it:
 
 ```sh
-claude mcp add --transport http homespun https://homespun.dev/mcp
+npx skills add homespunapps/homespun --skill homespun
 ```
 
-Then in Claude Code run `/mcp`, select **homespun**, and **Authenticate**. It
-opens the browser for the same login + consent flow and stores the token. After
-that, Homespun's tools are available in the session.
-
-Any coding agent (Claude Code, Cursor, Codex, Windsurf, and the rest) can also
-skip the connector entirely. Paste this one line and it sets itself up:
-
-```
-Set me up with Homespun: read https://homespun.dev/skills/homespun/SKILL.md and follow it, then ask me what app I want to build.
-```
-
-> Prefer streaming and local control? The CLI route gives you true
-> `homespun watch` streaming:
->
-> ```sh
-> npm i -g @homespunapps/cli
-> homespun agent register --name home
-> ```
->
-> `agent register` runs the device-authorization sign-in in your browser and
-> writes the resulting key to your Homespun config, so it is both the login and
-> the key-issuing step. See the [README install section](../README.md#install).
-> The remote connector and the local CLI are interchangeable, so use whichever
-> fits.
-
----
-
-## Gemini CLI
-
-**Gemini CLI only.** Gemini CLI speaks streamable HTTP and discovers the OAuth
-endpoints from the server itself, so one command is the whole setup:
+Then the CLI itself, and a one-time sign-in. Needs Node 20 or newer:
 
 ```sh
-gemini mcp add --transport http homespun https://homespun.dev/mcp
+npm i -g @homespunapps/cli
+homespun agent register --name home
 ```
 
-That writes the entry to `~/.gemini/settings.json` (or `.gemini/settings.json`
-if you scope it to one project). The first call opens your browser for the same
-email login + consent screen as every other client, and the token is cached and
-refreshed for you.
+`agent register` runs the device-authorization sign-in in your browser and
+writes the resulting key to your Homespun config, so it is both the login and
+the key-issuing step, once per machine, with no API key to paste. See the
+[README install section](../README.md#install).
 
-**The Gemini app is a different story.** The consumer Gemini app does not accept
-arbitrary custom MCP connectors: custom MCP arrived inside Gemini Spark against
-a curated set of partner connectors, and connecting an arbitrary MCP server of
-your own is a Gemini Enterprise feature. There is no URL you can paste into the
-Gemini app today to reach Homespun. If that is where you are, use
-[Claude](#claude-web-desktop-mobile) on your phone instead, which takes the
-connector URL directly, or drive Homespun from a coding agent.
+If an agent is working from a stale copy of the skill, this prints the current
+one straight from the relay:
 
----
-
-## Codex
-
-Codex configures MCP servers from `~/.codex/config.toml`. Add:
-
-```toml
-[mcp_servers.homespun]
-url = "https://homespun.dev/mcp"
+```sh
+homespun skill show
 ```
 
-The transport is chosen by **which key is present**: `url` selects streamable
-HTTP, `command` would select a local stdio server. So there is deliberately no
-`command` key here.
+That is the whole setup for every terminal agent, including editors. Cursor,
+Windsurf, Cline and VS Code Copilot each run one, so they take these same three
+commands rather than a settings file.
 
-Restart Codex, then authenticate when it prompts: it opens a browser for the
-login + consent flow and caches the token, refreshing it automatically. There is
-no API key or client secret to paste.
+**Gemini CLI, not the Gemini app.** The app has no terminal, so none of the
+above applies to it, and it cannot reach Homespun the other way either: custom
+MCP arrived inside Gemini Spark against a curated set of partner connectors,
+and connecting an arbitrary MCP server of your own is a Gemini Enterprise
+feature. If that is where you are, use [Claude](#claude-web-desktop-mobile) on
+your phone instead, which takes the connector URL directly.
 
 ---
 
@@ -175,24 +158,13 @@ Claude-specific integration.
 - **ChatGPT**: in the clients that expose custom connectors / MCP, add a new
   connector with the URL `https://homespun.dev/mcp` and complete the OAuth
   login + consent when prompted.
-- **Other clients** (and remote-MCP-capable IDE assistants): wherever the app
-  asks for a *server URL* for a remote/HTTP MCP connector, give it
-  `https://homespun.dev/mcp`. It will discover the auth endpoints
-  automatically and walk you through login + consent.
-- **Cursor, Windsurf, Cline, VS Code Copilot**: these configure MCP servers
-  from a JSON file rather than a settings screen. See the entry below.
-
-Editors that take an `mcpServers` JSON block all accept the same entry. Add it,
-reload the editor, and approve the sign-in the first time it calls the
-connector:
-
-```json
-{
-  "mcpServers": {
-    "homespun": { "type": "http", "url": "https://homespun.dev/mcp" }
-  }
-}
-```
+- **Other chat clients**: wherever the app asks for a *server URL* for a
+  remote/HTTP MCP connector, give it `https://homespun.dev/mcp`. It will
+  discover the auth endpoints automatically and walk you through login +
+  consent.
+- **Cursor, Windsurf, Cline, VS Code Copilot**: not here. Each runs a terminal
+  agent, so they use the CLI: see
+  [Coding agents](#coding-agents-claude-code-cursor-codex-gemini-cli) above.
 
 The flow is identical everywhere: **paste the URL → log in by email → approve
 the consent screen**. No API key to copy, no client secret to manage. The

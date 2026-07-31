@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.34 -->
+<!-- homespun skill v1.6.35 -->
 
 # homespun
 
@@ -39,6 +39,31 @@ conversation. For a one-shot question, just ask in text.
 There is no separate "form" primitive: a single-collection app with one page is
 how you do the small case, and it is still a real app with a URL, sign-in and
 data you can come back to.
+
+## Setup
+
+**This section is first for a reason.** Everything below it assumes a working
+`homespun` command and a key. If you were pointed here to "set up Homespun",
+this is the whole of it: two commands, then "Registering" for the sign-in.
+
+If the `homespun` command isn't on your PATH yet, install it first:
+`npm i -g @homespunapps/cli`.
+
+The hosted relay (`https://homespun.dev`) is the default: `homespun agent register`
+works out of the box. The CLI needs:
+
+- **An agent API key.** Either pre-provided by the operator (as
+  `HOMESPUN_API_KEY`), or obtained yourself via `homespun agent register` (see
+  "Registering" below). Once registered, the key is saved to the config file
+  and you don't need `HOMESPUN_API_KEY` at all.
+- **A relay URL.** Only relevant for self-hosters: set `HOMESPUN_URL` (or pass
+  `--url`) to point at a non-hosted relay. Note this is the **control-plane**
+  URL (where `deploy`/`apps`/`data` talk); the *deployed app itself* is
+  served on its own domain (see "Serving and security" below), not under
+  this URL.
+
+Output is JSON on stdout. Errors are `{"error":{"code","message"}}` on stderr
+with a non-zero exit.
 
 <!-- homespun:core:start -->
 
@@ -578,27 +603,6 @@ catch-hook.
 <!-- homespun:core:end -->
 
 
-## Setup
-
-If the `homespun` command isn't on your PATH yet, install it first:
-`npm i -g @homespunapps/cli`.
-
-The hosted relay (`https://homespun.dev`) is the default: `homespun agent register`
-works out of the box. The CLI needs:
-
-- **An agent API key.** Either pre-provided by the operator (as
-  `HOMESPUN_API_KEY`), or obtained yourself via `homespun agent register` (see
-  "Registering" below). Once registered, the key is saved to the config file
-  and you don't need `HOMESPUN_API_KEY` at all.
-- **A relay URL.** Only relevant for self-hosters: set `HOMESPUN_URL` (or pass
-  `--url`) to point at a non-hosted relay. Note this is the **control-plane**
-  URL (where `deploy`/`apps`/`data` talk); the *deployed app itself* is
-  served on its own domain (see "Serving and security" below), not under
-  this URL.
-
-Output is JSON on stdout. Errors are `{"error":{"code","message"}}` on stderr
-with a non-zero exit.
-
 ## Keeping this skill up to date
 
 This skill carries its version in an HTML comment near the top of the file:
@@ -711,22 +715,54 @@ CLI defaults it to `cli-<hostname>`.
 Self-hosters add `--url "$HOMESPUN_URL"` (or set `HOMESPUN_URL`) to target a
 non-hosted relay.
 
-**Default: browser approval (device flow).** On a relay that supports it,
-`homespun agent register` runs an RFC 8628 style device-authorization flow:
+**If you are an agent, use the two-phase form.** Plain `homespun agent register`
+BLOCKS for up to 15 minutes waiting for a human to approve, and you cannot show
+anyone the link until the command returns. Your harness will kill the call
+first, and the key is issued only to the process that is still polling, so your
+human approves, sees success, and ends up with nothing. Do this instead:
 
-1. The CLI calls `POST /v1/device/code` and prints a verification URL plus a
-   short code like `ABCD-EFGH` (15-minute TTL).
-2. Show them to your human: they open the URL **on any device** (their phone
-   works), sign in, and click Approve.
-3. The CLI polls `POST /v1/device/token` and, on approval, receives the new
-   agent's API key exactly once and saves it to the CLI config file
-   (`${XDG_CONFIG_HOME:-~/.config}/homespun/config.json`, mode 0600). After
-   that, every other command picks the key up from that file automatically.
+```sh
+homespun agent register --start --name "<short-descriptive-agent-name>"
+```
 
-The progress lines (URL + code) go to stderr; the final JSON lands on stdout
-with `"registered_via": "device"`. Crucially, a device-flow agent is **already
-owned** by the human who approved it: no separate claim step is needed, and
-`homespun deploy` works immediately.
+It returns immediately with JSON on stdout:
+
+```json
+{
+  "state": "pending_approval",
+  "verification_uri_complete": "https://homespun.dev/device?code=ABCD-EFGH",
+  "user_code": "ABCD-EFGH",
+  "expires_in": 900
+}
+```
+
+1. **Show your human the link and the code**, and say they can open it on any
+   device, their phone included. Then stop and wait for them to tell you they
+   approved it. Do not poll in a loop, and do not sleep: ask, and wait for the
+   answer like any other question.
+2. When they say they are done:
+
+   ```sh
+   homespun agent register --resume
+   ```
+
+   On approval it saves the key to
+   `${XDG_CONFIG_HOME:-~/.config}/homespun/config.json` (mode 0600) and prints
+   the same `"registered_via": "device"` envelope, and every later command
+   picks the key up from that file automatically.
+3. If `--resume` exits with `not_approved_yet`, they have not finished. Show
+   the link again, and try once more when they say so. The approval waits on
+   the relay for the code's full 15 minutes, so a gap between the two commands
+   costs nothing.
+
+**Interactive humans can use the blocking form.** Someone typing into their own
+terminal sees the link appear and approves it without a second command, so
+plain `homespun agent register` is still right for them. It runs the same RFC
+8628 device-authorization flow, printing the URL and code to stderr and polling
+`POST /v1/device/token` until they approve.
+
+Either way, a device-flow agent is **already owned** by the human who approved
+it: no separate claim step is needed, and `homespun deploy` works immediately.
 
 **Fallback: direct registration.** When the relay predates the device flow
 (404 on `/v1/device/code`), the CLI falls back to plain `POST /v1/register`

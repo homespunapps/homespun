@@ -69,6 +69,12 @@ export const BOOLEAN_FLAGS = new Set([
   // `homespun agent register --no-device`: skip the browser device-authorization
   // flow and register directly (unowned agent), the pre-device-flow behavior.
   "no-device",
+  // `homespun agent register --start` / `--resume`: the two halves of the device
+  // flow for a caller that cannot hold a blocking command open (an agent whose
+  // harness times the call out). --start prints the link and exits; --resume
+  // redeems the approval afterwards.
+  "start",
+  "resume",
   // `homespun data ... import --emit-effects`: opt a silent bulk import back into
   // firing notify/webhooks (import defaults to silent).
   "emit-effects",
