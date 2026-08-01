@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.40 -->
+<!-- homespun skill v1.6.41 -->
 
 # homespun
 
@@ -1786,7 +1786,46 @@ only because `write` is `["agent"]`. **If `write` admits a wider audience, add
   string `maxLength` at or under 64 KiB (in practice, size each field to what it
   actually holds, a name is `maxLength: 200`, not `2000000`). This is a
   single-field impossibility check only: it never sums fields, so a
-  large-but-possible `maxLength` still deploys.
+  large-but-possible `maxLength` still deploys. A collection declaring
+  `storage: "document"` (below) is measured against ITS larger cap instead.
+
+### When a row is one document: `storage: "document"`
+
+Sometimes a row is not a record with fields you filter on, it is **one document
+the browser reads and writes whole**: a mind map, a diagram, a graph of nodes and
+edges. Declaring `storage: "document"` on the collection raises its per-row cap
+from 64 KiB to **256 KiB** (`MAX_DOCUMENT_ROW_DATA_BYTES`).
+
+```json
+"collections": {
+  "maps": {
+    "storage": "document",
+    "schema": { "$ref": "#/$defs/MindMap" },
+    "read": ["owner_"], "write": ["member"], "delete": ["owner_"]
+  }
+}
+```
+
+**What you give up.** The payload stops being indexed. Filtering still WORKS, it
+just stops being something the platform keeps fast as the collection grows, so
+reach for this when the querying happens in the browser rather than on the
+server. Keep the fields you genuinely filter or sort on (an owner id, a title, a
+timestamp) as small top-level fields; only the bulky part is the document.
+
+**Why it is opt-in rather than just a bigger cap for everyone.** The cost of a
+large payload is not storage, it is index maintenance: the row index hashes every
+leaf of the document, so a graph, which is all leaves, is the worst possible
+shape for it. Measured at 64 KiB, an indexed insert costs ~54x an unindexed one.
+Excluding these rows from that index is what makes the larger cap affordable, and
+it is why the two decisions are one declaration rather than two.
+
+**It is not a way to store files.** Images and other binary content belong in
+attachments, with only the attachment id in the row, whichever mode you declare.
+A base64 data URL in a row is the single most common reason apps run into the cap,
+and `storage: "document"` is the wrong fix for it.
+
+**A row over the cap is refused `413 row_size_exceeded`**, and the error names the
+collection, the actual size, the cap, and which of the two you are on.
 
 - **Intra-document `$ref` across `$defs` is NOT resolved, inline it.** A
   collection's `schema` may `$ref` a `$defs` entry, but a `$ref` FROM one
