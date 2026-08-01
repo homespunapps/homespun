@@ -68,9 +68,12 @@ OAuth flow is built into every self-hosted relay.)
 
 ## Claude (web, desktop, mobile)
 
-1. Open **Settings → Connectors** (web: <https://claude.ai/settings/connectors>;
-   desktop: Settings → Connectors; mobile: profile → Settings → Connectors).
-2. Click **Add custom connector**.
+1. On the web, open the **Add custom connector** dialog directly:
+   <https://claude.ai/new?modal=add-custom-connector#settings/customize-connectors>.
+   The desktop and mobile apps take no deep link, so open **Settings → Connectors**
+   there (on mobile: profile → Settings → Connectors).
+2. On desktop and mobile, click **Add custom connector**. The web link above
+   already lands you on it.
 3. **Name** it `Homespun` and paste the **URL** `https://homespun.dev/mcp`.
 4. Save, then click **Connect**. A browser window opens on the Homespun relay.
 5. **Log in** with your email. You'll get a magic link; click it to sign in.

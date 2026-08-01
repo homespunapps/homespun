@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.39 -->
+<!-- homespun skill v1.6.40 -->
 
 # homespun
 
@@ -1178,7 +1178,7 @@ Fields, exactly:
   only, kept separate on purpose so a page can load, say, a charting library
   from a CDN without also being able to exfiltrate data to arbitrary hosts.
 - **`x-homespun-manifest.capabilities`**: optional array from a STRICT
-  allowlist of 13 names. Each granted name flips its `Permissions-Policy`
+  allowlist of 21 names. Each granted name flips its `Permissions-Policy`
   directive from denied to `self` on the served app document; everything you
   don't list stays denied, and an unknown value is a hard validation error. The
   allowlist, grouped by purpose:
@@ -1188,10 +1188,21 @@ Fields, exactly:
     window), `"encrypted-media"` (EME / DRM playback of the app's own media).
   - **Device sensors and location**: `"geolocation"` (Geolocation API),
     `"accelerometer"`, `"gyroscope"`, `"magnetometer"` (the corresponding
-    Sensor APIs).
+    Sensor APIs), `"xr-spatial-tracking"` (WebXR headset and pose tracking).
   - **Interaction**: `"clipboard-write"` (write to the system clipboard),
     `"web-share"` (the Web Share API), `"display-capture"` (screen or window
-    capture via getDisplayMedia).
+    capture via getDisplayMedia), `"screen-wake-lock"` (the Screen Wake Lock
+    API, to stop the display sleeping on a propped-up tablet).
+  - **Connected hardware**: `"serial"` (Web Serial), `"usb"` (WebUSB),
+    `"hid"` (WebHID), `"midi"` (Web MIDI). Each still requires the user to
+    pick a device in the browser's own chooser.
+  - **Credentials and payment**: `"publickey-credentials-get"` (WebAuthn
+    `navigator.credentials.get`, so passkeys and security keys work),
+    `"payment"` (the Payment Request API).
+
+  None of these is a way to send data anywhere. What an app may `fetch`, and
+  what it may post a form to, is decided only by `externalHosts` (and `cdn`
+  for scripts); a capability grant never widens either.
 
   Example: `"capabilities": ["camera"]` lets the page call
   `getUserMedia({ video: true })`, while microphone stays blocked. Accuracy
@@ -2255,17 +2266,21 @@ homespun deploy ./my-app --app grocery-list
   - It *strands existing rows*: a collection removed, a row schema tightened,
     or a collection flipped `appendOnly`. Rows written under the old contract
     could stop making sense.
-  - It *widens what the app's install screen says*: some collection now
-    reaches further than the live manifest does, so a user installing today
-    would be asked to approve something the current users never saw. The
-    break quotes that sentence back to you.
+  - It *widens what the app's install screen says*, so a user installing today
+    would be asked to approve something the current users never saw. Either
+    some collection now reaches further than the live manifest does, or the
+    app asks for more outside itself: a `capabilities` entry added, `cdn`
+    turned on, or a new host in `externalHosts`, `embeds`, or a webhook
+    target. The break quotes that sentence back to you.
 
   It fails `422` with `details.breaks[]` naming every offending path. Taking
   access AWAY is always compatible and never asks: dropping a role from
-  `read`/`write`/`delete`, or adding `update: ["creator"]` to a
-  `write: ["anyone"]` collection so only each row's creator can edit it,
-  redeploys clean. Pass `--force` to redeploy anyway (a removed collection is
-  detached, not deleted, and its rows aren't destroyed).
+  `read`/`write`/`delete`, dropping a capability, host or webhook, turning
+  `cdn` off, or adding `update: ["creator"]` to a `write: ["anyone"]`
+  collection so only each row's creator can edit it, all redeploy clean.
+  Stripping an app back to fewer permissions never needs `--force`. Pass
+  `--force` to redeploy anyway (a removed collection is detached, not deleted,
+  and its rows aren't destroyed).
 
 **Dry run before you deploy (`--check`).** Add `--check` to validate a bundle
 WITHOUT deploying it: the relay runs the full manifest + asset-shape validation,
