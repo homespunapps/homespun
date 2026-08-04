@@ -247,3 +247,34 @@ describe("runSkill — version subcommand", () => {
     expect(err.message).toContain("missing verb");
   });
 });
+
+// `--section` / `sections`: how an agent that holds the skill as a fetched
+// blob (rather than as files on disk) follows one of SKILL.md's pointers.
+describe("homespun skill show --section", () => {
+  it("fetches the reference route, not the whole skill", async () => {
+    stubFetch({ status: 200, body: "# Webhooks\n" });
+    await run(["show", "--section", "webhooks"]);
+    expect(lastFetchUrl).toContain("/skills/homespun/references/webhooks.md");
+    expect(lastFetchUrl).not.toContain("/skills/homespun/SKILL.md");
+  });
+
+  it("still fetches the whole skill when no section is given", async () => {
+    stubFetch({ status: 200, body: "# homespun\n" });
+    await run(["show"]);
+    expect(lastFetchUrl).toContain("/skills/homespun/SKILL.md");
+  });
+
+  it("url-encodes the slug rather than pasting it into the path", async () => {
+    stubFetch({ status: 404, body: "{}" });
+    await run(["show", "--section", "../secrets"]);
+    expect(lastFetchUrl).not.toContain("../");
+  });
+});
+
+describe("homespun skill sections", () => {
+  it("lists the sections from the relay index", async () => {
+    stubFetch({ status: 200, json: { sections: ["webhooks"] } });
+    await run(["sections"]);
+    expect(lastFetchUrl).toContain("/skills/homespun/references");
+  });
+});

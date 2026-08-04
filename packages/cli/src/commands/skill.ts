@@ -7,14 +7,19 @@
 // agent always reads what the relay it's actually talking to wants it
 // to read.
 //
-// Two verbs:
-//   `homespun skill show`      — print the full markdown to stdout (the
+// Three verbs:
+//   `homespun skill show`      print the full markdown to stdout (the
 //                            install / refresh path; pipe to a file).
-//   `homespun skill version`   — print just the relay's skill version (the
+//                            `--section <slug>` prints one reference section
+//                            instead, which is how an agent holding the skill
+//                            as a fetched blob follows a pointer that a
+//                            file-based agent would follow with a plain read.
+//   `homespun skill version`   print just the relay's skill version (the
 //                            "is my local copy stale?" probe). The agent
 //                            compares this to the `<!-- homespun skill v… -->`
 //                            comment in its local skill file and re-runs
 //                            `homespun skill show > <path>` when they differ.
+//   `homespun skill sections`  list the reference sections that exist.
 //
 // Both are unauthenticated — the skill route is public on the relay and
 // an agent on a too-old CLI must be able to read the upgrade instructions
@@ -55,12 +60,24 @@ async function failOnNon2xx(res: Response, target: string): Promise<void> {
   );
 }
 
-// `homespun skill show` — print the full skill.
+// `homespun skill show [--section <slug>]`: print the full skill, or one
+// reference section of it.
+//
+// SKILL.md carries pointers to sections it does not include, so that an agent
+// pays for them only when it needs them. An agent holding the skill as files on
+// disk follows such a pointer by reading references/<slug>.md; an agent that
+// fetched the skill over the wire has no such file, and `--section` is how it
+// follows the same pointer. Without it the pointer would dangle for exactly the
+// consumers this command exists to serve.
 async function runSkillFetch(args: ParsedArgs): Promise<void> {
   assertKnownFlags(args, ...specFor("skill", "show"));
 
   const url = resolveRelayUrl(args);
-  const target = url + "/skills/homespun/SKILL.md";
+  const section = args.flags.get("section");
+  const target =
+    section === undefined
+      ? url + "/skills/homespun/SKILL.md"
+      : `${url}/skills/homespun/references/${encodeURIComponent(section)}.md`;
   const res = await fetchOrFail(target);
   await failOnNon2xx(res, target);
   const text = await res.text();
@@ -69,6 +86,20 @@ async function runSkillFetch(args: ParsedArgs): Promise<void> {
   // claude) sees a clean line-terminated boundary even if the relay served
   // a file without a trailing newline.
   if (!text.endsWith("\n")) process.stdout.write("\n");
+}
+
+// `homespun skill sections`: list the reference sections available. The index
+// an agent needs when it holds SKILL.md as a fetched blob rather than a tree.
+async function runSkillSections(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("skill", "sections"));
+
+  const url = resolveRelayUrl(args);
+  const target = url + "/skills/homespun/references";
+  const res = await fetchOrFail(target);
+  await failOnNon2xx(res, target);
+  const body = (await res.json()) as { sections?: unknown };
+  const sections = Array.isArray(body.sections) ? body.sections : [];
+  process.stdout.write(JSON.stringify({ sections }) + "\n");
 }
 
 // `homespun skill version [--plain]` — print just the version.
@@ -113,15 +144,18 @@ export async function runSkill(args: ParsedArgs): Promise<void> {
     case "version":
       await runSkillVersion(args);
       break;
+    case "sections":
+      await runSkillSections(args);
+      break;
     case undefined:
       fail(
-        "missing verb — usage: homespun skill <show|version> (run 'homespun skill --help')",
+        "missing verb. Usage: homespun skill <show|version|sections> (run 'homespun skill --help')",
         "invalid_args",
       );
       break;
     default:
       fail(
-        `unknown skill verb '${sub}' — expected show|version (run 'homespun skill --help')`,
+        `unknown skill verb '${sub}': expected show|version|sections (run 'homespun skill --help')`,
         "invalid_args",
       );
   }

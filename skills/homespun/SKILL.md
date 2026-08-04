@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.42 -->
+<!-- homespun skill v1.6.43 -->
 
 # homespun
 
@@ -396,209 +396,24 @@ Rules of the road:
   Free apps have a per-day reminder cap and a rule-count cap, both modest by design.
 
 **POST to a URL when a collection changes (`webhooks`).** The machine-consumer
-sibling of `notify`: same trigger grammar, but instead of emailing a person the
-relay fires a signed HTTP `POST` to a URL you name, so you can push row changes
-to Slack, Zapier, or another agent. Declare a `webhooks` array in the manifest.
+sibling of `notify`. Instead of emailing a person, the relay fires a signed HTTP
+`POST` to a URL you name, so an app can push its row changes to Slack, Zapier, a
+CRM, or another agent. It uses the same `on` / `collection` / `when` trigger
+grammar as `notify` above, and it can carry a stored credential (static token or
+full OAuth2) so it writes straight into a third-party API.
 
-```json
-"webhooks": [
-  { "on": "create", "collection": "orders", "url": "https://hooks.slack.com/services/T00/B00/xxxx" },
-  {
-    "on": "update",
-    "collection": "orders",
-    "when": { "field": "status", "changedTo": "shipped" },
-    "url": "https://api.example.com/hooks/orders"
-  }
-]
-```
-
-Rules of the road:
-
-- **`on`** is `"create"` or `"update"`; **`collection`** must be one you declared;
-  **`when`** is the SAME optional condition grammar as `notify` - the level forms
-  (`equals` / `notEquals` / `in` / `notIn` / `gt` / `lt` / `gte` / `lte`) and the
-  `changedTo` edge form (`update` only), with the same pinned comparison
-  semantics. Omit `when` to fire on every create/update.
-- **`url`** is required and must be a **public `https://` URL** with no
-  `user:pass@` userinfo and no IP-literal host (a DNS name only). A path and
-  query are allowed. At send time the relay re-resolves the host and refuses any
-  target that resolves to a loopback / private / link-local / CGNAT / cloud-
-  metadata address, and it never follows a redirect (a 3xx is a failed attempt) -
-  so a webhook cannot be turned into a request against your internal network.
-- The feature is **gated** (off until the operator flips `WEBHOOKS_ENABLED`) and,
-  once on, delivery is **immediate** (no digest window), retried with exponential
-  backoff, and bounded by a per-app hourly cap.
-
-**The payload** is a JSON body:
-
-```json
-{
-  "app_id": "app_…",
-  "collection": "orders",
-  "op": "create",
-  "feed_seq": 42,
-  "delivery_id": "whd_…",
-  "row": { "key": "…", "data": { }, "version": 1, "author": { "kind": "human", "id": "…" }, "created_at": "…", "updated_at": "…" },
-  "sent_at": "2026-07-14T12:00:00.000Z"
-}
-```
-
-**Signing + verification.** Every request carries these headers:
-
-- `X-Homespun-Signature: t=<unixSeconds>,v1=<hex>` where `<hex>` is
-  `HMAC-SHA256(secret, "<t>.<rawBody>")`.
-- `X-Homespun-Event` (the op), `X-Homespun-Collection`, `X-Homespun-Delivery`
-  (a stable idempotency key), `Content-Type: application/json`,
-  `User-Agent: Homespun-Webhooks/1`.
-
-The **signing secret** (`whsec_…`) is minted the first time you deploy a
-non-empty `webhooks` list and returned to you on the **deploy response** and the
-owner/agent app-detail read (`GET /v1/apps/:id` → `webhook_secret`). It is never
-shown on any public path and never rotated automatically. Configure it on your
-receiver, then verify each request:
-
-1. Read `t` and `v1` from `X-Homespun-Signature`.
-2. Recompute `HMAC-SHA256(secret, t + "." + rawRequestBody)` and compare to `v1`
-   with a **constant-time** compare (e.g. `crypto.timingSafeEqual`).
-3. Reject if they differ, or if `t` is too old (say more than 5 minutes) to
-   bound replay.
-
-Delivery is **at-least-once**: a receiver can see the same `X-Homespun-Delivery`
-id twice (a retry after a slow 2xx, or a relay worker that crashed after the
-POST but before it recorded the outcome), so treat that header as an idempotency
-key and dedupe on it. The id is the delivery row's own id and is stable across
-every attempt, which is what makes it usable as the key.
-
-Two things a receiver must not do instead:
-
-- **Do not dedupe on a hash of the body.** The signature timestamp `t` and the
-  envelope's `sent_at` are regenerated for each attempt, so two sends of the
-  same delivery have different bytes.
-- **Do not rely on `delivery_id` in the body when the rule sets a
-  `bodyTemplate`.** A custom body is sent verbatim and carries only what the
-  template renders, so for those rules the header is the only key.
-
-**Authenticated webhooks (`connection` + `bodyTemplate`).** A webhook can also
-authenticate to its target with a stored credential and send a **custom JSON
-body**, so you can write rows straight into a static-token CRM (HubSpot,
-Airtable, Pipedrive) without a middleman.
-
-Two optional fields on a rule:
-
-- **`connection`**: the NAME of a stored credential (created out-of-band, see
-  below). At send time the relay attaches that credential's header to the
-  request. The manifest carries the **name only, never the secret**.
-- **`bodyTemplate`**: a custom JSON body with `{{field}}` placeholders (one
-  top-level row field each). Each placeholder is replaced with the **JSON
-  encoding** of the value, so a value can never break out of its JSON position
-  (this is the injection defence). Put each placeholder in a value position,
-  unquoted: `{"email": {{email}}}`, not `{"email": "{{email}}"}`. A missing
-  field renders as `null`. When set, the rendered body replaces the standard
-  envelope.
-
-```json
-"webhooks": [
-  {
-    "on": "create",
-    "collection": "leads",
-    "url": "https://api.hubapi.com/crm/v3/objects/contacts",
-    "connection": "hubspot",
-    "bodyTemplate": "{\"properties\": {\"email\": {{email}}, \"firstname\": {{name}}}}"
-  }
-]
-```
-
-**Connections API** (owner-cookie OR owning-agent-key, on the main domain):
-
-```
-POST   /v1/apps/:id/connections     static: { name, allowedHost, headerName, headerValue, provider?, label? }
-                                     oauth2: { name, kind:"oauth2", authorizeUrl, tokenEndpoint, clientId, clientSecret, allowedHost, scopes?, authScheme?, instanceField?, authParams?, tokenParams?, label? }
-GET    /v1/apps/:id/connections     -> metadata only (never the secret)
-DELETE /v1/apps/:id/connections/:name
-```
-
-- `headerValue` (e.g. `"Bearer sk_live_..."`) is **encrypted at rest** and is
-  **never returned** by any endpoint. `GET` lists only metadata plus a
-  non-reversible `secretFingerprint`.
-- **`allowedHost` is host-binding**, the exfiltration defence: the credential is
-  attached **only** when the delivery URL host matches it (an exact host such as
-  `api.hubapi.com`, or a single leftmost wildcard such as `*.zohoapis.com`). If a
-  rule's `url` is later repointed to another host, the delivery **fails and the
-  token is never sent**. Host-binding composes with the SSRF guard (which still
-  blocks internal addresses and redirects).
-- Per-app connection cap (`MAX_CONNECTIONS_PER_APP`, default 20).
-- `kind` defaults to `"static"`.
-
-**OAuth2 connections (`kind:"oauth2"`, ANY provider).** The relay is a **generic
-OAuth2 client**: YOU supply the whole provider config as data, so it works with
-any OAuth2 service (Google, GitHub, Notion, Slack, a CRM, a custom API). There
-are **no presets and no provider allowlist**, and you bring your own client
-credentials. One-time setup:
-
-1. **Register your own OAuth2 app** with the provider and read these off its app
-   registration: the **authorize URL** and **token URL** (both `https`), your
-   **client ID** + **client secret**, and the **scopes** you need. In the app,
-   register this exact redirect URI:
-   `<your-homespun-domain>/oauth/connections/callback`.
-2. **Create the connection** with that config:
-   - `authorizeUrl`, `tokenEndpoint`: the provider's endpoints (`https` only; a
-     URL that resolves to a private/loopback/metadata address is rejected).
-   - `clientId`, `clientSecret`: your app's credentials (the secret is encrypted
-     at rest and never returned).
-   - `allowedHost`: the API host the token may be sent to (host-binding).
-   - `scopes` (optional): space-delimited scopes for the authorize request.
-   - `authScheme` (optional, default `Bearer`): the scheme the access token is
-     sent under (set e.g. `Zoho-oauthtoken` for a non-Bearer provider).
-   - `instanceField` (optional): the name of a token-response JSON field that
-     holds the API base URL (e.g. `instance_url` or `api_domain`). When set, the
-     relay reads it after consent, re-binds `allowedHost` to that host, and
-     resolves relative rule urls against it.
-   - `authParams` / `tokenParams` (optional): extra key/values merged into the
-     authorize redirect / the token POST (e.g. `{ "access_type":"offline",
-     "prompt":"consent" }` to be issued a refresh token). They are URL-encoded
-     and can never override a protocol-reserved parameter.
-
-   Example (placeholder values):
-   ```
-   { "name":"my-crm", "kind":"oauth2",
-     "authorizeUrl":"https://accounts.example.com/oauth/authorize",
-     "tokenEndpoint":"https://accounts.example.com/oauth/token",
-     "clientId":"abc123", "clientSecret":"s3cr3t",
-     "allowedHost":"api.example.com", "scopes":"read write",
-     "authParams":{ "access_type":"offline" } }
-   ```
-   The row starts in `pending_auth` with no tokens.
-3. **Complete consent in a browser** as the signed-in **owner** (an agent key
-   cannot): open `GET /v1/apps/:id/connections/:name/authorize`. It redirects you
-   to the provider (PKCE + `state`); after you approve, the relay captures the
-   tokens, binds `allowedHost` (to the `instanceField` host when set, else your
-   supplied host), and flips the connection to `active`.
-4. **Reference it by name** from a webhook rule, exactly like a static connection
-   (`"connection": "<name>"`). A relative rule `url` is resolved against the
-   captured instance base (requires `instanceField`); an absolute `https` url is
-   used as-is (still host-bound). The relay refreshes the access token on demand
-   before it expires; a revoked refresh token flips the connection to
-   `needs_reauth` and the delivery fails rather than sending a stale token.
-   Tokens are never returned by any endpoint or logged.
-
-**Inspecting outcomes.** The relay captures a capped slice of the target's
-response so you can read the CRM's created-id (2xx) or its validation error (4xx)
-after the fact:
-
-```
-GET /v1/apps/:id/webhooks/deliveries?collection=&status=&limit=
-```
-
-Returns recent deliveries: `{ id, collection, rowKey, op, url, status, attempts,
-responseStatus, responseBody, error, createdAt, deliveredAt, lastAttemptAt }`.
-The `url` is host + path only (the query string is dropped) and the response
-**never** includes the auth header or the connection secret.
-
-**No credential? Use a catch-hook.** If you would rather not store a CRM token on
-the relay at all, point a plain (no-`connection`) webhook at a Zapier / Make /
-n8n **catch-hook URL** and let that automation platform hold the CRM credentials.
-Zero auth on the Homespun side, and the same signed envelope arrives at the
-catch-hook.
+> **This section lives in a separate file. Read it before writing a `webhooks`
+> rule** (`references/webhooks.md`, alongside this SKILL.md). It has the payload
+> shape, the HMAC signature and how to verify it, the at-least-once delivery and
+> idempotency rules, the Connections API, the generic OAuth2 setup, and the
+> host-binding rule that stops a credential being sent to the wrong host. Do not
+> author a webhook rule from memory: the signing and host-binding details are not
+> guessable, and getting them wrong either fails silently or sends a token
+> somewhere it should not go.
+>
+> If this skill reached you over HTTP rather than as files on disk, fetch it with
+> `homespun skill show --section webhooks`, or
+> `GET <relay>/skills/homespun/references/webhooks.md`.
 
 <!-- homespun:core:end -->
 
@@ -1559,17 +1374,10 @@ them wrong in six months. Composition only ever ADDS; there is no way to subtrac
 rule that takes access away cannot be summarized on an install screen without
 the reader having to work out an ordering.
 
-Rules the deploy validator enforces, so you find out at `homespun deploy` rather
-than in production:
-
-- Every entry of `includes` must name a role declared in the same `roles` block.
-- A built-in name (`owner`, `member`, `agent`, `anyone`, `author`, `creator`,
-  `editor`) is rejected. Their meaning is fixed by the platform, and a manifest
-  that could include one would be a manifest handing out owner powers.
-- No cycles, direct or through a chain. The error names the cycle.
-- At most 16 entries per role, and the longest chain may be 8 roles deep
-  counting the role itself. If you hit that, the hierarchy is too deep for
-  anyone to reason about; flatten it.
+`includes` may only name roles declared in the same block, may not name a
+built-in (their meaning is fixed by the platform), and may not cycle. Deploy
+enforces that plus the size caps, and each error names the offending role and
+the fix, so write what you mean and let the validator correct you.
 
 **A person may hold several roles at once.** A member is given roles with
 `homespun members set-role --app <app> --human <humanId> --custom-role
@@ -1654,18 +1462,11 @@ read their own row even though they could never have created it.
 Use `set: "caller"` when the row belongs to whoever made it. Omit it when
 somebody else decides who the row belongs to.
 
-Rules the deploy validator enforces, so you find out at `homespun deploy`:
-
-- A relation name follows the role-name grammar, and may not be a built-in
-  subject (`owner`, `member`, `agent`, `anyone`, `author`, `creator`, `editor`),
-  may not be `own`, and may not be a role you declared. Those names already mean
-  something in a permission list.
-- `field` must be a simple top-level field name, and if the collection declares
-  a schema it must be a declared property that can hold a string (`"type":
-  "string"`, or `["string", "null"]` for a row that starts unassigned).
-- At most 8 relations per collection, and two relations may not bind the same
-  field.
-- A permission list may only name a relation the SAME collection declares.
+A relation name may not collide with a built-in subject or a role you declared,
+and its `field` must be a schema-declared property that can hold a string
+(`"type": "string"`, or `["string", "null"]` for a row that starts unassigned).
+Deploy enforces that plus the per-collection cap, naming the relation and the
+fix in the error.
 
 **Narrowing works too.** `admin:assignee` on `update` means "an admin, and only
 on rows assigned to them". It is the same shape as `<role>:own` and
@@ -1801,7 +1602,8 @@ from 64 KiB to **256 KiB** (`MAX_DOCUMENT_ROW_DATA_BYTES`).
   "maps": {
     "storage": "document",
     "schema": { "$ref": "#/$defs/MindMap" },
-    "read": ["owner_"], "write": ["member"], "delete": ["owner_"]
+    "read": ["creator"], "write": ["member"],
+    "update": ["creator"], "delete": ["creator"]
   }
 }
 ```
@@ -2243,6 +2045,46 @@ from that:
   (`homespun.session.login()`); otherwise the owner is stuck anonymous on their
   own app. Sessions are per-origin: signing in on the main site does not sign a
   person in to an app. See "Recipe: public submits, only the owner reads".
+
+### Working with no network: `offline`
+
+Set `"offline": true` in `x-homespun-manifest` and the app installs a service
+worker, so a viewer who has opened it once can open it again with no connection
+at all. Without this, an installed app shows the browser's network-error page
+the moment the signal drops.
+
+```json
+"x-homespun-manifest": {
+  "app": { "name": "Shop stock" },
+  "offline": true,
+  "cdn": false,
+  "collections": { "...": {} }
+}
+```
+
+Four things to know before you set it.
+
+- **It caches the SHELL, not data.** The document, the SDK, the icons and your
+  deployed assets are cached; collection rows, sessions and attachments always
+  go to the network. So an offline app opens and paints, and
+  `homespun.collections.*` still needs a connection. Design the page to render
+  something useful before its data arrives, and to say so plainly when it
+  cannot reach the relay.
+- **Only on a `public` app.** A `private` or `link` app decides per request, on
+  the server, whether you get the app or a sign-in page. A cached copy would
+  answer that on the device instead, so the worker is simply not served to
+  those apps and the key is ignored. If the data is sensitive, keep the app
+  public and put the protection where it belongs: `"read": ["owner", "member"]`
+  on the collections. A public app with member-only collections gives you a
+  page anyone can load and data only your people can see.
+- **Cannot be combined with `cdn`.** Declaring both is a deploy error. An app
+  that pulls React or a font from another origin cannot paint with no
+  connection, and the worker will not cache another origin's bytes. Inline what
+  you need instead. Your own assets shipped via the deploy bundle are cached
+  and work offline.
+- **Redeploys still take effect immediately** while the viewer is online: the
+  page revalidates on every load and a new deploy replaces the worker and drops
+  the previous version's cache. You do not have to think about cache-busting.
 
 ## Deploying and iterating
 
@@ -2854,15 +2696,15 @@ Rules worth knowing:
 A short checklist of the things that most often go wrong. The first one is a
 data-exposure trap, not a style nit, so read it first.
 
-1. **⚠️ Collection read is UNRESTRICTED BY DEFAULT. This leaks PII.** Omitting
-   `read` does not mean "private": it means everyone who can open the app reads
-   every row, and on a `public`/`link` app that is every anonymous visitor on
-   the internet, straight off the data API (`GET /_hs/c/<collection>`), page or
-   no page. **Any collection the public can write to that captures personal data
-   (emails, names, phone numbers, messages, orders, bookings) MUST declare
-   `read: ["owner"]`** (add `"agent"`/`"member"` if they read it too). If you
-   only need a public tally, use `countRead` (see "Recipe: a public count
-   without exposing the rows"), never a wide-open `read`. When in doubt:
+1. **⚠️ Pick the NARROWEST `read` that works.** Deploy makes you declare one, so
+   you will not omit it by accident, but nothing stops you writing
+   `read: ["anyone"]` on a collection that captures personal data. Every visitor
+   can hit the data API (`GET /_hs/c/<collection>`) directly, page or no page, so
+   a collection the public can write to that holds emails, names, phone numbers,
+   messages, orders or bookings wants `read: ["owner"]` (add `"agent"`/`"member"`
+   if they read it too), or `read: ["creator"]` for "each person sees only their
+   own". If you only need a public tally, use `countRead` (see "Recipe: a public
+   count without exposing the rows"), never a wide-open `read`. When in doubt:
    collecting FROM the public means restricting who can READ.
 
 2. **`notify` interpolation is single-row, top-level only.** Both `when.field`
@@ -2889,28 +2731,16 @@ data-exposure trap, not a style nit, so read it first.
    row's server-stamped `author` is the only tamper-proof attribution, and it
    names the row's LAST writer, not its creator.
 
-5. **Anonymous visitors have no stable identity.** An anonymous caller's
-   `session.humanId` is `null` and every anonymous write authors as the same
-   `anon` sentinel, so you cannot tell two anonymous visitors apart server-side.
-   They therefore never satisfy `creator`, `editor`, `author` or any
-   `:own`/`:creator` suffix: a permission list scoped that way is always false
-   for an anonymous caller, which is fail-closed and deliberate.
-   When a public app needs to remember "this browser's own draft" (an RSVP they
-   can edit, a cart), mint a client id in `localStorage` and store it IN the row
-   data yourself:
-
-   ```js
-   function clientId() {
-     let id = localStorage.getItem("cid");
-     if (!id) { id = crypto.randomUUID(); localStorage.setItem("cid", id); }
-     return id;
-   }
-   // Tag rows with it, then filter client-side to "mine".
-   await homespun.collections.create("rsvps", { cid: clientId(), name });
-   ```
-
-   This is a convenience handle, not a security boundary (anyone can read/forge
-   a `cid`); never gate anything sensitive on it.
+5. **A visitor identity is a BROWSER, not a person.** On a `public`/`link` app
+   that declares a row scope a visitor can satisfy, the relay mints one
+   automatically and `creator` / `editor` / `:own` / `:creator` all work for
+   anonymous visitors (see "Visitors: recognising someone with no account", which
+   has the exact minting rule and the full list of what it cannot do). Do not
+   hand-roll a `localStorage` client id to stand in for it: a page-written id is
+   forgeable and gates nothing, whereas the minted identity is server-stamped.
+   What it still is not is proof of who anyone is, so never gate anything that
+   matters on it, and tell people plainly when their data lives in one browser
+   only.
 
 6. **Verify before you deploy.** Run a syntax pass and open the built page in a
    real browser before shipping: a page that never loads its SDK renders a dead
@@ -2933,24 +2763,3 @@ data-exposure trap, not a style nit, so read it first.
 
 <!-- homespun:core:end -->
 
-## If you know the old (event) skill: migration note
-
-If you learned homespun's v1 event/app/template model, here's
-the direct mapping. Everything below is a rename or a fold onto the one
-collection primitive, not a new concept:
-
-| Old | New |
-|---|---|
-| `homespun.emit(type, data)` | `homespun.collections.create("events", { type, ...data })` on a manifest collection with `appendOnly: true` |
-| `homespun.on(type, handler)` | `homespun.feed.on(handler, { collection: "events" })`, then check `entry.data.type === type` yourself |
-| `homespun.state.events` | `homespun.collections.snapshot("events")` |
-| `homespun.state.last(type)` | `homespun.collections.snapshot("events").findLast(r => r.data.type === type)` |
-| `homespun.inputData` | a seed row you write yourself at deploy time (e.g. an app-config collection, key `"main"`), read via `homespun.collections.get(...)` |
-| `homespun.records.*` | `homespun.collections.*`, the same seven methods (`snapshot/get/on/create/upsert/update/delete`), just renamed to match the manifest's `collections` keyword |
-| `homespun create` / `homespun template create` / `homespun upgrade` | `homespun deploy` (create with no `--app`; redeploy with `--app <id>`) |
-| `homespun watch <homespun-id>` | `homespun apps watch <app>` |
-| `homespun send` | `homespun data <app> <collection> upsert` (or `update`). There's no separate "send an event" verb; you write into a collection like anything else |
-
-There is no shim: a deployed app talks the new API only. If you're
-migrating an existing template/app's HTML, expect to rewrite its data
-calls, not just its imports.

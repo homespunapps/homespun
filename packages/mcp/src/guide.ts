@@ -41,14 +41,26 @@ export function extractCore(skillMarkdown: string): string {
 }
 
 /**
- * Build the full MCP guide: the MCP invocation layer followed by the shared
- * conceptual core extracted from SKILL.md. `mcpInvocation` is the contents of
- * skills/homespun/MCP-INVOCATION.md; `skillMarkdown` is the contents of SKILL.md.
+ * Build the full MCP guide: the MCP invocation layer, the shared conceptual
+ * core extracted from SKILL.md, then every reference section appended in the
+ * order given. `mcpInvocation` is the contents of skills/homespun/MCP-INVOCATION.md;
+ * `skillMarkdown` is the contents of SKILL.md; `references` is the contents of
+ * skills/homespun/references/*.md.
+ *
+ * The references are INLINED here rather than left behind a pointer, because an
+ * MCP client has no filesystem to read them from and no `homespun skill show`
+ * to fetch them with: the guide is the whole of what it gets. A file-based
+ * agent reads SKILL.md's pointer and loads the same file on demand, so the two
+ * transports carry the same content by different routes. That asymmetry is the
+ * point: the pointer saves context only where the reader can act on it.
  */
 export function composeMcpGuide(
   mcpInvocation: string,
   skillMarkdown: string,
+  references: readonly string[] = [],
 ): string {
   const core = extractCore(skillMarkdown);
-  return `${mcpInvocation.trim()}\n\n${core}\n`;
+  const refs = references.map((r) => r.trim()).filter((r) => r.length > 0);
+  const tail = refs.length > 0 ? `\n\n${refs.join("\n\n")}` : "";
+  return `${mcpInvocation.trim()}\n\n${core}${tail}\n`;
 }

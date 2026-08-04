@@ -879,12 +879,20 @@ const SKILL: NounSpec = {
   tagline: "the relay's SKILL.md",
   group: "other",
   rootSummary:
-    "The relay's SKILL.md: show, version. Auto-updating, and no API key is required.",
+    "The relay's SKILL.md: show, version, sections. Auto-updating, and no API key is required.",
   verbs: [
     {
       verb: "show",
       summary:
         "Fetches the relay's SKILL.md and writes the raw markdown to stdout.",
+      flags: [
+        {
+          name: "section",
+          value: "<slug>",
+          description:
+            "Fetch one reference section instead of the whole skill (see 'skill sections')",
+        },
+      ],
     },
     {
       verb: "version",
@@ -896,6 +904,11 @@ const SKILL: NounSpec = {
             "Print the bare version string instead of the JSON envelope",
         },
       ],
+    },
+    {
+      verb: "sections",
+      summary:
+        "Lists the reference sections SKILL.md points at but does not include.",
     },
   ],
   notes: [
