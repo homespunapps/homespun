@@ -237,3 +237,91 @@ the relay at all, point a plain (no-`connection`) webhook at a Zapier / Make /
 n8n **catch-hook URL** and let that automation platform hold the CRM credentials.
 Zero auth on the Homespun side, and the same signed envelope arrives at the
 catch-hook.
+
+## A target the installer supplies: `urlFromSetting`
+
+Instead of `url`, a rule may name **`urlFromSetting`**: the name of a top-level
+string field of the app's declared `settingsCollection`, read at **fire time** to
+get the actual target. Exactly one of `url` / `urlFromSetting` per rule.
+
+```json
+"webhooks": [
+  { "on": "create", "collection": "orders", "urlFromSetting": "fulfilmentUrl" }
+]
+```
+
+It exists for **templates**, and for those it is not optional: a webhook rule
+carrying a hardcoded `url` **cannot be published to the community store** (the
+publish gate refuses it, naming the collection), because the publisher's own
+endpoint would otherwise be baked into every install. `urlFromSetting` lets each
+installer supply their own through the app's install-time config.
+
+Two consequences worth designing for:
+
+- It **requires `x-homespun-manifest.settingsCollection`** to be declared. This
+  is easy to remember as a template-only concern and then forget when you add a
+  rule to an ordinary app.
+- It **fails closed at fire time**, never silently sends somewhere wrong. If the
+  config row is missing, the field is unset or not a string, or the value is not
+  a structurally valid target (https, no userinfo, no IP literal), the delivery
+  fails with an error naming which of those it was, and nothing is sent.
+
+## A schedule that fires a webhook
+
+A `schedules[]` rule fires on a **date** rather than on a change, and it can
+deliver to a machine instead of a person. Swap the email keys for the webhook
+keys and everything else about the rule stays as documented in the main skill:
+
+```json
+"schedules": [
+  {
+    "collection": "listings",
+    "dateField": "expiresOn",
+    "offsetDays": 0,
+    "when": { "field": "status", "equals": "live" },
+    "url": "https://api.example.com/hooks/expire"
+  }
+]
+```
+
+**A rule fires exactly one action.** `to` (email) or `url`/`urlFromSetting`
+(webhook), never both and never neither, enforced at deploy:
+
+- both: `a schedule rule fires exactly one action - provide 'to' (email) or
+  'url'/'urlFromSetting' (webhook), not both`
+- neither: `a schedule rule requires an action - 'to' (email) or
+  'url'/'urlFromSetting' (webhook)`
+- and the keys of the unused shape are refused individually, so `subject`
+  beside a `url` is rejected as an email-only key rather than ignored.
+
+**Everything about delivery is the same code as a `webhooks[]` rule**, not a
+parallel implementation: the same URL and `bodyTemplate` validation (with the
+same error text), the same HMAC signing and `X-Homespun-Signature` header, the
+same SSRF re-resolution, the same `connection` host-binding, the same retry
+schedule and attempt cap, and the same `X-Homespun-Delivery` idempotency key. A
+receiver verifies a scheduled delivery exactly as it verifies any other.
+
+Four differences, all upstream of delivery:
+
+- **There is no `on` key.** The trigger is `dateField + offsetDays` landing on
+  today, scanned once per app per local day.
+- **`when` is level-only.** The `changedTo` edge form is rejected at deploy: a
+  dated scan has no before-state to compare against.
+- **The envelope carries `"op": "schedule"` and `"feed_seq": null`**, because no
+  row mutation triggered it. A receiver that switches on `op`, or that assumes
+  `feed_seq` is always a number, needs to handle both.
+- **Retargeting a rule's URL lets an already-fired date fire again.** A rule's
+  identity is hashed from its fields including `url` / `urlFromSetting` /
+  `bodyTemplate`, so changing the target mints a new rule as far as the
+  once-per-date guarantee is concerned, and rows that already fired under the old
+  target will fire once more under the new one.
+
+**Caps are separate budgets, and there are three of them.** A per-app rule-count
+cap (`SCHEDULES_MAX_RULES`, default 10) covers all `schedules[]` rules of both
+kinds. A per-app per-day *enqueue* cap applies **per action kind**
+(`SCHEDULES_MAX_WEBHOOKS_PER_APP_DAY` and `SCHEDULES_MAX_EMAILS_PER_APP_DAY`,
+both default 20), so an app cannot spend one kind's budget on the other. Then the
+ordinary per-app hourly *send* cap (`WEBHOOKS_APP_HOURLY_CAP`, default 500)
+applies to the resulting deliveries, shared with your `webhooks[]` traffic. The
+webhook action is gated on `WEBHOOKS_ENABLED` independently of `NOTIFY_ENABLED`,
+so a webhook-only app does not need the email path switched on at all.

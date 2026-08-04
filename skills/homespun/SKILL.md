@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.43 -->
+<!-- homespun skill v1.6.44 -->
 
 # homespun
 
@@ -44,7 +44,8 @@ data you can come back to.
 
 **This section is first for a reason.** Everything below it assumes a working
 `homespun` command and a key. If you were pointed here to "set up Homespun",
-this is the whole of it: two commands, then "Registering" for the sign-in.
+this is the whole of it: two commands, then `references/registering.md` for
+the sign-in.
 
 If the `homespun` command isn't on your PATH yet, install it first:
 `npm i -g @homespunapps/cli`.
@@ -54,7 +55,7 @@ works out of the box. The CLI needs:
 
 - **An agent API key.** Either pre-provided by the operator (as
   `HOMESPUN_API_KEY`), or obtained yourself via `homespun agent register` (see
-  "Registering" below). Once registered, the key is saved to the config file
+  `references/registering.md`). Once registered, the key is saved to the config file
   and you don't need `HOMESPUN_API_KEY` at all.
 - **A relay URL.** Only relevant for self-hosters: set `HOMESPUN_URL` (or pass
   `--url`) to point at a non-hosted relay. Note this is the **control-plane**
@@ -222,7 +223,7 @@ answers 200 with an explicit anonymous marker rather than an alarming 401.)
 PUBLIC (or LINK) app does not: it serves the page straight to them, with no
 sign-in prompt anywhere.** That is the point of public, but it has a
 consequence you must design for: **if a public/link app has ANY owner-only or
-member-only surface (a `read: ["owner","agent"]` collection, an admin panel,
+member-only surface (a `read: ["owner"]` collection, an admin panel,
 a moderation view), the page MUST render its own sign-in control, or the owner
 can never reach it.** They will open their own app, be handed an anonymous
 session like everybody else, and stay `kind: "anonymous"` forever. Nothing in
@@ -342,7 +343,7 @@ How the consent + anti-abuse rules keep this safe:
   `NOTIFY_EXTERNAL_ENABLED` setting. While it is off (the default), any
   `to: ["submitter"]` rule is rejected at deploy. The hosted relay has it enabled.
 
-**Email a reminder on a date (`schedules`).** Where `notify` fires on a change,
+**Fire on a date (`schedules`), by email or webhook.** Where `notify` fires on a change,
 `schedules` fires on a **date**: declare a `schedules` array to have the relay
 email the owner/members a set number of days before, on, or after a date stored
 in a row. A once-a-day scan at **08:00 in the app's time zone** finds rows whose
@@ -383,6 +384,15 @@ Rules of the road:
   for every row.
 - **`subject`** / **`body`** are the same `{{fieldKey}}` plain-text templates as
   `notify`.
+- **A rule may fire a WEBHOOK instead of an email.** Swap `to`/`subject`/`body`
+  for `url` (or `urlFromSetting`), plus the optional `connection` and
+  `bodyTemplate`, and the same date match POSTs to your endpoint instead of
+  mailing anyone. A rule fires **exactly one** action: declaring both an email
+  and a webhook shape, or neither, is a deploy error naming which. The delivery
+  is the same signed, retried, SSRF-guarded path `webhooks` uses, so the
+  mechanics live with it in `references/webhooks.md` under "A schedule that
+  fires a webhook". Reach for it to drive a machine off a date (expire a
+  listing, poke a fulfilment system, nudge a Slack channel) rather than a person.
 - **Recurrence is client-driven**: the relay is a dumb date-matcher and fires a
   given row **exactly once per date** (a re-scan, restart, or replica never
   re-alerts). For a recurring reminder, have your page advance the date field
@@ -514,124 +524,17 @@ What to do, in this order:
    report the error to the human. Do not loop: repeated upgrade attempts
    in the same run are a bug, not a recovery strategy.
 
-## Registering
+**Registering, and claiming.** Before you can deploy you need an agent API key,
+and that key needs a human owner. If `homespun agent register` and
+`homespun deploy` already work for you, you are past this and can skip it.
 
-If you weren't handed an API key, provision one yourself, **once**, with:
-
-```sh
-homespun agent register --name "<short-descriptive-agent-name>"
-```
-
-Pick a stable, descriptive name: it's how a human tells your agent apart from
-other agents on the relay (e.g. `claude-code-lalit-macbook`, `ci-pr-review-bot`,
-`telegram-helper`), and it's what the approval screen shows. If omitted, the
-CLI defaults it to `cli-<hostname>`.
-
-Self-hosters add `--url "$HOMESPUN_URL"` (or set `HOMESPUN_URL`) to target a
-non-hosted relay.
-
-**If you are an agent, use the two-phase form.** Plain `homespun agent register`
-BLOCKS for up to 15 minutes waiting for a human to approve, and you cannot show
-anyone the link until the command returns. Your harness will kill the call
-first, and the key is issued only to the process that is still polling, so your
-human approves, sees success, and ends up with nothing. Do this instead:
-
-```sh
-homespun agent register --start --name "<short-descriptive-agent-name>"
-```
-
-It returns immediately with JSON on stdout:
-
-```json
-{
-  "state": "pending_approval",
-  "verification_uri_complete": "https://homespun.dev/device?code=ABCD-EFGH",
-  "user_code": "ABCD-EFGH",
-  "expires_in": 900
-}
-```
-
-1. **Show your human the link and the code**, and say they can open it on any
-   device, their phone included. Then stop and wait for them to tell you they
-   approved it. Do not poll in a loop, and do not sleep: ask, and wait for the
-   answer like any other question.
-2. When they say they are done:
-
-   ```sh
-   homespun agent register --resume
-   ```
-
-   On approval it saves the key to
-   `${XDG_CONFIG_HOME:-~/.config}/homespun/config.json` (mode 0600) and prints
-   the same `"registered_via": "device"` envelope, and every later command
-   picks the key up from that file automatically.
-3. If `--resume` exits with `not_approved_yet`, they have not finished. Show
-   the link again, and try once more when they say so. The approval waits on
-   the relay for the code's full 15 minutes, so a gap between the two commands
-   costs nothing.
-
-**Interactive humans can use the blocking form.** Someone typing into their own
-terminal sees the link appear and approves it without a second command, so
-plain `homespun agent register` is still right for them. It runs the same RFC
-8628 device-authorization flow, printing the URL and code to stderr and polling
-`POST /v1/device/token` until they approve.
-
-Either way, a device-flow agent is **already owned** by the human who approved
-it: no separate claim step is needed, and `homespun deploy` works immediately.
-
-**Fallback: direct registration.** When the relay predates the device flow
-(404 on `/v1/device/code`), the CLI falls back to plain `POST /v1/register`
-with a note on stderr (and `"registered_via": "direct"`). Pass `--no-device`
-to force this path (e.g. CI with no human), or `--secret <s>` /
-`HOMESPUN_REGISTER_SECRET` for a `REGISTRATION_MODE=secret` relay (a secret
-implies the direct path). Whether direct registration works depends on the
-relay's `REGISTRATION_MODE`:
-
-- `closed` (the default): the endpoint returns 404. The operator must hand
-  you a key directly; self-registration is disabled. (The device flow is NOT
-  gated by this mode; it requires an explicit human approval instead.)
-- `secret`: pass the operator-shared registration secret with `--secret <s>`
-  or the `HOMESPUN_REGISTER_SECRET` env var. A missing/wrong secret is a 401.
-- `open` (the hosted relay's mode): public; works with no secret.
-
-The key is not printed by default (pass `--print-key` if you need it echoed),
-and the relay rate-limits both `/v1/register` and `/v1/device/code` per IP.
-
-## Claiming: your app needs a human owner
-
-**Device-flow agents are born claimed; direct-registered agents are not.**
-An agent registered through the browser-approval flow above already belongs
-to the human who approved it, so skip this section. A DIRECT `POST /v1/register`
-mints an agent with no human attached at all; this is true even if a human ran
-`homespun agent register --no-device` themselves and handed you the resulting key;
-direct registration and ownership are two separate steps no matter who typed
-the command. Every app row (`App.ownerHumanId`) is owned by a human, so
-creating a new app via `homespun deploy` rejects with `agent_not_claimed` until
-your agent has been **claimed** by a human. Do this once, before your first
-deploy:
-
-1. **The human mints a one-shot claim code.** In the relay's UI: Account menu →
-   "My agents" → "Claim a new agent" → "Generate claim code". This calls
-   `POST /v1/self/claim-codes` and shows the human a code like `cc_...`
-   (15-minute TTL, single use). Ask the human to do this and hand you the
-   code out-of-band (paste it into the chat, an env var, however you two are
-   talking).
-2. **You claim yourself with the code:**
-
-   ```sh
-   homespun agent claim <code>
-   ```
-
-   This calls `POST /v1/agents/claim`, which sets `Agent.ownerHumanId` to that
-   human and migrates ownership of anything the agent already created. Output:
-   `{ ok: true, owner_human_id, claimed_at }`.
-3. **This is one-way.** An already-claimed agent re-running `homespun agent claim`
-   gets `agent_already_claimed` (409): there's no unclaim/re-claim in v1. To
-   change owners, register a fresh agent and have the new human claim that one.
-
-If `homespun deploy` fails with `agent_not_claimed`, stop and ask the human to
-mint you a claim code; don't guess at a workaround.
-
+> **Read `references/registering.md` if you do not yet have a working key**, or
+> if a command fails with `agent_not_claimed` or `unauthorized`. It has the
+> registration flow, where the key is stored, and the claim handshake that
+> attaches you to a human. Do not guess at a workaround for `agent_not_claimed`:
+> the fix is a claim code only the human can mint.
+>
+> Over HTTP rather than on disk: `homespun skill show --section registering`.
 <!-- homespun:core:start -->
 
 ## Authoring an app: the manifest
@@ -640,8 +543,8 @@ The manifest is a plain JSON Schema 2020-12 document with one namespaced
 extension key, `x-homespun-manifest`. It is the **whole consent surface**: what
 it declares is exactly what the relay enforces at runtime, so be as precise
 as you can: unknown keys are hard rejected (a typo is a deploy-time error,
-never silently ignored), and there are no implicit grants: `owner`/`agent`
-are never auto-added to a permission list.
+never silently ignored), and there are no implicit grants: `owner` is never
+auto-added to a permission list.
 
 **Visibility is not a manifest field.** Whether an app is `private`, `link`,
 or `public` is a deploy-time flag (default `private`; with the CLI,
@@ -681,14 +584,14 @@ app stores and who may write it; visibility governs who may open the app at all
     "collections": {
       "items": {
         "schema": { "$ref": "#/$defs/GroceryItem" },
-        "read": ["owner", "member", "agent"],
-        "write": ["agent", "owner", "member"],
-        "delete": ["agent", "owner", "member"]
+        "read": ["owner", "member"],
+        "write": ["owner", "member"],
+        "delete": ["owner", "member"]
       },
       "audit": {
         "schema": { "$ref": "#/$defs/AuditEntry" },
-        "read": ["owner", "agent"],
-        "write": ["agent"],
+        "read": ["owner"],
+        "write": ["owner"],
         "delete": ["owner"],
         "appendOnly": true
       }
@@ -707,7 +610,7 @@ app stores and who may write it; visibility governs who may open the app at all
 > rather than by choice on most collections ever deployed, so silence stopped
 > being an available answer. Say which you mean:
 >
-> - `"read": ["owner", "agent"]` for anything a person would not want shown to
+> - `"read": ["owner"]` for anything a person would not want shown to
 >   strangers (names, emails, phone numbers, messages, orders, bookings, any
 >   personal data). Add `"member"` when staff read it too.
 > - `"read": ["creator"]` for "everyone sees only their own rows".
@@ -715,8 +618,8 @@ app stores and who may write it; visibility governs who may open the app at all
 >   absent-key behaviour, written down, and it is perfectly legal: a menu, a
 >   published schedule, a price list.
 > - `"read": []` when nobody reads the rows through the data API at all (an
->   agent-written audit log you only ever read as the owner, for instance, would
->   still list `"owner"`).
+>   audit log you only ever read as the owner, for instance, would still list
+>   `"owner"`).
 >
 > Pick the narrowest one that works. Every visitor can hit the data API
 > (`GET /_hs/c/<collection>`) directly, so the page is never what protects the
@@ -724,8 +627,8 @@ app stores and who may write it; visibility governs who may open the app at all
 >
 > **Rule of thumb: collecting data FROM the public? Restrict who can READ it.**
 > The "public submits, only the owner reads" recipe below is exactly this shape:
-> `orders` sets `read: ["owner", "agent"]` because the submissions are private,
-> while `menu` sets `read: ["anyone"]` because it is meant to be world-readable.
+> `orders` sets `read: ["owner"]` because the submissions are private, while
+> `menu` sets `read: ["anyone"]` because it is meant to be world-readable.
 >
 > Adding a `read` list to a collection that never had one is **never** blocked
 > by the redeploy compat check. Silence already granted the widest scope there
@@ -805,8 +708,11 @@ Fields, exactly:
       that you can no longer arrive at it by saying nothing. Write
       `"read": ["anyone"]` if that is what you want.
     - **`[]` (empty)**: legal, and the opposite of omitting it. Nobody may read
-      the rows through the data API. Note that this includes you: an agent that
-      needs to read the collection must list `"agent"`.
+      the rows through the data API. Note that this includes you: an agent
+      that needs to read the collection must list `"owner"`, since an agent
+      principal carries its owner's authority automatically (there is no
+      separate `"agent"` role to list; see the **`Roles`** entry under
+      `x-homespun-manifest.collections` below).
     - **Declared, and the caller holds one of the listed roles**: the read is
       allowed and returns every row.
     - **Declared, and the caller holds none of them** (including an explicit
@@ -833,10 +739,13 @@ Fields, exactly:
       sees their own rows" (see "Visitors: recognising someone with no
       account"). A caller with no identity at all, including a visitor on an app
       that declares nothing a visitor could reach, is refused `403` outright.
-    - Matching is **literal, with no implicit grants**: `read: ["owner"]` does
-      not silently include `agent`, and under a bare row-scoped read list even
-      the owner and you are scoped to your own rows unless you also list
-      `"owner"`/`"agent"`.
+    - Matching is **literal, with no implicit grants beyond the platform's
+      `owner` ⇒ `member` hierarchy** (see "Roles your app defines" below):
+      `read: ["member"]` does not silently include a declared custom role, and
+      under a bare row-scoped read list even the owner is scoped to their own
+      rows unless they also list `"owner"`. This already covers you: an agent
+      principal always carries its owner's authority, so `read: ["owner"]`
+      admits you with no separate entry needed.
     - `read` is applied **on top of** app visibility, never instead of it: a
       `private` app still requires a signed-in session before any read role is
       even considered.
@@ -897,7 +806,7 @@ Fields, exactly:
     when the row is created and **frozen** afterwards. An update that omits one
     carries the stored value forward; one that sends a *different* value is
     refused `400 invalid_request` and nothing lands; sending it back unchanged
-    is fine. It applies to every caller, `owner` and `agent` included, because
+    is fine. It applies to every caller, `owner` included, because
     it is a fact about the row rather than about who is asking. Use it to pin
     anything a permission rule is keyed on: a relation field without
     `set: "caller"` is chosen by whoever `write` admits, and without a freeze
@@ -907,18 +816,18 @@ Fields, exactly:
     `{ "except": [...] }`. Set `true` for a journal/event-shaped collection:
     rows can be created but never updated or deleted. **This is enforced, not
     advisory:** an update or delete against an append-only collection is refused
-    `403 append_only` for *every* role, including `owner` and `agent`, and that
+    `403 append_only` for *every* role, including `owner`, and that
     check runs before the role match, so an append-only violation reports
     `append_only` rather than a misleading "forbidden". Model an edit as a new
     row. Because that check runs first, `appendOnly: true` and an `update` list
     contradict each other and the deploy is **rejected** if you declare both:
     there is nobody left for the `update` list to admit. Pick one.
     - **`{ "except": ["owner"] }`** keeps all of that for everyone the list does
-      not name, and lets the named roles update and delete under the
-      collection's ordinary rules. Only `owner` and `agent` may be named: they
-      are the two that can already remove a row from an append-only collection
-      with a purge, so this hands out no reach they did not have, it lets them
-      **correct** a row instead of only destroying it. **Prefer it over a bare
+      not name, and lets `owner` update and delete under the
+      collection's ordinary rules. Only `owner` may be named: it is the one
+      that can already remove a row from an append-only collection
+      with a purge, so this hands out no reach it did not have, it lets the
+      owner (and you, acting as them) **correct** a row instead of only destroying it. **Prefer it over a bare
       `true` whenever a wrong row would otherwise be stuck in the app for
       good**, which is most journals: a mistyped entry in a `true` collection
       cannot be fixed by anybody, ever. An excepted role still has to satisfy
@@ -943,25 +852,26 @@ Fields, exactly:
     `seedOnInstall` collection, never real personal data (names, emails,
     addresses, private messages). When you publish, pass `attest_example_only:
     true` on the `community` tool to attest you have checked this.
-  - **Roles** (the full vocabulary): `agent` (you, the deploying/owning
-    agent), `owner` (the human who owns the app), `member` (a human invited
+  - **Roles** (the full vocabulary): `owner` (the human who owns the app, and
+    you, when you act as their agent: see below), `member` (a human invited
     as a collaborator), `anyone` (any authenticated-or-not visitor, subject
     to the app's visibility), plus three **row-scoped** subjects decided per
-    **`owner` does NOT include `agent`.** The two are separate subjects and
-    neither implies the other, so a list of `["owner"]` refuses YOU, the owning
-    agent, even though the human who owns the app is the human who owns you.
-    There is no role hierarchy and no inheritance: a caller matches a list only
-    by being named in it. **List every subject that should have the verb**, and
-    when the owner says "only I should be able to do this", ask whether they
-    mean only the human (`["owner"]`) or themselves and their tooling
-    (`["owner", "agent"]`). They usually mean the second. The same applies to
-    `member` and to any custom role you declare: you never hold them.
+    **You (the deploying/owning agent) ARE the owner, authority-wise.** There
+    is no separate `agent` role you need to list: an agent principal is
+    authorized for EXACTLY what the human who owns it is authorized for,
+    nothing more and nothing less, so `["owner"]` already means you. `agent`
+    still parses today and behaves exactly like `owner` wherever it appears
+    (write it in a fresh manifest and the deploy still succeeds, with an
+    advisory to migrate), but it is a deprecated alias on its way out: prefer
+    `owner` in anything you write from now on. Beyond that one collapse there
+    is still no other role hierarchy except the platform's own `owner` ⇒
+    `member`: a caller matches a declared or custom role only by being named
+    in it, so **list every subject that should have the verb**.
 
     One exception worth knowing rather than relying on: `purge` and `restore`
-    are gated on owner-or-agent DIRECTLY, not on the collection's lists, so you
-    can always remove or bring back a row regardless of what `delete` says.
-    Do not treat that as a reason to omit `agent` from a `delete` list you
-    intend to use; use the honest verb.
+    are gated on `owner` DIRECTLY, not on the collection's lists, so you (as
+    the owner's agent) can always remove or bring back a row regardless of
+    what `delete` says.
 
     target row rather than carried by the caller: `creator` (created the row),
     `editor` (wrote the row last), and `author` (an older name for `editor`,
@@ -1196,12 +1106,12 @@ suffix forms narrow one of them the same way: `<role>:own` limits it to the rows
 that holder wrote LAST, and `<role>:creator` to the rows they CREATED.
 
 **`editor` and `author` transfer; `creator` does not.** The moment anyone else
-writes a row, including your own agent doing a routine cleanup or a status flip,
-they become its editor. Under `update: ["author"]` the person who created the
+writes a row, including you doing a routine cleanup or a status flip, you
+become its editor. Under `update: ["author"]` the person who created the
 row then loses the right to edit it, and under `read: ["author"]` loses sight of
-it entirely. That is why `update: ["author", "agent"]`, which looks like the
+it entirely. That is why `update: ["author", "owner"]`, which looks like the
 natural shape for an agent-assisted per-user app, quietly locks the human out of
-their own row the first time the agent touches it. Use `creator` for "this row
+their own row the first time you touch it. Use `creator` for "this row
 belongs to this person", and reserve `editor` for "the last person to touch
 this".
 
@@ -1335,7 +1245,7 @@ wins over a row scope).
 
 ### Roles your app defines: `roles` and `includes`
 
-The five built-in subjects (`owner`, `member`, `agent`, `anyone`, plus the
+The built-in subjects (`owner`, `member`, `anyone`, plus the
 row-scoped `creator` / `editor` / `author`) describe a person's relationship to
 the *platform*. They cannot say "a reviewer", "a coach", "a front-desk shift
 lead", because those are relationships to *your app*. Declare those yourself,
@@ -1508,7 +1418,7 @@ worth knowing:
 > "tasks": {
 >   "relations": { "assignee": { "field": "assignedTo" } },
 >   "immutable": ["assignedTo"],
->   "write":  ["agent"],
+>   "write":  ["owner"],
 >   "update": ["assignee"],
 >   "delete": ["owner"],
 >   "read":   ["assignee"]
@@ -1555,25 +1465,25 @@ and is rejected as a relation name.)
 
 #### Recipe: the agent files it, the human owns it
 
-The shape the four first-party templates were faking. The agent is the only
-writer; each row names the person it is for; that person can then read and
-correct their own.
+The shape the four first-party templates were faking. You (the owning agent)
+are the only writer; each row names the person it is for; that person can then
+read and correct their own.
 
 ```json
 "reports": {
   "schema": { "$ref": "#/$defs/Report" },
   "relations": { "subject": { "field": "forPerson" } },
   "read":   ["subject", "owner"],
-  "write":  ["agent"],
-  "update": ["subject", "agent"],
+  "write":  ["owner"],
+  "update": ["subject", "owner"],
   "delete": ["owner"]
 }
 ```
 
-No `set` here, on purpose: the agent is choosing who the row is for, so the
-value has to be the agent's to write. That is the one case where a
+No `set` here, on purpose: you are choosing who the row is for, so the
+value has to be yours to write. That is the one case where a
 client-supplied relation value is the point rather than the hole, and it is safe
-only because `write` is `["agent"]`. **If `write` admits a wider audience, add
+only because `write` is `["owner"]`. **If `write` admits a wider audience, add
 `set: "caller"`,** or anyone admitted to write can name anyone they like.
 
 ### Schema gotchas (two that bite at deploy time)
@@ -1674,15 +1584,15 @@ requests, contact and feedback boxes are all this shape.
   "menu": {
     "schema": { "$ref": "#/$defs/MenuItem" },
     "read": ["anyone"],
-    "write": ["agent", "owner"],
-    "delete": ["agent", "owner"]
+    "write": ["owner"],
+    "delete": ["owner"]
   },
   "orders": {
     "schema": { "$ref": "#/$defs/Order" },
-    "write": ["anyone", "owner", "agent"],
-    "update": ["owner", "agent"],
-    "delete": ["owner", "agent"],
-    "read": ["owner", "agent"]
+    "write": ["anyone", "owner"],
+    "update": ["owner"],
+    "delete": ["owner"],
+    "read": ["owner"]
   }
 }
 ```
@@ -1692,22 +1602,23 @@ requests, contact and feedback boxes are all this shape.
 not only add their own (see "Who may change a row").
 
 An anonymous customer can POST an order (it lands with an `anon` author), but
-listing `orders` gives them `403 collection_read_forbidden`: only the owner and
-you can read the queue, and that is enforced by the relay, so hitting the data
-API directly gets them nothing the page would not show them either. `menu`
-declares `read: ["anyone"]`, so it stays readable by every visitor, which is
-exactly what you want for the half of the app the customer is supposed to see.
-That is the affirmative way to say "this part is public", and it is the only way
-to say it now that an absent `read` is a deploy error.
+listing `orders` gives them `403 collection_read_forbidden`: only the owner
+(you included, acting as their agent) can read the queue, and that is enforced
+by the relay, so hitting the data API directly gets them nothing the page
+would not show them either. `menu` declares `read: ["anyone"]`, so it stays
+readable by every visitor, which is exactly what you want for the half of the
+app the customer is supposed to see. That is the affirmative way to say "this
+part is public", and it is the only way to say it now that an absent `read` is
+a deploy error.
 
 Adding `"creator"` to that `read` list lets each submitter see their own row back
 (an order status page) without seeing anyone else's, but only for submitters who
 are *signed in*: a row-scoped subject needs a stable identity to match a row
 against, and an anonymous visitor has none, so it stays a `403` for them. Use
 `creator` rather than the older `author` here: `author` means the row's LAST
-writer, so the first time the owner or your agent edits an order, that order
-would drop out of the customer's own status page. Keep the queue
-`read: ["owner", "agent"]` when the customer never signs in.
+writer, so the first time the owner (or you, acting for them) edits an order,
+that order would drop out of the customer's own status page. Keep the queue
+`read: ["owner"]` when the customer never signs in.
 
 **The recipe is not finished until the page has a sign-in control.** This app is
 public, so nobody, including its owner, is ever prompted to sign in: the owner
@@ -1770,9 +1681,9 @@ aggregate with `countRead` while keeping `read` locked down:
   "signups": {
     "schema": { "$ref": "#/$defs/Signup" },
     "write": ["anyone"],
-    "update": ["owner", "agent"],
-    "delete": ["owner", "agent"],
-    "read": ["owner", "agent"],
+    "update": ["owner"],
+    "delete": ["owner"],
+    "read": ["owner"],
     "countRead": ["anyone"]
   }
 }
@@ -1850,7 +1761,7 @@ read, so the session and the initial collection snapshots are in place:
 | `homespun.session.logout()` | Clears the stored session token and reloads as anonymous. |
 | `homespun.members.list()` | Every human Member of this app (always including its owner) plus every Agent its owner currently owns, as `{kind:"human"\|"agent", id, displayName, role?}`. Names only: never an email, and never anything derived from one for anyone other than themselves. |
 | `homespun.members.nameFor(author)` | Resolve a row's or feed entry's own `author` (`{kind, id}`) straight to a display name, never throws. Falls back to `"a member"` / `"an agent"` for an id no longer in the directory (a removed member, an unclaimed/reassigned agent), and `"a visitor"` for an anonymous author. |
-| `homespun.uploadBlob(file, opts?)` / `homespun.downloadBlob(id)` / `homespun.saveBlob(id, filename?)` | Binary attachment upload/download. Names kept from v1 for continuity. To DISPLAY an app's own attachment, a bare `<img src=/_hs/attachments/id>` works (the read route accepts the app's own same-origin session for owner/member, private or public). `downloadBlob(id)` is the JS-bytes read: use it with `URL.createObjectURL` only when you need the raw bytes in JS (canvas, re-upload), not as the display path. |
+| `homespun.uploadBlob(file, opts?)` / `homespun.downloadBlob(id)` / `homespun.saveBlob(id, filename?)` | Binary attachment upload/download. Names kept from v1 for continuity. To DISPLAY an app's own attachment, a bare `<img src=/_hs/attachments/id>` works. The read route is gated on the APP's visibility, not per collection: a public or link app serves its attachments to anyone, including anonymous visitors, and a private app requires a signed-in owner/member session. `downloadBlob(id)` is the JS-bytes read: use it with `URL.createObjectURL` only when you need the raw bytes in JS (canvas, re-upload), not as the display path. |
 
 A minimal grocery-list page against the manifest above:
 
@@ -1983,9 +1894,9 @@ attachment id:
       await homespun.collections.create("photos", { image: ref.id, caption: "" });
       const img = document.createElement("img");
       // Display an app's OWN attachment with a bare URL. The
-      // `/_hs/attachments/<id>` route accepts the app's own same-origin session
-      // (owner/member) for reads, so an <img src> renders on the app's own page
-      // for a private app exactly as it does for a public/link one. Use
+      // `/_hs/attachments/<id>` route is gated on the APP's visibility: a
+      // public/link app serves anyone, a private app needs an owner/member
+      // session. Either way an <img src> on the app's own page just works. Use
       // homespun.downloadBlob(id) + URL.createObjectURL only when you need the
       // raw bytes in JS (canvas, a Blob to hand elsewhere).
       img.src = "/_hs/attachments/" + ref.id;
@@ -2002,16 +1913,31 @@ and posts to `POST /_hs/attachments`, so an anonymous visitor is refused
 `homespun.session.kind` is `"anonymous"` and you want a signed-in upload, send
 them through `homespun.session.login()` first.
 
-To instead accept uploads from **anonymous in-page visitors**, use the
-**anonymous-upload capability** (M3): declare the target collection with
-`write: ["anyone"]`, then have the browser POST directly to
-`POST /_hs/attachments?collection=<name>` (a raw `fetch` with a `FormData`
-body, since `uploadBlob` does not set the `?collection=` param, so the
-anonymous path is a plain fetch, not `uploadBlob`). A not-signed-in visitor can then add
-an image straight from the page. Anonymous uploads are image-only
-(server-sniffed), per-file size-capped (`ANON_UPLOAD_MAX_BYTES`), rate-limited
-per (IP, app), and sub-capped per app (`ANON_BYTES_PER_APP`) so a stranger can
-never exhaust the owner's storage.
+To instead accept uploads from **anonymous in-page visitors**, declare the
+target collection with `write: ["anyone"]` and have the browser POST directly to
+`POST /_hs/attachments?collection=<name>`. This is a plain `fetch`, not
+`uploadBlob`, because `uploadBlob` does not set the `?collection=` param:
+
+```js
+const body = new FormData();
+body.append("file", file);            // the field name is exactly "file"
+body.append("filename", file.name);   // optional, display only
+const res = await fetch("/_hs/attachments?collection=photos", { method: "POST", body });
+const ref = await res.json();         // 201 { attachment_id, mime, size, filename }
+// The upload does NOT create a row. Write the id into one yourself:
+await homespun.collections.create("photos", { image: ref.attachment_id });
+```
+
+**The upload stores bytes and returns an id; it never writes a row.** The
+`?collection=` param is read only to check that collection's `write` list. If
+you forget the follow-up `create`, the bytes are stored, count against quota,
+and are referenced by nothing.
+
+Anonymous uploads are image-only (server-sniffed), and bounded four ways:
+`ANON_UPLOAD_MAX_BYTES` per file (**5 MB**), `ANON_BYTES_PER_APP` in total
+(**50 MB**), `ANON_UPLOADS_PER_IP_PER_APP_DAY` (**20** per browser per day), and
+a per-IP limiter on `/_hs/*` writes (**60 per minute**). A stranger can never
+exhaust the owner's storage.
 
 Either way the bytes count against the **app owner's** blob quota, and an
 uploader who goes too fast gets a clean `rate_limited` error.
@@ -2191,119 +2117,16 @@ An app can go **dormant** after a period of inactivity; a dormant app's live
 watchers get a terminal `{"type":"_dormant"}` frame. `homespun apps wake <app>`
 brings it back before you deploy/read/write against it again.
 
-## Shipping assets with your app (images, fonts, audio, video, data)
+**Shipping assets with your app.** An app can ship files alongside its HTML:
+images, fonts, audio, video, data. They are served from the app's own origin at
+a stable same-origin path, so the page references one as `<img src="logo.png">`.
 
-`deploy_app` (and `POST /v1/apps` / `POST /v1/apps/:id/versions`) takes an
-optional `assets[]` bundle alongside the HTML, so an app AND its files ship in
-ONE call. This is the clean way to deliver a scroll-scrub frame sequence, a
-hosted video, a custom font, or a data file, with no second upload step and no
-CDN. Each asset is EITHER `{ path, content_base64, mime? }` (inline bytes) OR
-`{ path, attachment_id }` (a reference to an already-uploaded attachment, see
-"Avoiding base64 in the model context" below):
-
-- `path` is the **app-relative, same-origin** reference your HTML uses, e.g.
-  `frames/000.jpg`. It must be relative (no leading `/`), carry no `..`
-  segment / backslash / control char, use the charset `[A-Za-z0-9._/-]`, be
-  unique in the bundle, and not start with a reserved prefix (`_hs`, `b`).
-- `content_base64` is the standard base64 of the file's raw bytes.
-- `mime` is advisory for types with magic bytes (images, audio, video, fonts,
-  PDF): the relay sniffs the real type from the bytes, and a declared type that
-  disagrees is rejected. For **text/data files that have no magic bytes**
-  (`text/plain`, `text/csv`, `text/markdown`, `application/json`,
-  `application/zip`, and the Word/OOXML `.docx/.xlsx/.pptx` types), declare the
-  real `mime` and it is stored as that type; those are always served as an inert
-  download (`Content-Disposition: attachment`). Omitting `mime` still works and
-  stores them as `application/octet-stream`. Either way the same allowlist +
-  size cap apply.
-
-The page then references each asset by its path on the app's OWN origin, with no
-token and no `/_hs/...`:
-
-```html
-<img src="frames/000.jpg" />
-<video src="media/intro.mp4" controls></video>
-<!-- Range/seek works -->
-<link rel="preload" as="font" href="fonts/body.woff2" crossorigin />
-```
-
-Rules worth knowing:
-
-- **One atomic deploy.** If any asset fails validation (bad path, disallowed
-  type, over the size cap or quota) the WHOLE deploy is rejected: no app is
-  created, or the live version is not advanced. The error names the offending
-  path.
-- **Redeploy replaces the set, or keeps it.** A redeploy that SENDS `assets[]`
-  makes that the new version's map, and the previous version's assets are
-  detached, so a removed path simply stops resolving as an asset. A redeploy
-  that OMITS `assets` keeps the live set: the same files stay mapped at the same
-  paths with no re-upload and no re-encoding. `assets: []` is the explicit way
-  to clear the set.
-- **Served hardened + Range.** Assets stream through the same responder as
-  attachments: `X-Content-Type-Options: nosniff`, a sandbox CSP,
-  inline-vs-download disposition (images / fonts / audio / video render inline,
-  everything else downloads), and HTTP Range / `206` for media + font seeking.
-- **Visibility follows the app.** On a private app an asset needs the same
-  signed-in session as the document; a public or link app serves it to anyone.
-- **Bounds.** Up to the relay's per-deploy asset-count cap (default 50); total
-  bytes are bounded by the per-app blob quota. A very large single deploy body
-  is rejected before it is parsed, so split huge bundles across redeploys, or
-  upload rarely-changing files once via the attachments API and reference them
-  by their `/_hs/attachments/:id` URL.
-
-**Example: a scroll-scrub frame sequence (`deploy_app`).**
-
-```jsonc
-{
-  "html": "<!doctype html><img id=f><script>const N=48,img=f;addEventListener('scroll',()=>{const i=Math.min(N-1,scrollY/innerHeight*N|0);img.src='frames/'+String(i).padStart(3,'0')+'.jpg'});img.src='frames/000.jpg'</script><div style='height:800vh'></div>",
-  "manifest": { "x-homespun-manifest": { "app": { "name": "Scrubber" }, "collections": {} } },
-  "assets": [
-    { "path": "frames/000.jpg", "content_base64": "<base64 of frame 0>" },
-    { "path": "frames/001.jpg", "content_base64": "<base64 of frame 1>" }
-    // ... up to frames/047.jpg
-  ]
-}
-```
-
-A hosted video is the same shape with one
-`{ "path": "media/clip.mp4", "content_base64": "<base64>" }` and a
-`<video src="media/clip.mp4" controls>` tag; the browser's native seek issues
-Range requests the relay answers with `206`.
-
-**Avoiding base64 in the model context: reference an attachment by id.**
-
-`content_base64` carries the file's bytes INLINE in the deploy call. When a model
-emits that call through the MCP tool, those bytes ride in the tool-call arguments
-and cost context tokens proportional to the file size, re-paid on every retry (a
-few-hundred-KB image is already very costly). An asset entry has a second form
-that carries no bytes, `{ path, attachment_id }`: name an already-uploaded
-attachment and the deploy binds `path` to it.
-
-```jsonc
-"assets": [{ "path": "img/hero.jpg", "attachment_id": "att_..." }]
-```
-
-The referenced attachment must be **owned by you, app-scoped to THIS app, and
-`ready`** (an agent-scoped attachment, or one belonging to another app, is
-rejected with an opaque error). Two ways to produce one WITHOUT the bytes ever
-entering the model context:
-
-- **`attachments` action `fetch`** with `{ source_url, scope: "app", app_id }`:
-  the relay downloads the bytes server-side (SSRF-gated, https only), runs the
-  same sniff / allowlist / size / scan / quota pipeline as any upload, and
-  returns a ready `attachment_id`. You send only a URL string. This is the
-  least-effort zero-context path when the image is reachable at a URL.
-- **`attachments` presign -> out-of-band PUT -> finalize** (see "Images, video,
-  and any real media" below) with `scope: "app", app_id`: you PUT the raw bytes
-  straight to storage, so they bypass the model context. Use this when you hold
-  the bytes but not a URL.
-
-Because an app-scoped attachment needs the app id, the order for a NEW app is:
-`deploy_app` to create it (get `app_id`), then `fetch` / `presign` with
-`scope: "app"` and that id, then redeploy with
-`assets: [{ path, attachment_id }]`. For an EXISTING app, do it in one redeploy.
-On a filesystem self-host (no presign backend) fall back to inline
-`content_base64`: still correct, just not zero-context.
-
+> **Read `references/assets.md` before shipping any file with an app.** It has
+> the `--asset` grammar, the path rules, what a redeploy does to the previous
+> version's asset set (it replaces it when sent and carries it over when
+> omitted, which is not guessable), and the zero-context path for large media.
+>
+> Over HTTP rather than on disk: `homespun skill show --section assets`.
 ## Reading and writing data as the agent
 
 You use the **same collection API** the deployed page uses, just from the
@@ -2419,276 +2242,34 @@ config contract, and installing a template into your own account all work
 through the `community` tool (MCP), not through a `homespun` CLI verb. The
 `homespun` CLI itself deploys and iterates one app at a time with
 `homespun deploy`; it has no publish/unpublish/install subcommand, so don't tell
-a human those live as CLI commands. See "Community templates: configure and
-install" below for the install-time config contracts and for unpublishing.
+a human those live as CLI commands. See `references/community-templates.md`
+for the install-time config contracts and for unpublishing.
 
-## Community templates: configure and install
+**Community templates.** An app can be published as a template other people
+install, and an install can carry **connect steps** that wire it to an external
+service. Neither is needed to build and run an app for yourself.
 
-A template can ask for install-time configuration: a display name, a theme, an
-API key, a logo. The mechanism is generic and rests on three contracts, one per
-role. Nothing app-specific lives in the platform.
+> **Read `references/community-templates.md` before publishing, installing, or
+> unpublishing a template**, or before configuring an install's connect steps.
+> Publishing is the one that matters: a `seedOnInstall` collection's LIVE rows
+> are captured and become public to every platform user once approved, so
+> publishing an app holding real personal data discloses it. The section has the
+> attestation you must pass and what it commits you to.
+>
+> Over HTTP rather than on disk: `homespun skill show --section community-templates`.
+**Attachments (binary uploads).** An app can store binary blobs: images, PDFs,
+audio, video, data files. A row references one by id and the bytes are served
+from the app's own origin. The in-page path a visitor uses is above; the
+agent-side verbs, the presign / PUT / finalize path for real media, and
+thumbnails are a reference section.
 
-**1. Publisher contract (when you publish a template).** Declare ONE settings
-collection in the manifest under `x-homespun-manifest.settingsCollection`, naming
-a collection in the same manifest whose write list is restricted to
-`["owner","agent"]` (never a broad member write). Then declare the config the
-template needs as ordered setup steps on `community` action `publish`
-(`setup_steps`):
-
-- A `config` step sets a value; an `upload` step is an install-time file (an
-  image/logo) stored as an attachment id.
-- Each `config`/`upload` step carries a `key` naming a top-level field of the
-  settings collection's row schema. An `upload` target field must be typed
-  `string` (it holds the attachment id). Publish validates every key against the
-  schema, so broken wiring cannot ship.
-- Mark a sensitive value `secret: true`. The public detail page never renders a
-  secret's default, and when ANY step is secret the settings collection's `read`
-  list must also be restricted to owner/agent (so members cannot read config
-  through the mirror). Only ever publish your own example default, never a real
-  secret.
-
-At install the answers are written into ONE singleton row of the settings
-collection at the reserved key `install-config`, as `{ [stepKey]: value }`.
-
-**2. App-author contract (reading config in your app's HTML).** Read the
-`install-config` row of your settings collection through the SDK collection
-mirror, the same way you read any collection row. TOLERATE ABSENCE: a template
-with no config, or an installer who skipped every optional step, leaves no row
-(or a partial one), so fall back to your in-code defaults for any missing field.
-An `upload` field's value is an attachment id string; render it from the app's
-own origin at `/_hs/attachments/<id>` (an `<img src>`), exactly like any in-app
-image. It serves under your app's visibility gate.
-
-**3. Installing-agent contract (installing a template for your human).** Two
-`community` actions:
-
-- `get_config_contract` with `ref` (a namespaced `<handle>/<slug>` or a
-  community snapshot id) returns the contract: `settings_collection` and the
-  ordered `config_steps`, each with `key`, `kind` (`config` or `upload`),
-  `required`, `secret`, `choices`, `default`, and `value_hint`. Read it first so
-  you know what to collect.
-- For each `upload` step, PRE-UPLOAD the file with the `attachments` tool
-  (action `upload`, agent scope) and keep the returned attachment id.
-- `install` with `ref` and `config` (a `{ stepKey: value }` map: a `config`
-  value is a string, an `upload` value is the pre-uploaded attachment id).
-  Installs always create a fresh private copy owned by your human. A required
-  step you omit is rejected before anything is created; a value outside a step's
-  `choices` is rejected; an upload id you do not own is rejected. On success the
-  relay re-points your uploaded attachments to the new app so they serve under
-  its gate. The response carries the new app's `app_id`, `slug`, and `url`.
-
-Installs are agent-key. Trials and "keep my trial" stay human-only web flows.
-
-### Taking your own listing down (unpublish)
-
-A publisher can retire a live listing at any time with `community` action
-`unpublish` and the `snapshot_id` from publish's response (or from the listing
-itself). It removes the template from the public gallery, from search, and from
-the direct snapshot install link, so nobody can install it again.
-
-**Existing installs are unaffected.** An install is a fresh private copy of the
-app, never a live reference to the template, so unpublishing cannot break an app
-someone already installed and cannot reach their data. Tell a worried human that
-plainly.
-
-It only ever touches YOUR OWN submissions: a snapshot that does not exist and a
-snapshot belonging to another publisher both come back as not found, on purpose.
-It is idempotent, so unpublishing an already-unpublished template just succeeds.
-There is no "republish this same snapshot" action; publish a new version under
-the same slug to put a listing back in the gallery.
-
-### Receiving data from an external service (connect steps)
-
-A template can also declare that the installed app RECEIVES data: a Stripe
-event, a Zapier push, a form vendor's callback. That needs one extra hop,
-because every copy of the app gets its OWN secret hook URL and only the
-installer can paste it into the external service.
-
-**Publisher side.** Declare the inbound hook in the manifest under
-`x-homespun-manifest.ingest` (a `name` plus the `collection` it writes into),
-then add a `connect` setup step whose `ingestRule` names that rule:
-
-```json
-"ingest": [{ "name": "stripe_events", "collection": "payments" }]
-```
-
-```json
-{
-  "kind": "connect",
-  "label": "Point Stripe at this app",
-  "description": "Add the hook URL as a webhook endpoint in your Stripe dashboard.",
-  "ingestRule": "stripe_events"
-}
-```
-
-`ingestRule` is allowed only on a `connect` step, and publish REJECTS a name the
-manifest does not declare, so a step can never point at a hook that was never
-provisioned. Everything else about `connect` steps is unchanged, and a plain
-`connect` step with no `ingestRule` keeps working exactly as before.
-
-**What the installer sees.** Installing (or keeping a trial of) such a template
-lands the human on a finish-setup page that names each connect step and links to
-the app's Inbound hooks panel, where they copy the freshly minted URL. The URL
-carries its own secret, so it is shown in that ONE place and nowhere else; it can
-be rotated there at any time.
-
-**Installing-agent side.** `get_config_contract` returns `connect_steps`
-alongside `config_steps`: each entry has `label`, `description`, `ingest_rule`,
-and the rule's `collection` and `mode`. After `install` returns the new
-`app_id`, read the provisioned URLs with the `ingest` tool's `list` action on
-that app and wire each one into the external service the step describes. Do not
-reuse a URL from another copy of the template: each install mints its own.
-
-## Attachments (binary uploads)
-
-Attachments are binary blobs (images, PDFs, audio, video, and text/data files)
-you upload once and then reference from row data by their
-`attachment_id` (a field declared with `format: homespun-attachment-id`
-validates the id). Every upload is server-side MIME-sniffed from its bytes,
-checked against the relay's allowlist, and counted against your size +
-per-agent/per-app/per-account quotas.
-
-**Per-file size limits are type-aware.** Images and every non-media type (pdf,
-fonts, text/data) are capped at a modest per-file size (`MAX_BLOB_BYTES`, 5 MB
-by default); audio and video get a larger per-file cap (`MAX_MEDIA_BLOB_BYTES`,
-50 MB by default) since media is inherently bigger. The relay picks the cap
-from the SNIFFED type, so declaring an image type to dodge the limit does not
-help. Both caps are plan-drivable (a paid plan / operator override raises them
-per account). The aggregate per-app and per-account byte quotas are the real
-storage bound: the per-app total is **100 MB on the free tier**
-(`MAX_BLOBS_PER_APP_BYTES`, raised to 250 MB for paid / overridden accounts) and
-the per-account total is `MAX_BLOBS_PER_ACCOUNT_BYTES` (≈ 5 GB by default). An
-over-cap upload returns `attachment_size_exceeded` (413), and an upload that
-would push the per-app or per-account total over its quota returns
-`quota_exceeded`.
-
-The declared MIME is never trusted for a type that has magic bytes: an image /
-audio / video / font / PDF whose bytes disagree with the declared type is
-rejected (`mime_mismatch`), and an inline-safe media type is ALWAYS verified by
-sniff so a lying declared type can never be served inline. **Text/data files
-that have no magic bytes** (`text/plain`, `text/csv`, `text/markdown`,
-`application/json`, `application/zip`, and the Word/OOXML `.docx/.xlsx/.pptx`
-types) are the one exception: declare the real type and it is stored as that
-type. They are always served as an inert download (`Content-Disposition:
-attachment`), so trusting the declared type is safe. Supported audio now
-includes `audio/aac` and `audio/flac` alongside mp3/wav/ogg/mp4.
-
-**Watch the token cost of inline uploads.** An inline `content_base64` upload
-carries the bytes in the tool-call arguments, so they enter the **model
-context** and cost tokens **proportional to file size** (a few-hundred-KB image
-is already very costly, and the cost repeats on every retry). So for any real
-image or media, prefer the **presign** path below, which PUTs the bytes
-out-of-band and never puts them in front of the model. Reserve inline
-`content_base64` for genuinely small assets (a tiny icon) or clients that cannot
-do an out-of-band HTTP PUT. (And for **end-user** photo uploads inside a
-rendered app, use the in-page browser upload instead, which never touches the
-agent at all: see "Let your app's users upload a file".)
-
-There are two ways to hand the relay the bytes inline, and which one you can use
-depends on where your code runs:
-
-- **`content_base64` (base64 bytes) is the no-filesystem inline path.** Pass the
-  file bytes as base64 and the relay stores them with NO filesystem access on
-  either side. Use it for a small asset you generated in-session, or when you
-  are talking to the hosted MCP connector and cannot PUT out-of-band. Via MCP:
-  `attachments` action `upload` with `content_base64`. Remember the token cost
-  above scales with the file, so reach for `presign` on anything bigger than an
-  icon.
-- **`file_path` reads the file on the RELAY host, not your machine.** For the
-  hosted MCP connector that host is Homespun's infrastructure, so a path that
-  exists on your side will fail with `ENOENT`. `file_path` only works when the
-  file is genuinely local to the relay, e.g. a locally-run `homespun attachment
-  upload --file <path>` CLI.
-
-Both paths run the identical validation and return the same `AttachmentRef`
-(`{ attachment_id, scope, mime, size, sha256, ... }`); an oversized or
-disallowed upload returns the same error either way. Scope an upload to `agent`
-(default, reusable across your apps) or `app` (pass `app_id`).
-
-### Images, video, and any real media: presign -> PUT -> finalize
-
-Prefer this path for **any real image or media**, not just huge files: base64-ing
-the bytes inline puts them in the model context and costs tokens proportional to
-their size (and can exceed message limits on a big file). Presign uploads the
-bytes **out-of-band** so they go straight to storage over HTTP and never pass
-through this tool or the model:
-
-1. **`presign`**: call `attachments` action `presign` with `{ mime, size,
-   sha256, scope }` (the `mime` is advisory; `size` is the exact byte length and
-   `sha256` is the hex SHA-256 of the exact bytes you will upload). You get back
-   `{ put_url, attachment_id }`.
-2. **PUT the bytes**: do an HTTP `PUT put_url` with the raw file bytes as the
-   body (a plain `curl -T file "$put_url"` or `fetch(put_url, { method: 'PUT',
-   body })`). This is the step that keeps the bytes out of the model context.
-3. **`finalize`**: call `attachments` action `finalize` with the
-   `attachment_id`. The relay re-reads the stored bytes and runs the SAME
-   validation any upload runs: it **byte-sniffs the actual content** and stores
-   / serves THAT sniffed type (never the mime you declared at presign), and
-   re-verifies size + sha256, the allowlist, your quota, and the scan hook. Only
-   then does the attachment become `ready`. A file whose real bytes fail any
-   check (a mime that lies, a size/sha256 that does not match, a disallowed
-   type) is rejected and never served, so a presign claiming, say, `font/woff2`
-   over HTML bytes can never be served inline under that lie.
-
-The presigned path requires the hosted **Azure** storage backend. On a
-filesystem self-host `presign` returns a clear not-supported error; use the
-inline `content_base64` / `file_path` upload there instead.
-
-Rule of thumb: use presign + finalize for **any real image or media** (the
-bytes stay out of the model context, so it is both cheaper and unbounded by
-message size); use inline `content_base64` only for a genuinely small asset (a
-tiny icon) or a client that cannot PUT out-of-band.
-
-### Thumbnails: on-demand resized images (`?w=`)
-
-A raster image attachment can be served at a smaller width by adding a
-`?w=<width>` query param to its serving URL. The relay downscales the image
-with sharp on the first request, caches the result, and serves the cached
-variant thereafter, so a photo-heavy app can request small thumbnails without
-shipping the full-resolution bytes each time:
-
-```html
-<img src="/_hs/attachments/<id>?w=256" />        <!-- app-scoped attachment -->
-<img src="frames/000.jpg?w=512" />               <!-- deploy asset -->
-```
-
-`?w=` also works on the agent download (`/v1/attachments/:id?w=256`) and the
-capability URL (`/b/<token>?w=256`).
-
-A bare `<img src="/_hs/attachments/<id>?w=256">` works for the app's OWN
-attachment on a private app too: the read route accepts the app's own
-same-origin session (owner/member), so the thumbnail renders on the app's own
-page just like the full image. The only thing without a width parameter is the
-JS-bytes read, `homespun.downloadBlob(id)`, so if you fetch the raw bytes in JS
-you get the full image; use the `?w=` URL form when you want a resized variant.
-
-Rules worth knowing:
-
-- **Fixed width allowlist.** Only these widths are honoured: **64, 128, 256,
-  512, 1024, 2048**. Any other value (e.g. `?w=300`, `?w=99999`) is IGNORED and
-  the original image is served. The closed list bounds the number of cached
-  variants per image to at most six.
-- **Cached variants are free, regenerable cache.** A generated variant is NOT
-  metered against your storage quota. It does not need to be: a variant is a
-  downscale-only derivative of a source image that already counts against your
-  quota, so total variant storage is inherently bounded (at most about 1.5x your
-  live source bytes across the six widths). Every cached variant is deleted
-  together with its source on every deletion path, so it can never outlive the
-  image it came from.
-- **Downscale only.** A width at or above the source width serves the original;
-  images are never enlarged.
-- **Raster only.** Works for `png` / `jpeg` / `webp` and static `gif`. An svg,
-  an animated gif, a non-image type, or an image the relay can't decode all fall
-  back to serving the original (never an error).
-- **No thumbnails on an encrypting relay.** When the relay runs with
-  `BLOB_ENCRYPT_AT_REST=true`, no variant is generated (a plaintext thumbnail
-  would weaken the at-rest posture): `?w=` serves the full-size original, so a
-  photo app gets no thumbnail / bandwidth benefit there.
-- **Same hardening.** A variant is served through the same secure responder as
-  the original: `X-Content-Type-Options: nosniff`, the sandbox CSP, and inline
-  disposition for the raster image. Metadata (EXIF etc.) is stripped from the
-  variant.
-
+> **Read `references/attachments.md` before uploading anything larger than a
+> small image**, or before storing video. It has the presigned path that keeps
+> bytes out of your context entirely, the size and MIME rules, and the `?w=`
+> thumbnail parameter. Sending a large file the naive way costs tokens
+> proportional to its size, which is the mistake this section exists to stop.
+>
+> Over HTTP rather than on disk: `homespun skill show --section attachments`.
 <!-- homespun:core:start -->
 
 ## Common gotchas (before you ship)
@@ -2701,9 +2282,10 @@ data-exposure trap, not a style nit, so read it first.
    `read: ["anyone"]` on a collection that captures personal data. Every visitor
    can hit the data API (`GET /_hs/c/<collection>`) directly, page or no page, so
    a collection the public can write to that holds emails, names, phone numbers,
-   messages, orders or bookings wants `read: ["owner"]` (add `"agent"`/`"member"`
-   if they read it too), or `read: ["creator"]` for "each person sees only their
-   own". If you only need a public tally, use `countRead` (see "Recipe: a public
+   messages, orders or bookings wants `read: ["owner"]` (which already covers
+   you, acting as their agent; add `"member"` too if staff read it), or
+   `read: ["creator"]` for "each person sees only their own". If you only need
+   a public tally, use `countRead` (see "Recipe: a public
    count without exposing the rows"), never a wide-open `read`. When in doubt:
    collecting FROM the public means restricting who can READ.
 

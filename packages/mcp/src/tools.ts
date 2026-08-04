@@ -1012,7 +1012,7 @@ const communityShape = {
     .string()
     .optional()
     .describe(
-      "publish only. Optional per-publisher slug (lowercase, 3 to 48 chars, hyphens). Gives the template a namespaced id <your-handle>/<slug>; a republish reuses the slug and must bump the version.",
+      "publish only. Optional per-publisher slug (lowercase, 3 to 48 chars, hyphens). Gives the template a namespaced id <your-handle>/<slug>; a republish reuses the slug and must bump the version. If omitted, a slug is derived from the title instead of leaving the template unnamed, so pass one only when you want a specific url. Slugs are immutable: renaming the template later does not move its url, so choose a slug you are willing to keep.",
     ),
   version: z
     .string()
