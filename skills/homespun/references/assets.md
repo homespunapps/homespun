@@ -65,6 +65,43 @@ Rules worth knowing:
   upload rarely-changing files once via the attachments API and reference them
   by their `/_hs/attachments/:id` URL.
 
+## From the CLI: the `assets/` directory
+
+A directory deploy ships everything under `<dir>/assets/` as this same bundle,
+so the CLI needs no base64 in your hands and no separate upload step:
+
+```
+my-app/
+  index.html        <- the document
+  manifest.json     <- the manifest
+  assets/
+    logo.png        -> referenced by the page as assets/logo.png
+    fonts/body.woff2 -> referenced as assets/fonts/body.woff2
+```
+
+```bash
+homespun deploy ./my-app
+```
+
+The reference path keeps the `assets/` prefix, so what is on disk is what the
+HTML writes. Nested directories are preserved and dot-prefixed entries
+(`.DS_Store`, `.gitkeep`) are skipped.
+
+Only `assets/` ships. Anything else next to `index.html` is left behind and
+named on stderr, so a stray `node_modules/` or `package.json` is never
+published. On a redeploy, a directory WITH an `assets/` folder sends the full
+set on disk (deleting a file there removes it from the app), and a directory
+WITHOUT one sends nothing, leaving a set uploaded through `deploy_app`
+untouched.
+
+**Scripts and stylesheets cannot be assets.** `.js`, `.css` and `.svg` are
+refused by the CLI with a message saying why: they have no magic bytes, so they
+would upload as `application/octet-stream` and be served
+`Content-Disposition: attachment` with `nosniff`, meaning the browser downloads
+them instead of running them and `<script src>` silently does nothing. The app
+CSP allows `'unsafe-inline'` for both script and style, so inline them in
+`index.html`.
+
 **Example: a scroll-scrub frame sequence (`deploy_app`).**
 
 ```jsonc

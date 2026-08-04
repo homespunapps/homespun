@@ -103,3 +103,45 @@ describe("failUpgradeRequired (direct entry)", () => {
     expect(stderr).toContain("?");
   });
 });
+
+// The `report` key is how the CLI tells an agent "this failure was ours, file
+// it" without the agent having to judge a status code. It rides the error
+// envelope alongside `hint`, and must never appear on a 4xx, where the cause
+// is normally the caller's own bad argument.
+describe("failFromError's report prompt", () => {
+  function envelopeFor(status: number, code: string) {
+    // Reset per call: stderr accumulates, and a test asserting on two
+    // failures in a row would otherwise parse two concatenated envelopes.
+    stderr = "";
+    const err = new HomespunApiError(status, code, "boom");
+    expectMarker(() => failFromError(err), 1);
+    return JSON.parse(stderr) as {
+      error: { report?: string; hint?: string; code: string };
+    };
+  }
+
+  it("appears on a 5xx", () => {
+    const { error } = envelopeFor(500, "internal");
+    expect(error.report).toContain("feedback");
+    expect(error.code).toBe("internal");
+  });
+
+  it("does not appear on a 4xx", () => {
+    expect(envelopeFor(404, "not_found").error.report).toBeUndefined();
+    expect(envelopeFor(409, "conflict").error.report).toBeUndefined();
+  });
+
+  // `hint` is the relay's own remediation advice for the caller's request.
+  // The report prompt must not overwrite or impersonate it.
+  it("does not clobber a relay-supplied hint", () => {
+    const err = new HomespunApiError(503, "unavailable", "boom", undefined, {
+      hint: "retry in a moment",
+    });
+    expectMarker(() => failFromError(err), 1);
+    const { error } = JSON.parse(stderr) as {
+      error: { report?: string; hint?: string };
+    };
+    expect(error.hint).toBe("retry in a moment");
+    expect(error.report).toBeDefined();
+  });
+});

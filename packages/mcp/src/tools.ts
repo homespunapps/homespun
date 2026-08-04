@@ -32,8 +32,12 @@ import type {
   CommunitySetupStep,
   HomespunClient,
   ListWhereCondition,
+  ServiceCredentialGrant,
 } from "@homespunapps/core";
-import { HomespunApiError } from "@homespunapps/core";
+import {
+  HomespunApiError,
+  RELAY_FAILURE_REPORT_HINT,
+} from "@homespunapps/core";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import {
@@ -270,6 +274,11 @@ function errorResult(e: unknown): ToolResult {
     if (e.hint) payload["hint"] = e.hint;
     if (e.details !== undefined) payload["details"] = e.details;
     if (e.retryable !== undefined) payload["retryable"] = e.retryable;
+    // A 5xx is the relay failing, not the caller passing something wrong, so
+    // this is the one class of error worth prompting a report on. Carried as
+    // its own key rather than folded into `hint`, which the relay owns and
+    // uses to tell the agent how to fix its OWN call.
+    if (e.status >= 500) payload["report"] = RELAY_FAILURE_REPORT_HINT;
     return tagErrorCode(
       {
         content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
@@ -389,26 +398,26 @@ const deployAppShape = {
     .string()
     .optional()
     .describe(
-      "Omit to CREATE a new app; pass an existing app's id to REDEPLOY it (a new version, compat-gated unless force:true).",
+      "Omit to create a new app; pass an existing app's id to redeploy it (a new version, compat-gated unless force:true).",
     ),
   html: z
     .string()
     .min(1)
     .optional()
     .describe(
-      "The app's UI as a complete HTML document (single file, up to the relay's size cap), sent inline. Provide either this or `html_path`. Inline is required for a hosted or remote connector that has no filesystem. If both are given, inline `html` wins. ON REDEPLOY, omit it entirely to keep the live document: a manifest-only change (adding a collection, widening externalHosts) then costs nothing in HTML.",
+      "The app's UI as a complete HTML document (single file, with CSS and JS inline), sent inline. Capped at 2 MB of UTF-8; over that the deploy is refused with 413 document_size_exceeded. A document near the cap is almost always carrying a file inlined as a data: URI; the same file in `assets[]` is served from the app's own origin, cached separately, and does not count toward this cap. The document comes from either this field or `html_path`. Inline is the only form a hosted or remote connector with no filesystem can use, and inline `html` wins if both are given. On a redeploy an omitted `html` keeps the live document, so a manifest-only change (adding a collection, widening externalHosts) costs nothing in HTML.",
     ),
   html_path: z
     .string()
     .optional()
     .describe(
-      "ABSOLUTE path to the app's HTML document, read on the MCP-SERVER host (the machine running this connector: the relay for a hosted connector, or your CLI host for a locally-run one), NOT on the remote agent's machine. Alternative to inline `html` that avoids retransmitting a large HTML file on every deploy. Only works when the file is local to the MCP server, so it helps a locally-run connector, not a hosted/remote one (where the path will not exist and you get a clean error, so pass inline `html` there). If both `html` and `html_path` are given, inline `html` wins.",
+      "Absolute path to the app's HTML document, read on the MCP-server host (the machine running this connector: the relay for a hosted connector, or the CLI host for a locally-run one), not on the remote agent's machine. An alternative to inline `html` that avoids retransmitting a large HTML file on every deploy. It resolves only when the file is local to the MCP server, so it serves a locally-run connector rather than a hosted or remote one, where the path does not exist and the call returns a clean error; inline `html` is the form that works there. If both `html` and `html_path` are given, inline `html` wins.",
     ),
   dry_run: z
     .boolean()
     .optional()
     .describe(
-      "Validate only: run the full manifest + asset-shape validation, the compat gate (for a redeploy), and the schedule-timezone advisory, then return { ok, warnings, compat?, breaks? } WITHOUT creating a version or mutating anything. An invalid manifest returns the SAME error a real deploy would; a redeploy the compat gate would refuse reports the break instead of applying it. `check` is an accepted alias.",
+      "Validate only: run the full manifest + asset-shape validation, the compat gate (for a redeploy), and the schedule-timezone advisory, then return { ok, warnings, compat?, breaks? } without creating a version or mutating anything. An invalid manifest returns the same error a real deploy would; a redeploy the compat gate would refuse reports the break instead of applying it. `check` is an accepted alias.",
     ),
   check: z.boolean().optional().describe("Alias for `dry_run`."),
   // Optional at the SCHEMA level because a redeploy inherits an omitted
@@ -428,25 +437,25 @@ const deployAppShape = {
       jsonObjectSchema.optional(),
     )
     .describe(
-      "The x-homespun-manifest capability document (a JSON object). REQUIRED to create; ON REDEPLOY, omit it to keep the live manifest, which is what most redeploys want (the manifest was byte-identical to the previous version in 71% of real redeploys). Eight extension keys: app metadata; collections (+ per-collection write/update/read/delete role lists, where write gates creates and also updates unless the optional update list is declared); externalHosts (fetch allowlist); cdn (allow CDN scripts/styles); capabilities (Permissions-Policy opt-ins); embeds (iframe frame-src allowlist); notify (email-on-row rules); webhooks (signed HTTP POST on-row rules). Call get_skill for the full grammar before authoring one from scratch.",
+      "The x-homespun-manifest capability document (a JSON object). Required to create; on a redeploy an omitted `manifest` keeps the live one, which fits most redeploys (the manifest was byte-identical to the previous version in 71% of real redeploys). Eight extension keys: app metadata; collections (+ per-collection write/update/read/delete role lists, where write gates creates and also updates unless the optional update list is declared); externalHosts (fetch allowlist); cdn (allow CDN scripts/styles); capabilities (Permissions-Policy opt-ins); embeds (iframe frame-src allowlist); notify (email-on-row rules); webhooks (signed HTTP POST on-row rules). The full grammar is documented in the Homespun guide that get_skill returns.",
     ),
   visibility: z
     .enum(["private", "link", "public"])
     .optional()
     .describe(
-      "CREATE only. Default 'private' (owner plus invited members, sign-in gated). 'link' shares with anyone holding the returned share_url, whose #k= fragment carries a secret key that can be reset (rotate it via the apps tool, action share_link_rotate) to cut off everyone with the old link; a 'link' app always gets a server-generated unguessable slug. 'private' and 'public' accept an owner-chosen `slug`.",
+      "Create only. Default 'private' (owner plus invited members, sign-in gated). 'link' shares with anyone holding the returned share_url, whose #k= fragment carries a secret key that can be reset (rotate it via the apps tool, action share_link_rotate) to cut off everyone with the old link; a 'link' app always gets a server-generated unguessable slug. 'private' and 'public' accept an owner-chosen `slug`.",
     ),
   slug: z
     .string()
     .optional()
     .describe(
-      "CREATE only. Accepted with visibility private or public, including the private default; rejected with explicit visibility 'link', where the slug is always server-generated.",
+      "Create only. Accepted with visibility private or public, including the private default; rejected with explicit visibility 'link', where the slug is always server-generated.",
     ),
   force: z
     .boolean()
     .optional()
     .describe(
-      "REDEPLOY only. Bypass the compat gate, whether it fired on a stranded-rows narrowing or on a widening of what the install screen discloses (a removed collection is detached, never deleted).",
+      "Redeploy only. Bypasses the compat gate, whether it fired on a stranded-rows narrowing or on a widening of what the install screen discloses (a removed collection is detached, never deleted).",
     ),
   assets: z
     .array(
@@ -483,7 +492,7 @@ const deployAppShape = {
     )
     .optional()
     .describe(
-      'Optional bundle of files shipped WITH the app in ONE deploy: images, fonts, audio/video, data. Each asset either carries its bytes inline as `content_base64` OR references an already-uploaded attachment by `attachment_id` (prefer the reference form for real images/media: upload once via `attachments fetch` or presign, then bind it here with NO base64 in the deploy body). Each asset is validated + stored app-scoped exactly like a normal attachment (byte-sniff, allowlist, size cap, quota, scan) and served at its `path` on the app\'s OWN origin, so the page references it by a stable same-origin path (`<img src="frames/000.jpg">`, `<video src="media/intro.mp4">`; media/font paths support HTTP Range). The whole deploy is rejected atomically if any asset fails validation. ON REDEPLOY, assets you send REPLACE the previous version\'s set, omitting `assets` keeps the live set (no re-upload, no re-encoding), and `assets: []` is the explicit way to clear it. Bounded by the relay\'s per-deploy asset-count cap; total bytes by the per-app blob quota.',
+      'Optional bundle of files shipped with the app in one deploy: images, fonts, audio/video, data. Each asset either carries its bytes inline as `content_base64` or references an already-uploaded attachment by `attachment_id`; the reference form suits real images and media, where the file is uploaded once via `attachments fetch` or presign and then bound here, with no base64 in the deploy body. Each asset is validated + stored app-scoped exactly like a normal attachment (byte-sniff, allowlist, size cap, quota, scan) and served at its `path` on the app\'s own origin, so the page references it by a stable same-origin path (`<img src="frames/000.jpg">`, `<video src="media/intro.mp4">`; media/font paths support HTTP Range). The whole deploy is rejected atomically if any asset fails validation. On a redeploy, sent assets replace the previous version\'s set, an omitted `assets` keeps the live set (no re-upload, no re-encoding), and `assets: []` is the explicit way to clear it. Bounded by the relay\'s per-deploy asset-count cap; total bytes by the per-app blob quota.',
     ),
 };
 
@@ -497,7 +506,7 @@ const listRowsShape = {
     .string()
     .optional()
     .describe(
-      "Opaque cursor from a previous call's next_cursor. Also the POLL handle: pass it back to fetch only newer/changed rows.",
+      "Opaque cursor from a previous call's next_cursor. Also the poll handle: pass it back to fetch only newer/changed rows.",
     ),
   limit: z
     .number()
@@ -521,7 +530,7 @@ const upsertRowShape = {
     .string()
     .optional()
     .describe(
-      "Optional stable key. Reusing an existing key returns the existing row (deduped:true), or row_not_found when the collection's read list does not reach that row for you.",
+      "Optional stable key. Reusing an existing key returns the existing row (deduped:true), or row_not_found when the collection's read list does not reach that row for the caller.",
     ),
   data: jsonValueSchema.describe(
     "The row body - any JSON value valid against the collection's row schema (an object, or any JSON value for a schemaless collection).",
@@ -618,7 +627,7 @@ const appsShape = {
       "domain_remove",
     ])
     .describe(
-      "list: YOUR owning human's apps. show/update/delete/wake: act on one app (app_id). share_link_rotate: rotate a 'link' app's share token, returning a new share_url (the old link stops working); also generates one if the app has none yet. domain_set/domain_status/domain_remove: manage the app's custom domains (app_id; domain_set also needs domain).",
+      "list: the caller's owning human's apps. show/update/delete/wake: act on one app (app_id). share_link_rotate: rotate a 'link' app's share token, returning a new share_url (the old link stops working); also generates one if the app has none yet. domain_set/domain_status/domain_remove: manage the app's custom domains (app_id; domain_set also needs domain).",
     ),
   app_id: z
     .string()
@@ -656,7 +665,7 @@ const appsShape = {
     .string()
     .optional()
     .describe(
-      "domain_set: the bare custom domain to bind (e.g. app.example.com); the response's dns_records lists the DNS entries the domain owner must publish. domain_remove: OPTIONAL, the one domain to unbind - omit it to unbind them all.",
+      "domain_set: the bare custom domain to bind (e.g. app.example.com); the response's dns_records lists the DNS entries the domain owner must publish. domain_remove: optional, the one domain to unbind - omit it to unbind them all.",
     ),
 };
 
@@ -664,7 +673,7 @@ const membersShape = {
   action: z
     .enum(["add", "list", "set_role", "remove", "roles"])
     .describe(
-      "add: invite-or-attach a member by email (app_id+email; optional custom_roles). list: the app's owner + members (app_id). set_role: replace an existing member's declared roles in place without signing them out (app_id+human_id+custom_roles, an empty list to clear). remove: drop a member (app_id+human_id). roles: the app's declared roles with what each one includes and, per collection, the EFFECTIVE access a holder has (separately for members and grant-link holders, whose role floors differ) plus how many members and live grant links hold each role (app_id).",
+      "add: invite-or-attach a member by email (app_id+email; optional custom_roles). list: the app's owner + members (app_id). set_role: replace an existing member's declared roles in place without signing them out (app_id+human_id+custom_roles, an empty list to clear). remove: drop a member (app_id+human_id). roles: the app's declared roles with what each one includes and, per collection, the effective access a holder has (separately for members and grant-link holders, whose role floors differ) plus how many members and live grant links hold each role (app_id).",
     ),
   app_id: z.string().min(1).describe("The app id."),
   email: z
@@ -683,7 +692,7 @@ const membersShape = {
     .array(z.string())
     .optional()
     .describe(
-      "add (optional) and set_role (required). The DECLARED roles (x-homespun-manifest.roles keys) attached to the member ALONGSIDE their base member powers. A member may hold several and holds the union of what each grants, plus everything those roles `includes`. A built-in/reserved role or an undeclared role is rejected. Omit on add for an ordinary member; pass [] on set_role to clear the roles back to a plain member.",
+      "add (optional) and set_role (required). The declared roles (x-homespun-manifest.roles keys) attached to the member alongside their base member powers. A member may hold several and holds the union of what each grants, plus everything those roles `includes`. A built-in/reserved role or an undeclared role is rejected. Omit on add for an ordinary member; pass [] on set_role to clear the roles back to a plain member.",
     ),
   human_id: z
     .string()
@@ -697,7 +706,7 @@ const ingestShape = {
   action: z
     .enum(["list", "rotate", "set_signing_secret", "clear_signing_secret"])
     .describe(
-      "list: the app's inbound catch-hooks, each with its full secret URL, current rule (collection/mode/wake/handshake), and per-status delivery counts (app_id). rotate: mint a fresh URL secret for one hook and return its new URL once, invalidating the old URL immediately (app_id+name). set_signing_secret: provision or rotate a hook's OPT-IN signing secret, distinct from the URL secret (it is what a provider HMACs the body with); omit `secret` to mint one (returned ONCE) or pass `secret` to store a provider-generated value verbatim (never echoed) (app_id+name). clear_signing_secret: remove a hook's signing secret (app_id+name).",
+      "list: the app's inbound catch-hooks, each with its full secret URL, current rule (collection/mode/wake/handshake), and per-status delivery counts (app_id). rotate: mint a fresh URL secret for one hook and return its new URL once, invalidating the old URL immediately (app_id+name). set_signing_secret: provision or rotate a hook's opt-in signing secret, distinct from the URL secret (it is what a provider HMACs the body with); omit `secret` to mint one (returned once) or pass `secret` to store a provider-generated value verbatim (never echoed) (app_id+name). clear_signing_secret: remove a hook's signing secret (app_id+name).",
     ),
   app_id: z.string().min(1).describe("The app id."),
   name: z
@@ -710,7 +719,7 @@ const ingestShape = {
     .string()
     .optional()
     .describe(
-      "set_signing_secret only. A provider-generated signing secret to store verbatim (the Stripe path). Omit to have the relay mint one (the GitHub path), returned ONCE in the response.",
+      "set_signing_secret only. A provider-generated signing secret to store verbatim (the Stripe path). Omit to have the relay mint one (the GitHub path), returned once in the response.",
     ),
   grace_seconds: z
     .number()
@@ -735,7 +744,7 @@ const grantsShape = {
     .string()
     .optional()
     .describe(
-      "mint only. A DECLARED custom role for the app (an x-homespun-manifest.roles key). A built-in role (owner/member/agent/anyone) is rejected: a grant can never escalate.",
+      "mint only. A declared custom role for the app (an x-homespun-manifest.roles key). A built-in role (owner/member/agent/anyone) is rejected: a grant can never escalate.",
     ),
   mode: z
     .enum(["once", "multi"])
@@ -767,18 +776,186 @@ const grantsShape = {
     .string()
     .optional()
     .describe(
-      "mint only. Optional narrowing pin to a single row key. NARROWS within the role (never widens). Mutually exclusive with pin_where.",
+      "mint only. Optional narrowing pin to a single row key. Narrows within the role (never widens). Mutually exclusive with pin_where.",
     ),
   pin_where: z
     .array(z.unknown())
     .optional()
     .describe(
-      "mint only. Optional narrowing pin as Wave C2 where conditions ({field, op, value}[]). NARROWS within the role (never widens). Mutually exclusive with pin_row_key.",
+      "mint only. Optional narrowing pin as Wave C2 where conditions ({field, op, value}[]). Narrows within the role (never widens). Mutually exclusive with pin_row_key.",
     ),
   grant_id: z
     .string()
     .optional()
     .describe("revoke only. The grant link id (see list's `id` field)."),
+};
+
+const credentialsShape = {
+  action: z
+    .enum(["mint", "list", "pause", "resume", "rotate", "revoke"])
+    .describe(
+      "mint: create a scoped service credential, the bearer token an app owner points a backend they host themselves at (app_id; optional mode/grants/members/label/ttl_seconds). list: the app's credentials, their allowlist and status, never a token (app_id). pause: reversibly stop one, in force on its very next request (app_id+credential_id). resume: undo a pause; never undoes a revoke, which is permanent (app_id+credential_id). rotate: issue a fresh token and keep the old one working for an overlap window so a running backend picks it up without a gap (app_id+credential_id; optional overlap_seconds). revoke: kill one permanently and idempotently (app_id+credential_id).",
+    ),
+  app_id: z.string().min(1).describe("The app id."),
+  mode: z
+    .enum(["explicit", "following"])
+    .optional()
+    .describe(
+      "mint only. Defaults to explicit: an unnamed collection is denied, so the credential can never reach anything it was not handed (the shape for a contractor's backend). following: an unnamed collection falls through to the owner's own authority, so the credential tracks the app as it grows and each `grants` entry only narrows one collection (the shape for the owner's own backend). Neither mode can ever exceed what the app's owner could do; the effective permission is always the intersection.",
+    ),
+  grants: z
+    .array(
+      z.object({
+        collection: z.string().min(1),
+        ops: z.array(z.enum(["read", "create", "update", "delete"])),
+        scope: z
+          .literal("own")
+          .optional()
+          .describe(
+            "Narrows every row-addressed op to rows this credential itself wrote last. Inert for create.",
+          ),
+      }),
+    )
+    .optional()
+    .describe(
+      "mint only. The allowlist: one entry per collection naming which of read/create/update/delete this credential may attempt there (an entry may name zero ops, which under `following` is how one collection is carved out of an otherwise app-wide credential). A collection named here must be a real declared collection on the app; a typo is rejected with a 400 rather than silently doing nothing.",
+    ),
+  members: z
+    .boolean()
+    .optional()
+    .describe(
+      "mint only. Opt in to the app's member directory appearing in this credential's boot/hello payloads. Defaults to false: a credential that never learns a member id cannot stamp one into a relation field.",
+    ),
+  label: z
+    .string()
+    .optional()
+    .describe(
+      "mint only. Optional owner-facing label shown in the credential list.",
+    ),
+  ttl_seconds: z
+    .number()
+    .int()
+    .positive()
+    .nullable()
+    .optional()
+    .describe(
+      "mint only. Omit for the server's bounded default (365 days, clamped to a server maximum). null means no expiry, the explicit opt-in a long-running backend asks for; it is never the default.",
+    ),
+  credential_id: z
+    .string()
+    .optional()
+    .describe(
+      "pause / resume / rotate / revoke. The credential id (see list's `id` field).",
+    ),
+  overlap_seconds: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      'rotate only. How long the superseded token keeps resolving, so a running backend can pick up the new one with no gap. Defaults to the server default (1 day); 0 kills the old token immediately, the "this leaked" case.',
+    ),
+};
+
+const connectionsShape = {
+  action: z
+    .enum(["create", "list", "delete", "consent_url"])
+    .describe(
+      "create: store a webhook connection, a stored credential (static header token or a full generic OAuth2 client) a manifest webhook rule authenticates its target with (app_id+name+allowed_host, plus kind-specific fields). list: the app's connections as metadata plus a non-reversible fingerprint, never any secret (app_id). delete: idempotent (app_id+name). consent_url: build (never fetch) the browser URL that completes an oauth2 connection's owner consent (app_id+name); hand it to the signed-in owner to open, since an agent key cannot complete OAuth consent itself.",
+    ),
+  app_id: z.string().min(1).describe("The app id."),
+  name: z
+    .string()
+    .optional()
+    .describe(
+      "create / delete / consent_url. The connection name (lowercase, starting alphanumeric, up to 64 chars) that a manifest webhook rule's `connection` field references.",
+    ),
+  kind: z
+    .enum(["static", "oauth2"])
+    .optional()
+    .describe("create only. Defaults to `static`."),
+  provider: z
+    .string()
+    .optional()
+    .describe(
+      'create only. Freeform display label only, e.g. "hubspot"; not validated against any allowlist.',
+    ),
+  label: z
+    .string()
+    .optional()
+    .describe("create only. Optional owner-facing label."),
+  allowed_host: z
+    .string()
+    .optional()
+    .describe(
+      'create only, required for both kinds. The host-binding exfiltration defence: an exact DNS host ("api.hubapi.com") or a single leftmost wildcard ("*.zohoapis.com"). The stored credential is attached to a delivery only when its url host matches; a rule later repointed elsewhere fails delivery rather than sending the secret to the wrong host.',
+    ),
+  header_name: z
+    .string()
+    .optional()
+    .describe(
+      'create only (static). The header the credential rides in. Defaults to "Authorization".',
+    ),
+  header_value: z
+    .string()
+    .optional()
+    .describe(
+      'create only, required for kind=static. The header value to send, e.g. "Bearer sk_live_...". Encrypted at rest and never returned by any call.',
+    ),
+  authorize_url: z
+    .string()
+    .optional()
+    .describe(
+      "create only, required for kind=oauth2. The provider's OAuth2 authorize endpoint (https; rejected if it resolves to a private/loopback/metadata address).",
+    ),
+  token_endpoint: z
+    .string()
+    .optional()
+    .describe(
+      "create only, required for kind=oauth2. The provider's OAuth2 token endpoint (same https + SSRF rules as authorize_url).",
+    ),
+  client_id: z
+    .string()
+    .optional()
+    .describe(
+      "create only, required for kind=oauth2. Your OAuth2 app's client id.",
+    ),
+  client_secret: z
+    .string()
+    .optional()
+    .describe(
+      "create only, required for kind=oauth2. Your OAuth2 app's client secret. Encrypted at rest and never returned by any call.",
+    ),
+  scopes: z
+    .string()
+    .optional()
+    .describe(
+      "create only (oauth2). Space-delimited scopes for the authorize request.",
+    ),
+  auth_scheme: z
+    .string()
+    .optional()
+    .describe(
+      'create only (oauth2). The scheme the access token is sent under. Defaults to "Bearer"; set e.g. "Zoho-oauthtoken" for a non-Bearer provider.',
+    ),
+  instance_field: z
+    .string()
+    .optional()
+    .describe(
+      'create only (oauth2). The name of a token-response JSON field holding the API base URL (e.g. "instance_url"). When set, the relay re-binds allowed_host to that host after consent and resolves relative rule urls against it.',
+    ),
+  auth_params: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "create only (oauth2). Extra key/values merged into the authorize redirect (e.g. to request offline access).",
+    ),
+  token_params: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "create only (oauth2). Extra key/values merged into the token POST.",
+    ),
 };
 
 const attachmentsShape = {
@@ -823,7 +1000,7 @@ const attachmentsShape = {
     .string()
     .optional()
     .describe(
-      "upload: ABSOLUTE path to a file read on the SERVER host running this MCP connector (the relay), NOT your machine. Only works when the file is local to the relay (e.g. a locally-run CLI). For a hosted or remote agent, use `content_base64` instead.",
+      "upload: absolute path to a file read on the server host running this MCP connector (the relay), not the calling agent's machine. It resolves only when the file is local to the relay (e.g. a locally-run CLI); a hosted or remote agent supplies the bytes as `content_base64` instead.",
     ),
   source_url: z
     .string()
@@ -850,13 +1027,13 @@ const attachmentsShape = {
     .string()
     .optional()
     .describe(
-      "upload/presign: advisory Content-Type. The relay BYTE-SNIFFS the actual bytes and stores/serves that sniffed type regardless (a lying mime is caught, never served inline). Required for presign (scopes the upload URL + fails fast against the allowlist).",
+      "upload/presign: advisory Content-Type. The relay byte-sniffs the actual bytes and stores/serves that sniffed type regardless (a lying mime is caught, never served inline). Required for presign (scopes the upload URL + fails fast against the allowlist).",
     ),
   out_path: z
     .string()
     .optional()
     .describe(
-      "download: ABSOLUTE path to write the bytes to. If omitted, the bytes are returned base64-encoded in the result.",
+      "download: absolute path to write the bytes to. If omitted, the bytes are returned base64-encoded in the result.",
     ),
   cursor: z.string().optional().describe("list pagination cursor."),
   limit: z
@@ -900,7 +1077,7 @@ const keyShape = {
   action: z
     .enum(["list", "revoke", "mint"])
     .describe(
-      "The calling agent's API key. list: key info (agent_id, key_prefix, timestamps). mint: mint a NEW sibling API key for YOUR OWN agent identity (same scope/ownership) and return its raw value ONCE, so use it to hand a CLI or child process a working credential; the sibling is a distinct key that shows up in a subsequent `list` made WITH it, the owner can revoke it, and the raw value is never retrievable again. mint always acts on the calling agent, never another agent's id. revoke: self-destruct the agent's OWN key, which stops working immediately and is irreversible (requires confirm:true).",
+      "The calling agent's API key. list: key info (agent_id, key_prefix, timestamps). mint: mints a sibling API key for the calling agent's own identity (same scope/ownership) and returns its raw value once, which is what hands a CLI or child process a working credential; the sibling is a distinct key that shows up in a subsequent `list` made with it, the owner can revoke it, and the raw value is never retrievable again. mint always acts on the calling agent, never another agent's id. revoke: self-destructs the agent's own key, which stops working immediately and is irreversible (requires confirm:true).",
     ),
   confirm: z.boolean().optional().describe("Required (true) for revoke."),
 };
@@ -909,7 +1086,7 @@ const feedbackShape = {
   action: z
     .enum(["create", "list"])
     .describe(
-      "Feedback to the relay operator. create: submit a bug|feature|note with a message (optional app_id). list: the agent's own submissions, newest first.",
+      "Reports a problem with homespun itself to the relay operator. create: files one bug|feature|note with a message and an optional app_id. list: this agent's own submissions, newest first, which is what distinguishes a new failure from one already reported.",
     ),
   type: z
     .enum(["bug", "feature", "note"])
@@ -940,7 +1117,7 @@ const agentShape = {
   action: z
     .enum(["whoami", "claim", "logout"])
     .describe(
-      "Agent identity. whoami: show the resolved relay URL, active profile, and whether a key is configured (no network, no secrets). claim: bind this agent to a human via a one-shot claim code the human generated in their Settings UI (one-way). logout: clear the locally-saved key/profile (does NOT revoke it on the relay — use the key tool's revoke for that).",
+      "Agent identity. whoami: show the resolved relay URL, active profile, and whether a key is configured (no network, no secrets). claim: bind this agent to a human via a one-shot claim code the human generated in their Settings UI (one-way). logout: clears the locally-saved key/profile; the key is not revoked on the relay, which is what the key tool's revoke action does.",
     ),
   code: z
     .string()
@@ -962,7 +1139,7 @@ const communityShape = {
       "set_trust_level",
     ])
     .describe(
-      "publish: publish one of YOUR apps as a community template (app_id; optional title/description/category/tags). PRIVACY: publishing makes the template content AND the captured seed rows (the LIVE rows of every seedOnInstall collection, captured at publish time) PUBLIC to every platform user once approved. Do NOT publish an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private): seed data must be example-only. Pass attest_example_only:true to attest you have checked this. The capture (html + manifest + seed rows) lands PENDING review, installable by its returned direct link but not listed until approved; an ESTABLISHED publisher is fast-tracked (the response's expedited/auto_approved tell you which). unpublish: take one of YOUR OWN published templates back down (snapshot_id). It removes the listing from the public gallery, from search, and from the direct snapshot install link. Existing installs keep working untouched, because an install is a fresh private copy rather than a live reference. It is idempotent (unpublishing an already-unpublished template is a no-op), and a snapshot that does not exist OR is not yours reads as not found either way. Publish a new version to put the listing back. get_config_contract: read a template's install-time config contract by `ref` (a namespaced '<handle>/<slug>' or a snapshot id): its settings_collection, ordered config_steps (each with key/kind/required/secret/choices/default), and connect_steps (inbound hooks the app receives on). An 'upload' step wants a file; pre-upload it with the attachments tool (scope agent) and pass its attachment id. After installing a template with connect_steps, run the `ingest` tool's list action on the new app_id to read its freshly provisioned hook URLs, and wire each into the external service. install: install a template by `ref` for YOU (your owning human becomes the owner). Pass `config` as { stepKey: value } from the contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. A required step you omit is rejected. Returns the new app's id, slug, and url; installs always create a fresh private copy. list_pending / get_submission / approve / reject / set_trust_level are RELAY-OPERATOR-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows plus external_destinations, the hosts it can send data to or pull data from, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').",
+      "publish: publishes one of the caller's apps as a community template (app_id; optional title/description/category/tags). Privacy consequence: publishing makes the template content and the captured seed rows (the live rows of every seedOnInstall collection, captured at publish time) public to every platform user once approved, so an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private) is not safe to publish: seed data must be example-only. attest_example_only:true records that this was checked. The capture (html + manifest + seed rows) lands pending review, installable by its returned direct link but not listed until approved; an established publisher is fast-tracked, and the response's expedited/auto_approved fields report which path it took. unpublish: takes one of the caller's own published templates back down (snapshot_id). It removes the listing from the public gallery, from search, and from the direct snapshot install link. Existing installs keep working untouched, because an install is a fresh private copy rather than a live reference. It is idempotent (unpublishing an already-unpublished template is a no-op), and a snapshot that does not exist or belongs to someone else reads as not found either way. Publishing a new version is what puts the listing back. get_config_contract: read a template's install-time config contract by `ref` (a namespaced '<handle>/<slug>' or a snapshot id): its settings_collection, ordered config_steps (each with key/kind/required/secret/choices/default), and connect_steps (inbound hooks the app receives on). An 'upload' step wants a file, pre-uploaded with the attachments tool (scope agent) and passed as its attachment id. A template installed with connect_steps provisions hook URLs, which the `ingest` tool's list action returns for the new app_id, ready to wire into the external service. install: installs a template by `ref` for the caller, whose owning human becomes the owner. `config` is { stepKey: value } from the contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. An omitted required step is rejected. Returns the new app's id, slug, and url; installs always create a fresh private copy. list_pending / get_submission / approve / reject / set_trust_level are relay-operator-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows plus external_destinations, the hosts it can send data to or pull data from, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').",
     ),
   ref: z
     .string()
@@ -979,7 +1156,7 @@ const communityShape = {
   app_id: z
     .string()
     .optional()
-    .describe("publish only. The id of an app YOU own to publish."),
+    .describe("publish only. The id of an app the caller owns, to publish."),
   title: z
     .string()
     .optional()
@@ -1012,7 +1189,7 @@ const communityShape = {
     .string()
     .optional()
     .describe(
-      "publish only. Optional per-publisher slug (lowercase, 3 to 48 chars, hyphens). Gives the template a namespaced id <your-handle>/<slug>; a republish reuses the slug and must bump the version. If omitted, a slug is derived from the title instead of leaving the template unnamed, so pass one only when you want a specific url. Slugs are immutable: renaming the template later does not move its url, so choose a slug you are willing to keep.",
+      "publish only. Optional per-publisher slug (lowercase, 3 to 48 chars, hyphens). Gives the template a namespaced id <handle>/<slug>; a republish reuses the slug and must bump the version. If omitted, a slug is derived from the title instead of leaving the template unnamed, so this field matters only when a specific url is wanted. Slugs are immutable: renaming the template later does not move its url, so the slug chosen here is permanent.",
     ),
   version: z
     .string()
@@ -1089,7 +1266,7 @@ const communityShape = {
     .boolean()
     .optional()
     .describe(
-      "publish only. Set true to attest that the template content AND the captured seed rows contain NO real personal data. Publishing makes both PUBLIC to every platform user, so seed data (the live rows of your seedOnInstall collections) must be example-only, never real names/emails/addresses/private messages. Recorded and shown to the reviewer; omitting it still publishes but is flagged to the operator as not attested.",
+      "publish only. True attests that the template content and the captured seed rows contain no real personal data. Publishing makes both public to every platform user, so seed data (the live rows of the app's seedOnInstall collections) must be example-only, never real names/emails/addresses/private messages. Recorded and shown to the reviewer; omitting it still publishes but is flagged to the operator as not attested.",
     ),
   snapshot_id: z
     .string()
@@ -1132,7 +1309,7 @@ const publisherShape = {
   action: z
     .enum(["claim", "get", "update"])
     .describe(
-      "get: return YOUR publisher profile (handle, tenure, counters). claim: set your @-handle ONCE (handle arg; lowercase, 3 to 32 chars, permanent after claiming; needs a verified email). update: change your public display_name/bio/url (any of them; needs a verified email).",
+      "get: returns the caller's publisher profile (handle, tenure, counters). claim: sets the caller's @-handle, once (handle arg; lowercase, 3 to 32 chars, permanent after claiming; needs a verified email). update: changes the caller's public display_name/bio/url (any of them; needs a verified email).",
     ),
   handle: z
     .string()
@@ -1167,7 +1344,7 @@ const reviewShape = {
   action: z
     .enum(["create", "respond", "report", "remove", "unhold"])
     .describe(
-      'create: leave a star rating (1..5) and optional body on a community template YOU have installed (identify it by `template` "<handle>/<slug>" or by `handle`+`slug`); requires a verified email, and one review per install. A body containing a link or contact email is auto-held for a moderator before it shows. respond: reply to a review of one of YOUR OWN templates (review_id + response; null clears it). report: flag a review for the relay\'s moderators (review_id + reason; one report per account). remove / unhold are RELAY-OPERATOR-only moderation actions on a review_id: remove takes a review down (adjusting the aggregate), unhold publishes a previously auto-held review.',
+      "create: leaves a star rating (1..5) and optional body on a community template the caller has installed (identified by `template` \"<handle>/<slug>\" or by `handle`+`slug`); requires a verified email, and one review per install. A body containing a link or contact email is auto-held for a moderator before it shows. respond: replies to a review of one of the caller's own templates (review_id + response; null clears it). report: flags a review for the relay's moderators (review_id + reason; one report per account). remove / unhold are relay-operator-only moderation actions on a review_id: remove takes a review down (adjusting the aggregate), unhold publishes a previously auto-held review.",
     ),
   template: z
     .string()
@@ -1233,7 +1410,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "deploy_app",
     description:
-      "Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL.\n\nON REDEPLOY, SEND ONLY WHAT CHANGES. Every content field is optional when `app_id` is given, and an omitted one keeps what is live: omit `manifest` for an HTML-only change, omit `html` for a manifest-only change, omit `assets` to keep the current files. This is the cheap path and it is the one to reach for by default, because the omitted field costs no output tokens at all: a one-line colour change should not resend the whole document, and a manifest edit should not resend it either. Send a field only when its content is different from what is live. `assets: []` is the explicit way to clear the asset set, and omitting all three is refused, since there would be nothing to change.\n\nThe manifest carries eight extension keys: app metadata; collections, with per-collection write, update, read and delete role lists, where write gates creates and also gates updates unless an update list is declared; externalHosts, a fetch allowlist; cdn, to allow CDN scripts and styles; capabilities, for Permissions-Policy opt-ins; embeds, an iframe frame-src allowlist; notify, for email-on-row rules; and webhooks, for signed HTTP POST on-row rules. The manifest grammar is documented in the Homespun guide that get_skill returns.\n\nPass no `app_id` to create, which mints a slug and URL and requires both `html` and `manifest`, or pass `app_id` to redeploy an existing app. Supply the HTML inline as `html`, or as `html_path`, an absolute path read on the MCP-server host, which is the relay for a hosted connector or the CLI host for a locally-run one, and not the remote agent's machine; it avoids retransmitting a large HTML file on every deploy, only a locally-run connector can read it, and inline `html` wins if both are given. `dry_run:true` (alias `check`) validates only: it runs the full manifest and asset validation, the redeploy compat gate and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } without creating a version or mutating anything, and it resolves omitted fields the same way a real deploy would, so it reports on exactly the deploy that would run.\n\nA redeploy is refused with manifest_incompatible_redeploy, unless force:true, when it would strand rows already written (dropping a collection, tightening a schema, flipping appendOnly), or when it would widen what the app's install screen discloses: a collection's read reaching further than the live manifest, a capability added, cdn turned on, or a host added to externalHosts, embeds or a webhook target. The break quotes the sentence a user would now be asked to approve. Taking access away never prompts: dropping a role, dropping a capability, host or webhook, turning cdn off, or adding update:[\\\"creator\\\"] to a write:[\\\"anyone\\\"] collection, all redeploy clean. A removed collection is detached rather than deleted.\n\nImages, fonts, audio, video and data files ship with the app in the same call via `assets[]`. Each is validated and stored app-scoped and served at its `path` on the app's own origin, so the HTML references it by a stable same-origin path such as `<img src=\\\"frames/000.jpg\\\">`; media and font paths support HTTP Range for seeking. A redeploy's assets replace the previous version's set when sent, carry over when omitted, and are cleared by `assets: []`.\n\nReturns { app_id, slug, url, version, visibility, created } on create, or { app_id, version, compat, breaks? } on redeploy.",
+      "Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL.\n\nA redeploy only needs the content that changed. Every content field is optional when `app_id` is given, and an omitted one keeps what is live: omit `manifest` for an HTML-only change, omit `html` for a manifest-only change, omit `assets` to keep the current files. This is the cheap path and the default, because an omitted field costs no output tokens at all: a one-line colour change does not resend the whole document, and a manifest edit does not resend it either. A field only needs sending when its content differs from what is live. `assets: []` is the explicit way to clear the asset set, and omitting all three is refused, since there would be nothing to change.\n\nThe manifest carries eight extension keys: app metadata; collections, with per-collection write, update, read and delete role lists, where write gates creates and also gates updates unless an update list is declared; externalHosts, a fetch allowlist; cdn, to allow CDN scripts and styles; capabilities, for Permissions-Policy opt-ins; embeds, an iframe frame-src allowlist; notify, for email-on-row rules; and webhooks, for signed HTTP POST on-row rules. The manifest grammar is documented in the Homespun guide that get_skill returns.\n\nPass no `app_id` to create, which mints a slug and URL and requires both `html` and `manifest`, or pass `app_id` to redeploy an existing app. Supply the HTML inline as `html`, or as `html_path`, an absolute path read on the MCP-server host, which is the relay for a hosted connector or the CLI host for a locally-run one, and not the remote agent's machine; it avoids retransmitting a large HTML file on every deploy, only a locally-run connector can read it, and inline `html` wins if both are given. `dry_run:true` (alias `check`) validates only: it runs the full manifest and asset validation, the redeploy compat gate and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } without creating a version or mutating anything, and it resolves omitted fields the same way a real deploy would, so it reports on exactly the deploy that would run.\n\nA redeploy is refused with manifest_incompatible_redeploy, unless force:true, when it would strand rows already written (dropping a collection, tightening a schema, flipping appendOnly), or when it would widen what the app's install screen discloses: a collection's read reaching further than the live manifest, a capability added, cdn turned on, or a host added to externalHosts, embeds or a webhook target. The break quotes the sentence a user would now be asked to approve. Taking access away never prompts: dropping a role, dropping a capability, host or webhook, turning cdn off, or adding update:[\\\"creator\\\"] to a write:[\\\"anyone\\\"] collection, all redeploy clean. A removed collection is detached rather than deleted.\n\nImages, fonts, audio, video and data files ship with the app in the same call via `assets[]`. Each is validated and stored app-scoped and served at its `path` on the app's own origin, so the HTML references it by a stable same-origin path such as `<img src=\\\"frames/000.jpg\\\">`; media and font paths support HTTP Range for seeking. A redeploy's assets replace the previous version's set when sent, carry over when omitted, and are cleared by `assets: []`.\n\nReturns { app_id, slug, url, version, visibility, created } on create, or { app_id, version, compat, breaks? } on redeploy.",
     inputSchema: deployAppShape,
     annotations: {
       title: "Deploy App",
@@ -1479,7 +1656,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "delete_row",
     description:
-      "Soft-delete a row from a v2 app's collection. RECOVERABLE: the row is tombstoned, not destroyed, and restore_row brings it back for 30 days (see list_deleted_rows). A watcher sees the deletion live as op:delete on the change feed. Pass if_match for an optimistic-locked delete. Returns { deleted: true }.",
+      "Soft-delete a row from a v2 app's collection. Recoverable: the row is tombstoned, not destroyed, and restore_row brings it back for 30 days (see list_deleted_rows). A watcher sees the deletion live as op:delete on the change feed. Pass if_match for an optimistic-locked delete. Returns { deleted: true }.",
     inputSchema: deleteRowShape,
     annotations: {
       title: "Delete Row",
@@ -1508,7 +1685,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "list_deleted_rows",
     description:
-      "List a collection's recently deleted rows: the recovery bin. Deleting a row is a SOFT delete, so it can be restored with restore_row until recoverable_until passes (30 days after deletion by default). Owner or agent only, and deliberately independent of the collection's read permissions. Rows already purged appear with purged:true and cannot be restored. Returns { rows, next_before }.",
+      "List a collection's recently deleted rows: the recovery bin. Deleting a row is a soft delete, so it can be restored with restore_row until recoverable_until passes (30 days after deletion by default). Owner or agent only, and deliberately independent of the collection's read permissions. Rows already purged appear with purged:true and cannot be restored. Returns { rows, next_before }.",
     inputSchema: listDeletedRowsShape,
     annotations: {
       title: "List Deleted Rows",
@@ -1867,6 +2044,264 @@ export const TOOLS: ToolDef[] = [
           }
           default:
             return invalidArgs(`unknown grants action '${action}'`);
+        }
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  },
+  // ----- consolidated management tools --------------------------------------
+  {
+    name: "credentials",
+    description:
+      "A v2 app's scoped service credentials (#1354, #1355): the bearer token an app owner points a backend they host themselves at, so their own server can read and write the app's data without holding the owner's full authority. Effective permission is always the intersection of the allowlist and what the app's owner could do, so a credential can only ever narrow, never widen, and it carries no role. Actions: mint creates one and returns its raw `token` shown once, never recoverable afterward (only its hash is stored); list returns the app's credentials with their allowlist and status, never any token material; pause reversibly stops one; resume undoes a pause (never a revoke, which is permanent); rotate issues a fresh token while the old one keeps working for an overlap window, so a running backend picks up the new token with no outage; revoke kills one permanently. Every action here is owner-or-owning-agent only: a service credential itself can reach none of these, by construction, so it can never mint or widen a sibling of itself.",
+    inputSchema: credentialsShape,
+    // Consolidated tool: read action (list) + mutating ones (mint/pause/
+    // resume/rotate/revoke). Hint reflects revoke/rotate, the most-privileged
+    // actions, matching the grants/ingest convention.
+    annotations: {
+      title: "Manage App Service Credentials",
+      readOnlyHint: false,
+      // Destructive: `revoke` permanently kills a live credential and
+      // `rotate` invalidates the superseded token once its overlap window
+      // lapses (immediately when overlap_seconds is 0).
+      destructiveHint: true,
+      // NOT idempotent: `mint` and `rotate` each produce a fresh secret, so a
+      // retried call leaves a second live credential behind rather than having
+      // no additional effect. Matches the `key` tool, which is the same shape.
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    handler: async (client, args) => {
+      const action = String(args["action"]);
+      if (str(args, "app_id") === undefined) {
+        return invalidArgs(`${action} requires \`app_id\``);
+      }
+      const appId = String(args["app_id"]);
+      try {
+        switch (action) {
+          case "mint": {
+            const grants = Array.isArray(args["grants"])
+              ? (args["grants"] as ServiceCredentialGrant[])
+              : undefined;
+            return jsonResult(
+              await client.mintAppCredential(appId, {
+                ...(args["mode"] !== undefined
+                  ? { mode: args["mode"] as "explicit" | "following" }
+                  : {}),
+                ...(grants !== undefined ? { grants } : {}),
+                ...(typeof args["members"] === "boolean"
+                  ? { members: args["members"] }
+                  : {}),
+                ...(str(args, "label") !== undefined
+                  ? { label: String(args["label"]) }
+                  : {}),
+                ...(args["ttl_seconds"] !== undefined
+                  ? { ttlSeconds: args["ttl_seconds"] as number | null }
+                  : {}),
+              }),
+            );
+          }
+          case "list":
+            return jsonResult(await client.listAppCredentials(appId));
+          case "pause": {
+            if (str(args, "credential_id") === undefined) {
+              return invalidArgs("pause requires `credential_id`");
+            }
+            await client.pauseAppCredential(
+              appId,
+              String(args["credential_id"]),
+            );
+            return jsonResult({
+              app_id: appId,
+              credential_id: args["credential_id"],
+              paused: true,
+            });
+          }
+          case "resume": {
+            if (str(args, "credential_id") === undefined) {
+              return invalidArgs("resume requires `credential_id`");
+            }
+            await client.resumeAppCredential(
+              appId,
+              String(args["credential_id"]),
+            );
+            return jsonResult({
+              app_id: appId,
+              credential_id: args["credential_id"],
+              resumed: true,
+            });
+          }
+          case "rotate": {
+            if (str(args, "credential_id") === undefined) {
+              return invalidArgs("rotate requires `credential_id`");
+            }
+            return jsonResult(
+              await client.rotateAppCredential(
+                appId,
+                String(args["credential_id"]),
+                {
+                  ...(typeof args["overlap_seconds"] === "number"
+                    ? { overlapSeconds: args["overlap_seconds"] }
+                    : {}),
+                },
+              ),
+            );
+          }
+          case "revoke": {
+            if (str(args, "credential_id") === undefined) {
+              return invalidArgs("revoke requires `credential_id`");
+            }
+            await client.revokeAppCredential(
+              appId,
+              String(args["credential_id"]),
+            );
+            return jsonResult({
+              app_id: appId,
+              credential_id: args["credential_id"],
+              revoked: true,
+            });
+          }
+          default:
+            return invalidArgs(`unknown credentials action '${action}'`);
+        }
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  },
+  {
+    name: "connections",
+    description:
+      "A v2 app's Connections: the stored credential (a static header token, or a full generic OAuth2 client) a manifest webhook rule authenticates its delivery target with, bound to a host so the credential can never be exfiltrated to another one. There is no update action: change a connection by deleting and recreating it. Actions: create stores a static or oauth2 connection and returns its metadata, never the secret; list returns the app's connections as metadata plus a non-reversible fingerprint, never any secret; delete is idempotent; consent_url builds (never fetches) the browser URL that completes an oauth2 connection's consent, since that is inherently a human-in-a-browser step an agent key cannot complete. A newly created oauth2 connection starts in `pending_auth` until the owner opens the consent_url and approves.",
+    inputSchema: connectionsShape,
+    // Consolidated tool: read action (list) + mutating ones (create/delete).
+    // Hint reflects delete, the most-privileged action.
+    annotations: {
+      title: "Manage App Connections",
+      readOnlyHint: false,
+      // Destructive: `delete` stops any webhook still using that connection
+      // from authenticating.
+      destructiveHint: true,
+      // NOT idempotent: `create` adds another connection each time it runs, so
+      // a retried call leaves a second one behind rather than having no
+      // additional effect. Matches the `key` tool, which is the same shape.
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    handler: async (client, args) => {
+      const action = String(args["action"]);
+      if (str(args, "app_id") === undefined) {
+        return invalidArgs(`${action} requires \`app_id\``);
+      }
+      const appId = String(args["app_id"]);
+      try {
+        switch (action) {
+          case "create": {
+            if (str(args, "name") === undefined) {
+              return invalidArgs("create requires `name`");
+            }
+            if (str(args, "allowed_host") === undefined) {
+              return invalidArgs("create requires `allowed_host`");
+            }
+            const kind =
+              (args["kind"] as "static" | "oauth2" | undefined) ?? "static";
+            if (kind === "oauth2") {
+              if (
+                str(args, "authorize_url") === undefined ||
+                str(args, "token_endpoint") === undefined ||
+                str(args, "client_id") === undefined ||
+                str(args, "client_secret") === undefined
+              ) {
+                return invalidArgs(
+                  "create (kind=oauth2) requires `authorize_url`, `token_endpoint`, `client_id` and `client_secret`",
+                );
+              }
+              return jsonResult(
+                await client.createConnection(appId, {
+                  name: String(args["name"]),
+                  kind: "oauth2",
+                  allowedHost: String(args["allowed_host"]),
+                  authorizeUrl: String(args["authorize_url"]),
+                  tokenEndpoint: String(args["token_endpoint"]),
+                  clientId: String(args["client_id"]),
+                  clientSecret: String(args["client_secret"]),
+                  ...(str(args, "provider") !== undefined
+                    ? { provider: String(args["provider"]) }
+                    : {}),
+                  ...(str(args, "label") !== undefined
+                    ? { label: String(args["label"]) }
+                    : {}),
+                  ...(str(args, "scopes") !== undefined
+                    ? { scopes: String(args["scopes"]) }
+                    : {}),
+                  ...(str(args, "auth_scheme") !== undefined
+                    ? { authScheme: String(args["auth_scheme"]) }
+                    : {}),
+                  ...(str(args, "instance_field") !== undefined
+                    ? { instanceField: String(args["instance_field"]) }
+                    : {}),
+                  ...(isPlainObject(args["auth_params"])
+                    ? { authParams: args["auth_params"] }
+                    : {}),
+                  ...(isPlainObject(args["token_params"])
+                    ? { tokenParams: args["token_params"] }
+                    : {}),
+                }),
+              );
+            }
+            if (str(args, "header_value") === undefined) {
+              return invalidArgs(
+                "create requires `header_value` for a static connection",
+              );
+            }
+            return jsonResult(
+              await client.createConnection(appId, {
+                name: String(args["name"]),
+                kind: "static",
+                allowedHost: String(args["allowed_host"]),
+                headerValue: String(args["header_value"]),
+                headerName:
+                  str(args, "header_name") !== undefined
+                    ? String(args["header_name"])
+                    : "Authorization",
+                ...(str(args, "provider") !== undefined
+                  ? { provider: String(args["provider"]) }
+                  : {}),
+                ...(str(args, "label") !== undefined
+                  ? { label: String(args["label"]) }
+                  : {}),
+              }),
+            );
+          }
+          case "list":
+            return jsonResult(await client.listConnections(appId));
+          case "delete": {
+            if (str(args, "name") === undefined) {
+              return invalidArgs("delete requires `name`");
+            }
+            await client.deleteConnection(appId, String(args["name"]));
+            return jsonResult({
+              app_id: appId,
+              name: args["name"],
+              deleted: true,
+            });
+          }
+          case "consent_url": {
+            if (str(args, "name") === undefined) {
+              return invalidArgs("consent_url requires `name`");
+            }
+            return jsonResult({
+              app_id: appId,
+              name: args["name"],
+              authorize_url: client.connectionAuthorizeUrl(
+                appId,
+                String(args["name"]),
+              ),
+            });
+          }
+          default:
+            return invalidArgs(`unknown connections action '${action}'`);
         }
       } catch (e) {
         return errorResult(e);
@@ -2260,7 +2695,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "feedback",
     description:
-      "Feedback to the relay operator. Actions: create records a bug, feature or note with a message and an optional app_id; list returns the agent's own submissions, newest first, paginated by `before`.",
+      "Reports a problem with homespun itself to the relay operator, and lists what this agent has already reported. A report is the operator's only visibility into a failure that happened inside an agent's session, so an unreported one is a failure nobody can fix.\n\nThe channel covers homespun's own behaviour: a 5xx, or an error code the guide does not describe; a disagreement between documented and observed behaviour; something the tool surface cannot express, such as a missing capability or a schema that contradicts itself; an app misbehaving in a way that traces back to the platform (the bridge, the runtime, serving, the data API) rather than to authored HTML; or a guide that was wrong, ambiguous or silent.\n\nOutside its scope: the human's own task; bugs in an app the agent authored; presentation preferences, which belong in `taste`; the human's own configuration, such as a missing API key or the wrong account; and a 4xx caused by the agent's own arguments, except where the error message itself was misleading, which is a documentation problem best filed as a `note`.\n\nDuplicates cost the operator triage rather than adding signal. Action `list` returns this agent's own submissions, newest first, so a failure already recorded needs no second row: one report covers one distinct failure, however many times it was retried.\n\nThe operator sees the row and not the session, so a bare \"deploy failed\" is not actionable. An actionable `message` carries the surface (mcp, cli, relay or app-runtime); where it happened (the tool or route); the skill version, from the `<!-- homespun skill vX.Y.Z -->` comment at the top of the guide; what was expected, in one line; what was observed, in one line carrying the exact error code and message; and the minimal steps or arguments that reproduce it.\n\n`type` is bug for something broken, feature for something missing, note for a rough edge or a confusing doc. `app_id` scopes a report to one app. There is no reply channel, so a report is not a route to an answer. Actions: create files one report; list returns this agent's own submissions, newest first, paginated by `before`.",
     inputSchema: feedbackShape,
     // Consolidated tool: read action (list) + a side-effecting one (create
     // submits feedback to the relay operator). Hint reflects the write action.

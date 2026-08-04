@@ -123,9 +123,11 @@ Airtable, Pipedrive) without a middleman.
 
 Two optional fields on a rule:
 
-- **`connection`**: the NAME of a stored credential (created out-of-band, see
-  below). At send time the relay attaches that credential's header to the
-  request. The manifest carries the **name only, never the secret**.
+- **`connection`**: the NAME of a stored credential, created out-of-band
+  (see the Connections API below, and whatever CLI/MCP surface wraps it in
+  the guide you are reading). At send time the relay attaches that
+  credential's header to the request. The manifest carries the **name only,
+  never the secret**.
 - **`bodyTemplate`**: a custom JSON body with `{{field}}` placeholders (one
   top-level row field each). Each placeholder is replaced with the **JSON
   encoding** of the value, so a value can never break out of its JSON position
@@ -146,7 +148,10 @@ Two optional fields on a rule:
 ]
 ```
 
-**Connections API** (owner-cookie OR owning-agent-key, on the main domain):
+**Connections API** (owner-cookie OR owning-agent-key, on the main domain).
+A CLI noun and an MCP tool both wrap this exact surface (create/list/delete
+plus the oauth2 consent URL); use whichever invocation layer you are driving
+Homespun over. The raw shape:
 
 ```
 POST   /v1/apps/:id/connections     static: { name, allowedHost, headerName, headerValue, provider?, label? }
@@ -207,10 +212,13 @@ credentials. One-time setup:
    ```
    The row starts in `pending_auth` with no tokens.
 3. **Complete consent in a browser** as the signed-in **owner** (an agent key
-   cannot): open `GET /v1/apps/:id/connections/:name/authorize`. It redirects you
-   to the provider (PKCE + `state`); after you approve, the relay captures the
-   tokens, binds `allowedHost` (to the `instanceField` host when set, else your
-   supplied host), and flips the connection to `active`.
+   cannot): open `GET /v1/apps/:id/connections/:name/authorize`. If you are
+   driving this from an agent, the invocation layer you are using has a
+   dedicated action that BUILDS that URL for you and never fetches it, so you
+   can hand it to the signed-in owner to open. It redirects the owner's
+   browser to the provider (PKCE + `state`); after they approve, the relay
+   captures the tokens, binds `allowedHost` (to the `instanceField` host when
+   set, else the supplied host), and flips the connection to `active`.
 4. **Reference it by name** from a webhook rule, exactly like a static connection
    (`"connection": "<name>"`). A relative rule `url` is resolved against the
    captured instance base (requires `instanceField`); an absolute `https` url is
@@ -228,9 +236,53 @@ GET /v1/apps/:id/webhooks/deliveries?collection=&status=&limit=
 ```
 
 Returns recent deliveries: `{ id, collection, rowKey, op, url, status, attempts,
-responseStatus, responseBody, error, createdAt, deliveredAt, lastAttemptAt }`.
-The `url` is host + path only (the query string is dropped) and the response
-**never** includes the auth header or the connection secret.
+responseStatus, responseBody, error, replayOfId, createdAt, deliveredAt,
+lastAttemptAt }`. The `url` is host + path only (the query string is dropped)
+and the response **never** includes the auth header or the connection secret.
+`replayOfId` is set only on a row created by the replay endpoint below, naming
+the delivery it re-sends.
+
+This journal is bounded two ways, on top of what the retention window already
+implies: deliveries older than `WEBHOOKS_DELIVERY_RETENTION_DAYS` (default 90)
+are pruned, and each app additionally keeps at most
+`WEBHOOKS_DELIVERY_MAX_PER_APP` (default 5000) `delivered`/`failed` rows
+(`pending` is queue state and is never pruned by either rule). Unlike a typical
+"keep the newest N" cap, the row-count prune keeps the **oldest** rows and drops
+the newest overflow: during a flood the newest rows are just more of the same
+failure, while the oldest are what explain how it started, so they are the ones
+worth keeping.
+
+**You will be emailed once when a rule stops delivering.** A delivery that
+exhausts its retries (or otherwise goes terminally `failed`) sends the app's
+verified owner one email, at most once per rule per hour by default
+(`WEBHOOKS_FAILURE_NOTIFY_WINDOW_SECONDS`) - a rule failing a thousand times in
+that hour is still one email, not a thousand. It names the collection and rule
+and points back at this inspection endpoint; nothing is sent if the relay has
+no email provider configured or the owner has no verified address.
+
+**Replaying a failed delivery.** During receiver development a failed delivery
+is common, and the automatic retry can mean waiting out most of an hour. Force
+an immediate re-send of a stored delivery instead:
+
+```
+POST /v1/apps/:id/webhooks/deliveries/:deliveryId/replay
+```
+
+Inserts a fresh delivery carrying the SAME `ruleId`/`url`/payload as the
+original (never anything you supply in the request) and returns it; the normal
+delivery worker sends it on its next tick, so signing, connection auth and
+`urlFromSetting` resolution all apply exactly as they do to any other delivery.
+409s if the rule that produced the original is no longer in the current
+manifest (redeploy first). Owner-cookie or owning-agent-key only, and scoped to
+your own app - a delivery id from another app 404s exactly like a bogus one.
+
+A replayed delivery gets its **own** `X-Homespun-Delivery` id (it is a new
+row), so do not dedupe a replay against the original by that header. **Sort and
+dedupe on the envelope's `feed_seq` instead** - the replay's payload carries the
+ORIGINAL event's `feed_seq` verbatim, so a receiver that already sorts/dedupes
+on `feed_seq` (as this doc already tells you to do for ordering, above) is
+automatically safe against having processed the original: a replay after a
+receiver already handled the original is just `feed_seq` it has already seen.
 
 **No credential? Use a catch-hook.** If you would rather not store a CRM token on
 the relay at all, point a plain (no-`connection`) webhook at a Zapier / Make /

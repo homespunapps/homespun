@@ -12,6 +12,7 @@
 //   server -> client  {"type":"entry","entry":{...}}            (live push)
 //   server -> client  {"type":"resync"}                          (since below retention floor)
 //   server -> client  {"type":"_dormant"}                        (terminal — app went dormant)
+//   server -> client  {"type":"_suspended"}                      (terminal: operator takedown, #1041)
 //   server -> client  {"type":"error","error":{...}}
 //
 // `openAppStream` sends the initial `sub` itself (from `opts.since`) and
@@ -60,6 +61,10 @@ export interface AppStreamHandlers {
   onResync?: () => void;
   /** Fired on the terminal `_dormant` frame (the app went dormant). */
   onDormant?: () => void;
+  /** Fired on the terminal `_suspended` frame (an operator suspended the
+   *  app, issue #1041). Distinct from `onDormant`: there is no self-service
+   *  recovery here, only an operator can unsuspend. */
+  onSuspended?: () => void;
   /** Fired on a relay-side error frame. */
   onRelayError?: (error: {
     code?: string;
@@ -158,6 +163,9 @@ export function openAppStream(
         return;
       case "_dormant":
         handlers.onDormant?.();
+        return;
+      case "_suspended":
+        handlers.onSuspended?.();
         return;
       case "error":
         handlers.onRelayError?.(

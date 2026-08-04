@@ -63,6 +63,8 @@ const EXPECTED_TOOLS = [
   "apps",
   "members",
   "grants",
+  "credentials",
+  "connections",
   "ingest",
   "attachments",
   "taste",
@@ -98,6 +100,8 @@ describe("tool listing", () => {
       "apps",
       "members",
       "grants",
+      "credentials",
+      "connections",
       "ingest",
       "community",
       "publisher",
@@ -116,10 +120,10 @@ describe("tool listing", () => {
     }
   });
 
-  it("registers exactly 22 tools", () => {
+  it("registers exactly 24 tools", () => {
     // Pinned so the directory-readiness annotation sweep can't silently lose or
     // duplicate a tool.
-    expect(TOOLS).toHaveLength(22);
+    expect(TOOLS).toHaveLength(24);
   });
 
   it("every tool carries a Title-Case title and behavioural hints", () => {
@@ -189,6 +193,8 @@ describe("tool listing", () => {
     "apps", // delete
     "members", // remove
     "grants", // revoke (kills a live capability URL)
+    "credentials", // revoke (permanent) / rotate (invalidates the old token)
+    "connections", // delete (stops a webhook authenticating)
     "ingest", // rotate / clear_signing_secret
     "attachments", // delete, revoke_token
     "taste", // clear
@@ -283,6 +289,99 @@ describe("tool listing", () => {
       idempotentHint: false,
       openWorldHint: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Description style
+// ---------------------------------------------------------------------------
+
+// The Anthropic connectors-directory review (point 3) rejected descriptions
+// that steer the model at runtime instead of stating what a tool does and when
+// it applies, calling out imperatives and block-capital emphasis by name. That
+// was fixed once, in 1.6.29, and then regressed: `deploy_app` went back to
+// opening with a block-capital imperative and its `manifest` field went back to
+// telling the model to call get_skill before authoring. Nothing caught either,
+// because nothing was watching. These two checks are what watches.
+describe("description style (connectors-directory review, point 3)", () => {
+  // Every acronym and protocol token that is legitimately upper-case. A new
+  // entry here should be a real acronym; anything else is emphasis, and
+  // emphasis is the thing being kept out.
+  const ALLOWED_CAPS = new Set([
+    "API",
+    "CDN",
+    "CLI",
+    "CSS",
+    "DNS",
+    "GET",
+    "HTML",
+    "HTTP",
+    "IANA",
+    "JSON",
+    "MAJOR",
+    "MCP",
+    "MINOR",
+    "PATCH",
+    "POST",
+    "PUT",
+    "SHA",
+    "SKILL",
+    "SSRF",
+    "TTL",
+    "URI",
+    "URL",
+    "UTC",
+    "UTF",
+  ]);
+
+  // Phrasings that tell the assistant to do something rather than describing
+  // the tool. Each one was actually present at some point.
+  const ASSISTANT_INSTRUCTIONS: Array<[RegExp, string]> = [
+    [/\bcall\s+get_skill\b/i, "tells the model to call get_skill"],
+    [/\bfetch\s+(the\s+)?skill\.md\b/i, "tells the model to fetch SKILL.md"],
+    [/\brun\s+the\s+`?\w+`?\s+tool\b/i, "tells the model to run another tool"],
+    [/\bbefore\s+authoring\b/i, "sequences the model's work for it"],
+    [/\bdo\s+not\s+publish\b/i, "an imperative rather than a consequence"],
+    [/\bprefer\s+the\b/i, "an imperative rather than a consequence"],
+    [/\bmake\s+sure\s+to\b/i, "an imperative rather than a consequence"],
+    [/\bremember\s+to\b/i, "an imperative rather than a consequence"],
+  ];
+
+  /** Every model-visible string: tool preambles plus field docs. */
+  function everyDescription(): Array<[string, string]> {
+    const out: Array<[string, string]> = [];
+    for (const t of TOOLS) {
+      out.push([`${t.name} (tool)`, t.description]);
+      for (const [field, schema] of Object.entries(
+        t.inputSchema as Record<string, { description?: string }>,
+      )) {
+        if (schema && typeof schema.description === "string") {
+          out.push([`${t.name}.${field}`, schema.description]);
+        }
+      }
+    }
+    return out;
+  }
+
+  it("shouts in block capitals nowhere, acronyms aside", () => {
+    const offenders: string[] = [];
+    for (const [where, text] of everyDescription()) {
+      for (const word of text.match(/\b[A-Z][A-Z0-9]{2,}\b/g) ?? []) {
+        if (!ALLOWED_CAPS.has(word)) offenders.push(`${where}: ${word}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("instructs the assistant nowhere", () => {
+    const offenders: string[] = [];
+    for (const [where, text] of everyDescription()) {
+      for (const [pattern, why] of ASSISTANT_INSTRUCTIONS) {
+        const hit = text.match(pattern);
+        if (hit) offenders.push(`${where}: "${hit[0]}" (${why})`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 
@@ -648,6 +747,31 @@ describe("taste / key / feedback / agent tools", () => {
     });
     expect(res.isError).toBe(true);
     expect(submitFeedback).not.toHaveBeenCalled();
+  });
+
+  // The description is the whole mechanism: an agent files a report because
+  // the description said what the channel covers, so one that states only what
+  // the tool does (the state before #1447) leaves a channel nobody ever uses.
+  //
+  // Every assertion here is on scope, not on instruction: the
+  // connectors-directory rules above forbid steering the model at runtime, and
+  // "what this tool covers and when it applies" is what is left, which is
+  // enough to distinguish a homespun defect from the agent's own mistake.
+  it("feedback's description delimits what the channel covers", () => {
+    const d = tool("feedback").description.toLowerCase();
+
+    // In scope.
+    expect(d).toContain("5xx");
+    expect(d).toContain("documented and observed behaviour");
+    // Out of scope, so the operator's queue stays signal.
+    expect(d).toContain("outside its scope");
+    expect(d).toContain("taste");
+    // Deduping, so a retry loop cannot bury the signal under repeats.
+    expect(d).toContain("already recorded");
+    expect(d).toContain("one distinct failure");
+    // The message shape, so a filed row is actionable without the session.
+    expect(d).toContain("surface");
+    expect(d).toContain("reproduce");
   });
 
   it("agent whoami needs no client and no network", async () => {
@@ -1467,6 +1591,308 @@ describe("members tool actions", () => {
   });
 });
 
+describe("credentials tool actions", () => {
+  it("mint forwards mode/grants/members/label/ttl_seconds and returns the token", async () => {
+    const mintAppCredential = vi.fn().mockResolvedValue({
+      id: "cred_1",
+      token: "hsc_rawtoken",
+      token_prefix: "hsc_rawtoke",
+      mode: "following",
+      grants: [{ collection: "orders", ops: ["read"] }],
+      members: false,
+      label: "backend",
+      expires_at: null,
+    });
+    const res = await tool("credentials").handler(
+      fakeClient({ mintAppCredential }),
+      {
+        action: "mint",
+        app_id: "app_1",
+        mode: "following",
+        grants: [{ collection: "orders", ops: ["read"] }],
+        members: false,
+        label: "backend",
+        ttl_seconds: null,
+      },
+    );
+    expect(mintAppCredential).toHaveBeenCalledWith("app_1", {
+      mode: "following",
+      grants: [{ collection: "orders", ops: ["read"] }],
+      members: false,
+      label: "backend",
+      ttlSeconds: null,
+    });
+    const parsed = JSON.parse(res.content[0]!.text);
+    expect(parsed.token).toBe("hsc_rawtoken");
+  });
+
+  it("mint with no fields forwards an empty options object", async () => {
+    const mintAppCredential = vi.fn().mockResolvedValue({
+      id: "cred_2",
+      token: "hsc_x",
+      token_prefix: "hsc_x",
+      mode: "explicit",
+      grants: [],
+      members: false,
+      label: null,
+      expires_at: "2027-01-01T00:00:00.000Z",
+    });
+    await tool("credentials").handler(fakeClient({ mintAppCredential }), {
+      action: "mint",
+      app_id: "app_1",
+    });
+    expect(mintAppCredential).toHaveBeenCalledWith("app_1", {});
+  });
+
+  it("list forwards app_id", async () => {
+    const listAppCredentials = vi.fn().mockResolvedValue({ credentials: [] });
+    await tool("credentials").handler(fakeClient({ listAppCredentials }), {
+      action: "list",
+      app_id: "app_1",
+    });
+    expect(listAppCredentials).toHaveBeenCalledWith("app_1");
+  });
+
+  it("pause requires credential_id and returns a receipt", async () => {
+    const pauseAppCredential = vi.fn().mockResolvedValue(undefined);
+    const blocked = await tool("credentials").handler(
+      fakeClient({ pauseAppCredential }),
+      { action: "pause", app_id: "app_1" },
+    );
+    expect(blocked.isError).toBe(true);
+    expect(pauseAppCredential).not.toHaveBeenCalled();
+
+    const res = await tool("credentials").handler(
+      fakeClient({ pauseAppCredential }),
+      { action: "pause", app_id: "app_1", credential_id: "cred_1" },
+    );
+    expect(pauseAppCredential).toHaveBeenCalledWith("app_1", "cred_1");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      app_id: "app_1",
+      credential_id: "cred_1",
+      paused: true,
+    });
+  });
+
+  it("resume requires credential_id and returns a receipt", async () => {
+    const resumeAppCredential = vi.fn().mockResolvedValue(undefined);
+    const res = await tool("credentials").handler(
+      fakeClient({ resumeAppCredential }),
+      { action: "resume", app_id: "app_1", credential_id: "cred_1" },
+    );
+    expect(resumeAppCredential).toHaveBeenCalledWith("app_1", "cred_1");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      app_id: "app_1",
+      credential_id: "cred_1",
+      resumed: true,
+    });
+  });
+
+  it("rotate forwards overlap_seconds and returns the new token once", async () => {
+    const rotateAppCredential = vi.fn().mockResolvedValue({
+      id: "cred_1",
+      token: "hsc_newtoken",
+      token_prefix: "hsc_newtoke",
+      previous_expires_at: "2026-01-02T00:00:00.000Z",
+    });
+    const res = await tool("credentials").handler(
+      fakeClient({ rotateAppCredential }),
+      {
+        action: "rotate",
+        app_id: "app_1",
+        credential_id: "cred_1",
+        overlap_seconds: 0,
+      },
+    );
+    expect(rotateAppCredential).toHaveBeenCalledWith("app_1", "cred_1", {
+      overlapSeconds: 0,
+    });
+    expect(JSON.parse(res.content[0]!.text).token).toBe("hsc_newtoken");
+  });
+
+  it("revoke requires credential_id and returns a receipt", async () => {
+    const revokeAppCredential = vi.fn().mockResolvedValue(undefined);
+    const res = await tool("credentials").handler(
+      fakeClient({ revokeAppCredential }),
+      { action: "revoke", app_id: "app_1", credential_id: "cred_1" },
+    );
+    expect(revokeAppCredential).toHaveBeenCalledWith("app_1", "cred_1");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      app_id: "app_1",
+      credential_id: "cred_1",
+      revoked: true,
+    });
+  });
+
+  it("requires app_id for every action", async () => {
+    const res = await tool("credentials").handler(fakeClient({}), {
+      action: "list",
+    });
+    expect(res.isError).toBe(true);
+  });
+
+  it("rejects an unknown action", async () => {
+    const res = await tool("credentials").handler(fakeClient({}), {
+      action: "bogus",
+      app_id: "app_1",
+    });
+    expect(res.isError).toBe(true);
+  });
+
+  it("surfaces a relay error (e.g. a service credential rejected at the door) as an error result", async () => {
+    const listAppCredentials = vi
+      .fn()
+      .mockRejectedValue(
+        new HomespunApiError(401, "unauthorized", "no caller"),
+      );
+    const res = await tool("credentials").handler(
+      fakeClient({ listAppCredentials }),
+      { action: "list", app_id: "app_1" },
+    );
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("unauthorized");
+  });
+});
+
+describe("connections tool actions", () => {
+  it("create (static, default kind) requires header_value and forwards fields", async () => {
+    const createConnection = vi.fn().mockResolvedValue({
+      connection: { id: "conn_1", name: "hubspot", kind: "static" },
+    });
+    const blocked = await tool("connections").handler(
+      fakeClient({ createConnection }),
+      {
+        action: "create",
+        app_id: "app_1",
+        name: "hubspot",
+        allowed_host: "api.hubapi.com",
+      },
+    );
+    expect(blocked.isError).toBe(true);
+    expect(createConnection).not.toHaveBeenCalled();
+
+    const res = await tool("connections").handler(
+      fakeClient({ createConnection }),
+      {
+        action: "create",
+        app_id: "app_1",
+        name: "hubspot",
+        allowed_host: "api.hubapi.com",
+        header_value: "Bearer sk_live_x",
+      },
+    );
+    expect(createConnection).toHaveBeenCalledWith("app_1", {
+      name: "hubspot",
+      kind: "static",
+      allowedHost: "api.hubapi.com",
+      headerValue: "Bearer sk_live_x",
+      headerName: "Authorization",
+    });
+    expect(JSON.parse(res.content[0]!.text).connection.id).toBe("conn_1");
+  });
+
+  it("create (oauth2) requires authorize_url/token_endpoint/client_id/client_secret and forwards them", async () => {
+    const createConnection = vi.fn().mockResolvedValue({
+      connection: { id: "conn_2", name: "crm", kind: "oauth2" },
+    });
+    const blocked = await tool("connections").handler(
+      fakeClient({ createConnection }),
+      {
+        action: "create",
+        app_id: "app_1",
+        name: "crm",
+        kind: "oauth2",
+        allowed_host: "api.example.com",
+      },
+    );
+    expect(blocked.isError).toBe(true);
+    expect(createConnection).not.toHaveBeenCalled();
+
+    await tool("connections").handler(fakeClient({ createConnection }), {
+      action: "create",
+      app_id: "app_1",
+      name: "crm",
+      kind: "oauth2",
+      allowed_host: "api.example.com",
+      authorize_url: "https://accounts.example.com/oauth/authorize",
+      token_endpoint: "https://accounts.example.com/oauth/token",
+      client_id: "abc123",
+      client_secret: "s3cr3t",
+      scopes: "read write",
+    });
+    expect(createConnection).toHaveBeenCalledWith("app_1", {
+      name: "crm",
+      kind: "oauth2",
+      allowedHost: "api.example.com",
+      authorizeUrl: "https://accounts.example.com/oauth/authorize",
+      tokenEndpoint: "https://accounts.example.com/oauth/token",
+      clientId: "abc123",
+      clientSecret: "s3cr3t",
+      scopes: "read write",
+    });
+  });
+
+  it("list forwards app_id", async () => {
+    const listConnections = vi.fn().mockResolvedValue({ connections: [] });
+    await tool("connections").handler(fakeClient({ listConnections }), {
+      action: "list",
+      app_id: "app_1",
+    });
+    expect(listConnections).toHaveBeenCalledWith("app_1");
+  });
+
+  it("delete requires name and returns a receipt", async () => {
+    const deleteConnection = vi.fn().mockResolvedValue(undefined);
+    const blocked = await tool("connections").handler(
+      fakeClient({ deleteConnection }),
+      { action: "delete", app_id: "app_1" },
+    );
+    expect(blocked.isError).toBe(true);
+
+    const res = await tool("connections").handler(
+      fakeClient({ deleteConnection }),
+      { action: "delete", app_id: "app_1", name: "hubspot" },
+    );
+    expect(deleteConnection).toHaveBeenCalledWith("app_1", "hubspot");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      app_id: "app_1",
+      name: "hubspot",
+      deleted: true,
+    });
+  });
+
+  it("consent_url builds the URL without making a network call", async () => {
+    const connectionAuthorizeUrl = vi
+      .fn()
+      .mockReturnValue(
+        "https://relay.test/v1/apps/app_1/connections/crm/authorize",
+      );
+    const res = await tool("connections").handler(
+      fakeClient({ connectionAuthorizeUrl }),
+      { action: "consent_url", app_id: "app_1", name: "crm" },
+    );
+    expect(connectionAuthorizeUrl).toHaveBeenCalledWith("app_1", "crm");
+    expect(JSON.parse(res.content[0]!.text).authorize_url).toBe(
+      "https://relay.test/v1/apps/app_1/connections/crm/authorize",
+    );
+  });
+
+  it("requires app_id for every action", async () => {
+    const res = await tool("connections").handler(fakeClient({}), {
+      action: "list",
+    });
+    expect(res.isError).toBe(true);
+  });
+
+  it("rejects an unknown action", async () => {
+    const res = await tool("connections").handler(fakeClient({}), {
+      action: "bogus",
+      app_id: "app_1",
+    });
+    expect(res.isError).toBe(true);
+  });
+});
+
 describe("v2 tool schema validation", () => {
   it("deploy_app html and manifest are both optional at the schema level (the handler enforces what each mode needs)", () => {
     const schema = z.object(tool("deploy_app").inputSchema);
@@ -1504,6 +1930,27 @@ describe("v2 tool schema validation", () => {
     const schema = z.object(tool("apps").inputSchema);
     expect(schema.safeParse({ action: "list" }).success).toBe(true);
     expect(schema.safeParse({ action: "bogus" }).success).toBe(false);
+  });
+
+  it("credentials accepts ttl_seconds: null (no expiry) and rejects a bogus action", () => {
+    const schema = z.object(tool("credentials").inputSchema);
+    expect(
+      schema.safeParse({ action: "mint", app_id: "a", ttl_seconds: null })
+        .success,
+    ).toBe(true);
+    expect(schema.safeParse({ action: "bogus", app_id: "a" }).success).toBe(
+      false,
+    );
+  });
+
+  it("connections requires a valid action enum value", () => {
+    const schema = z.object(tool("connections").inputSchema);
+    expect(schema.safeParse({ action: "list", app_id: "a" }).success).toBe(
+      true,
+    );
+    expect(schema.safeParse({ action: "bogus", app_id: "a" }).success).toBe(
+      false,
+    );
   });
 });
 
@@ -1624,6 +2071,30 @@ describe("runTool outcome reporting", () => {
       outcome: "error",
       errorCode: "not_found",
     });
+  });
+
+  // A 5xx is the relay failing, and the agent is the only witness. A 4xx is
+  // normally the caller's own bad argument, and prompting a report on those
+  // would fill the operator's queue with rows they have to triage and close.
+  it("attaches the report prompt to a 5xx, and never to a 4xx", async () => {
+    const failWith = async (status: number, code: string) => {
+      const client = fakeClient({
+        listAppRows: vi
+          .fn()
+          .mockRejectedValue(new HomespunApiError(status, code, "boom")),
+      });
+      const res = await tool("list_rows").handler(client, {
+        app_id: "a",
+        collection: "c",
+      });
+      expect(res.isError).toBe(true);
+      return JSON.parse(res.content[0]!.text) as { report?: string };
+    };
+
+    expect((await failWith(500, "internal")).report).toContain("file it once");
+    expect((await failWith(503, "unavailable")).report).toBeDefined();
+    expect((await failWith(404, "not_found")).report).toBeUndefined();
+    expect((await failWith(400, "invalid_request")).report).toBeUndefined();
   });
 
   it("reports internal for a non-ApiError throw inside the handler", async () => {

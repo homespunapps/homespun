@@ -80,12 +80,15 @@ export async function runApps(args: ParsedArgs): Promise<void> {
 async function runList(args: ParsedArgs): Promise<void> {
   assertKnownFlags(args, ...specFor("apps", "list"));
   const status = args.flags.get("status") as
-    "active" | "dormant" | "archived" | "all" | undefined;
+    "active" | "dormant" | "archived" | "suspended" | "all" | undefined;
   if (
     status !== undefined &&
-    !["active", "dormant", "archived", "all"].includes(status)
+    !["active", "dormant", "archived", "suspended", "all"].includes(status)
   ) {
-    fail("--status must be active|dormant|archived|all", "invalid_args");
+    fail(
+      "--status must be active|dormant|archived|suspended|all",
+      "invalid_args",
+    );
   }
   const limitRaw = args.flags.get("limit");
   const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
@@ -350,6 +353,17 @@ async function runWatch(args: ParsedArgs): Promise<void> {
     finish(0);
   };
 
+  // Operator takedown (issue #1041): the WS path gets an explicit
+  // `_suspended` frame, same as `_dormant`. There is no long-poll-side
+  // equivalent by DESIGN: see `isDormantConflict`'s comment. A suspended
+  // app's long-poll GET throws the "gone" 410, not a 409 conflict, which is
+  // exactly how `archived` already behaves there (no special case), so
+  // `runLongPoll` falls through to `failFromError` unchanged.
+  const emitSuspended = (): void => {
+    printJsonLine({ type: "_suspended" });
+    finish(0);
+  };
+
   // Long-poll fallback loop (spec-cli §5) — GET /v1/apps/:id/feed?wait=25.
   // Uses the SAME printFeedEntryLine as the WS entry handler below, so a
   // caller piping `homespun apps watch` output can never tell which transport
@@ -395,6 +409,9 @@ async function runWatch(args: ParsedArgs): Promise<void> {
       },
       onDormant: () => {
         emitDormant();
+      },
+      onSuspended: () => {
+        emitSuspended();
       },
       onResync: () => {
         printJsonLine({ type: "resync" });

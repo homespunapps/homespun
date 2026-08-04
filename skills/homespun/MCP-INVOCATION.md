@@ -1,4 +1,4 @@
-<!-- homespun skill v1.6.44 -->
+<!-- homespun skill v1.6.45 -->
 
 # homespun (MCP)
 
@@ -53,11 +53,13 @@ it. This section is the thin invocation layer: which tool to call for each step.
 | See what changed, across all collections            | `get_feed_events` |
 | Invite people, list them, change or remove a role   | `members` (action: `add`/`list`/`set_role`/`remove`/`roles`) |
 | Mint, list or revoke a capability link              | `grants` (action: `mint`/`list`/`revoke`) |
+| Mint, list, pause, resume, rotate or revoke a scoped service credential (point your own backend at an app) | `credentials` (action: `mint`/`list`/`pause`/`resume`/`rotate`/`revoke`) |
+| Create, list or delete an outbound webhook connection | `connections` (action: `create`/`list`/`delete`/`consent_url`) |
 | Manage inbound catch-hooks                          | `ingest` (action: `list`/`rotate`/`set_signing_secret`/`clear_signing_secret`) |
 | Upload / fetch / download binary attachments        | `attachments` (action: `upload`/`fetch`/`presign`/`finalize`/`download`/`show`/`list`/`delete`/`mint_token`/`revoke_token`/`list_tokens`) |
 | Read / write the owner's UI taste notes             | `taste` (action: `get`/`set`/`clear`) |
 | Inspect, mint or revoke your API key                | `key` (action: `list`/`mint`/`revoke`) |
-| Send product feedback to the relay operator         | `feedback` (action: `create`/`list`) |
+| Report a problem with homespun itself, or ask for something missing | `feedback` (action: `create`/`list`), see "Reporting a problem with homespun itself" below |
 | Identity: whoami / claim / logout                   | `agent` (action: `whoami`/`claim`/`logout`) |
 | Publish, unpublish or install a community template  | `community` (action: `publish`/`unpublish`/`get_config_contract`/`install`/...) |
 | Manage your public publisher handle and profile     | `publisher` (action: `claim`/`get`/`update`) |

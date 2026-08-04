@@ -87,6 +87,12 @@ export const BOOLEAN_FLAGS = new Set([
   "attest-example-only",
   // `homespun review respond --clear`: clear a publisher response (sends null).
   "clear",
+  // `homespun credentials mint --no-expiry`: the explicit opt-in to NO EXPIRY
+  // (ttl_seconds: null), mutually exclusive with --ttl.
+  "no-expiry",
+  // `homespun credentials mint --members`: opt the credential into the app's
+  // member directory in its boot/hello payloads.
+  "members",
 ]);
 
 /**

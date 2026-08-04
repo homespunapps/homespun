@@ -26,6 +26,8 @@ const DISPATCHED = [
   "data",
   "members",
   "grants",
+  "credentials",
+  "connections",
   "ingest",
   "publisher",
   "template",

@@ -39,6 +39,8 @@ import { runApps } from "./commands/apps.js";
 import { runData } from "./commands/data.js";
 import { runMembers } from "./commands/members.js";
 import { runGrant } from "./commands/grant.js";
+import { runCredential } from "./commands/credential.js";
+import { runConnection } from "./commands/connection.js";
 import { runIngest } from "./commands/ingest.js";
 import { runPublisher } from "./commands/publisher.js";
 import { runTemplate } from "./commands/template.js";
@@ -141,6 +143,12 @@ async function main(): Promise<void> {
       break;
     case "grants":
       await runGrant(args);
+      break;
+    case "credentials":
+      await runCredential(args);
+      break;
+    case "connections":
+      await runConnection(args);
       break;
     case "ingest":
       await runIngest(args);

@@ -757,7 +757,7 @@ export class HomespunClient {
    */
   async listApps(
     opts: {
-      status?: "active" | "dormant" | "archived" | "all";
+      status?: "active" | "dormant" | "archived" | "suspended" | "all";
       limit?: number;
       cursor?: string;
       slug?: string;
@@ -1277,6 +1277,208 @@ export class HomespunClient {
       `/v1/apps/${encodeURIComponent(appId)}/grants/${encodeURIComponent(grantId)}`,
     );
     if (!r.ok) this.fail(r);
+  }
+
+  // -------------------------------------------------------------------------
+  // Scoped service credentials (#1354, #1355, #1363). The bearer token an app
+  // owner points a backend they host themselves at, carrying an explicitly
+  // enumerated SUBSET of the owner's authority and bound to one app. Shaped on
+  // the grant-link methods above: mint's raw token is returned exactly ONCE
+  // and is never retrievable afterward, list never returns any token
+  // material, and every verb is owner-or-owning-agent only at the relay (a
+  // credential itself can reach none of these).
+  // -------------------------------------------------------------------------
+
+  /**
+   * POST /v1/apps/:id/credentials: mint a service credential scoped to the
+   * named collections and operations. `mode` defaults to "explicit" (an
+   * unnamed collection is denied); "following" tracks the app as it grows,
+   * with each `grants` entry narrowing one collection. `ttlSeconds: null` is
+   * the explicit opt-in to NO EXPIRY; omit for the server's bounded default.
+   * Returns the raw `token` once: only its hash is stored.
+   */
+  async mintAppCredential(
+    appId: string,
+    opts: {
+      mode?: "explicit" | "following";
+      grants?: ServiceCredentialGrant[];
+      members?: boolean;
+      label?: string;
+      ttlSeconds?: number | null;
+    } = {},
+  ): Promise<MintAppCredentialResult> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/credentials`,
+      {
+        mode: opts.mode,
+        grants: opts.grants,
+        members: opts.members,
+        label: opts.label,
+        ttl_seconds: opts.ttlSeconds,
+      },
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<MintAppCredentialResult>(r);
+  }
+
+  /**
+   * GET /v1/apps/:id/credentials: list the app's service credentials with
+   * their allowlist and status. Never any token material beyond the display
+   * prefix, which is not an authenticator.
+   */
+  async listAppCredentials(
+    appId: string,
+  ): Promise<{ credentials: AppCredentialSummary[] }> {
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/credentials`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ credentials: AppCredentialSummary[] }>(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/credentials/:credentialId/pause: reversible stop, in
+   * force on the credential's very next request. Idempotent.
+   */
+  async pauseAppCredential(appId: string, credentialId: string): Promise<void> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/credentials/${encodeURIComponent(credentialId)}/pause`,
+    );
+    if (!r.ok) this.fail(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/credentials/:credentialId/resume: undo a pause. Never
+   * undoes a revoke, which is permanent. Idempotent.
+   */
+  async resumeAppCredential(
+    appId: string,
+    credentialId: string,
+  ): Promise<void> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/credentials/${encodeURIComponent(credentialId)}/resume`,
+    );
+    if (!r.ok) this.fail(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/credentials/:credentialId/rotate: issue a fresh token
+   * and keep the superseded one resolving for `overlapSeconds` (default the
+   * server's own default) so a running backend can pick up the new one
+   * without a gap. Returns the new raw token once, exactly as mint does.
+   */
+  async rotateAppCredential(
+    appId: string,
+    credentialId: string,
+    opts: { overlapSeconds?: number } = {},
+  ): Promise<RotateAppCredentialResult> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/credentials/${encodeURIComponent(credentialId)}/rotate`,
+      { overlap_seconds: opts.overlapSeconds },
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<RotateAppCredentialResult>(r);
+  }
+
+  /**
+   * DELETE /v1/apps/:id/credentials/:credentialId: revoke one credential
+   * permanently. Also kills any superseded token still inside a rotation
+   * overlap window. Idempotent.
+   */
+  async revokeAppCredential(
+    appId: string,
+    credentialId: string,
+  ): Promise<void> {
+    const r = await this.call(
+      "DELETE",
+      `/v1/apps/${encodeURIComponent(appId)}/credentials/${encodeURIComponent(credentialId)}`,
+    );
+    if (!r.ok) this.fail(r);
+  }
+
+  // -------------------------------------------------------------------------
+  // Connections (#1363): the stored credential a webhook rule authenticates
+  // its target with (a static header token, or a full OAuth2 client), bound
+  // to a host so it can never be exfiltrated to another one. There is no
+  // update verb: change a connection by deleting and recreating it.
+  // -------------------------------------------------------------------------
+
+  /**
+   * POST /v1/apps/:id/connections: create a connection. `kind` defaults to
+   * "static" (name + allowedHost + headerName + headerValue). For
+   * `kind: "oauth2"` the caller supplies the WHOLE provider config
+   * (authorizeUrl, tokenEndpoint, clientId, clientSecret, allowedHost, and
+   * the optional scopes/authScheme/instanceField/authParams/tokenParams);
+   * the row starts in `pending_auth` until the signed-in OWNER completes
+   * consent in a browser at `connectionAuthorizeUrl` (an agent key cannot
+   * complete OAuth consent). Every stored secret is encrypted at rest and
+   * never returned by any call.
+   */
+  async createConnection(
+    appId: string,
+    body: {
+      name: string;
+      kind?: "static" | "oauth2";
+      provider?: string;
+      label?: string;
+      allowedHost: string;
+      headerName?: string;
+      headerValue?: string;
+      authorizeUrl?: string;
+      tokenEndpoint?: string;
+      clientId?: string;
+      clientSecret?: string;
+      scopes?: string;
+      authScheme?: string;
+      instanceField?: string;
+      authParams?: Record<string, unknown>;
+      tokenParams?: Record<string, unknown>;
+    },
+  ): Promise<{ connection: ConnectionSummary }> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/connections`,
+      body,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ connection: ConnectionSummary }>(r);
+  }
+
+  /** GET /v1/apps/:id/connections: list metadata only, never the secret. */
+  async listConnections(
+    appId: string,
+  ): Promise<{ connections: ConnectionSummary[] }> {
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/connections`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ connections: ConnectionSummary[] }>(r);
+  }
+
+  /** DELETE /v1/apps/:id/connections/:name: idempotent. */
+  async deleteConnection(appId: string, name: string): Promise<void> {
+    const r = await this.call(
+      "DELETE",
+      `/v1/apps/${encodeURIComponent(appId)}/connections/${encodeURIComponent(name)}`,
+    );
+    if (!r.ok) this.fail(r);
+  }
+
+  /**
+   * The browser URL that completes an oauth2 connection's consent. Build
+   * only, never fetch this yourself: it 302s the caller to the third-party
+   * provider, and the relay refuses an agent-key caller here (consent is
+   * inherently a human-in-a-browser step). Hand the URL to the signed-in
+   * owner to open.
+   */
+  connectionAuthorizeUrl(appId: string, name: string): string {
+    return `${this.baseUrl}/v1/apps/${encodeURIComponent(appId)}/connections/${encodeURIComponent(name)}/authorize`;
   }
 
   // -------------------------------------------------------------------------
@@ -2203,6 +2405,84 @@ export interface AppGrantSummary {
   expires_at: string;
   revoked_at: string | null;
   created_at: string;
+}
+
+// -----------------------------------------------------------------------
+// Scoped service credentials (#1354, #1355, #1363).
+// -----------------------------------------------------------------------
+
+/** One collection entry in a service credential's allowlist. */
+export interface ServiceCredentialGrant {
+  collection: string;
+  ops: ("read" | "create" | "update" | "delete")[];
+  /** "own" narrows every row-addressed op to rows this credential wrote last. */
+  scope?: "own";
+}
+
+/** `POST /v1/apps/:id/credentials` response. `token` is shown ONCE. */
+export interface MintAppCredentialResult {
+  id: string;
+  token: string;
+  token_prefix: string;
+  mode: string;
+  grants: ServiceCredentialGrant[];
+  members: boolean;
+  label: string | null;
+  expires_at: string | null;
+  /** Present + true iff minting cleared the app's egress waiver (#1328). */
+  unrestricted_revoked?: true;
+  unrestricted_notice?: string;
+}
+
+/** One service credential row from `listAppCredentials` (never any token). */
+export interface AppCredentialSummary {
+  id: string;
+  label: string | null;
+  token_prefix: string;
+  mode: string;
+  grants: ServiceCredentialGrant[];
+  members: boolean;
+  paused: boolean;
+  active: boolean;
+  expires_at: string | null;
+  paused_at: string | null;
+  revoked_at: string | null;
+  rotated_at: string | null;
+  previous_token_prefix: string | null;
+  previous_expires_at: string | null;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+/** `POST /v1/apps/:id/credentials/:credentialId/rotate` response. */
+export interface RotateAppCredentialResult {
+  id: string;
+  token: string;
+  token_prefix: string;
+  /** The instant the SUPERSEDED token stops resolving. Both work until then. */
+  previous_expires_at: string;
+}
+
+// -----------------------------------------------------------------------
+// Connections (#1363).
+// -----------------------------------------------------------------------
+
+/** One connection row (never any secret, metadata plus a fingerprint). */
+export interface ConnectionSummary {
+  id: string;
+  name: string;
+  kind: string;
+  provider: string | null;
+  label: string | null;
+  allowedHost: string | null;
+  headerName: string | null;
+  status: string;
+  authScheme: string | null;
+  instanceBaseUrl: string | null;
+  scopes: string | null;
+  expiresAt: string | null;
+  secretFingerprint: string | null;
+  createdAt: string;
 }
 
 /** One row in an app collection — the shape every row CRUD op returns. */

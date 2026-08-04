@@ -702,6 +702,311 @@ const GRANTS: NounSpec = {
   ],
 };
 
+const CREDENTIALS: NounSpec = {
+  noun: "credentials",
+  tagline: "scoped service credential management",
+  group: "app",
+  rootSummary:
+    "App service-credential management: mint, list, pause, resume, rotate, revoke. Mint the bearer token an owner points a backend they host themselves at.",
+  verbs: [
+    {
+      verb: "mint",
+      summary:
+        "Mints a scoped service credential and prints its raw token once.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App to mint the credential for (required)",
+        },
+        {
+          name: "mode",
+          value: "<explicit|following>",
+          description:
+            "explicit (default): an unnamed collection is denied. following: an unnamed collection falls through to the owner's authority and each grant only narrows",
+        },
+        {
+          name: "grants",
+          value: "<json>",
+          description:
+            "The allowlist as a JSON array of {collection, ops, scope?} entries (see notes)",
+        },
+        {
+          name: "label",
+          value: "<text>",
+          description: "Human-readable label for the credential",
+        },
+        {
+          name: "ttl",
+          value: "<seconds>",
+          description:
+            "Lifetime in seconds, default 365 days and clamped to the server max",
+        },
+      ],
+      bools: [
+        {
+          name: "members",
+          description:
+            "Opt this credential into the app's member directory (default off)",
+        },
+        {
+          name: "no-expiry",
+          description:
+            "NO EXPIRY, an explicit opt-in for a long-running backend. Mutually exclusive with --ttl",
+        },
+      ],
+    },
+    {
+      verb: "list",
+      summary: "Lists the app's service credentials.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App to list credentials for (required)",
+        },
+      ],
+    },
+    {
+      verb: "pause",
+      summary: "Reversibly stops one credential.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the credential belongs to (required)",
+        },
+        {
+          name: "credential",
+          value: "<credentialId>",
+          description: "Credential to pause (required)",
+        },
+      ],
+    },
+    {
+      verb: "resume",
+      summary: "Undoes a pause. Never undoes a revoke, which is permanent.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the credential belongs to (required)",
+        },
+        {
+          name: "credential",
+          value: "<credentialId>",
+          description: "Credential to resume (required)",
+        },
+      ],
+    },
+    {
+      verb: "rotate",
+      summary:
+        "Issues a fresh token and keeps the old one live for an overlap window, printing the new token once.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the credential belongs to (required)",
+        },
+        {
+          name: "credential",
+          value: "<credentialId>",
+          description: "Credential to rotate (required)",
+        },
+        {
+          name: "overlap",
+          value: "<seconds>",
+          description:
+            "How long the superseded token keeps working (default 1 day, clamped to a server max); 0 kills it immediately",
+        },
+      ],
+    },
+    {
+      verb: "revoke",
+      summary: "Revokes one credential permanently.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the credential belongs to (required)",
+        },
+        {
+          name: "credential",
+          value: "<credentialId>",
+          description: "Credential to revoke (required)",
+        },
+      ],
+    },
+  ],
+  notes: [
+    "--app accepts either the app_id or its slug (resolved via GET /v1/apps?slug= when it does not look like a cuid).",
+    "A credential is the bearer token an app owner points a backend they host themselves at. Effective permission is always the intersection of the allowlist and what the app's owner could do, so a credential can only ever narrow, never widen, and it carries no role.",
+    "mint's raw token is shown ONCE in the response and is never recoverable afterward (only its sha256 is stored); if it is lost, rotate or mint a new one. --grants names each collection the credential may reach and which of read/create/update/delete it may attempt there; a collection not named is denied under --mode explicit (the default) and falls through to the owner's own authority under --mode following. An entry may set a `scope` of \"own\" to narrow every row-addressed op to rows the credential itself wrote last.",
+    "pause is reversible; resume undoes it. revoke is permanent and idempotent, and also kills any token a rotation left inside its overlap window. Every verb here is owner-or-owning-agent only: a service credential itself can reach none of these.",
+  ],
+};
+
+const CONNECTIONS: NounSpec = {
+  noun: "connections",
+  tagline: "webhook connection management",
+  group: "app",
+  rootSummary:
+    "App webhook-connection management: create, list, delete, authorize-url. Store the credential a webhook rule authenticates its target with.",
+  verbs: [
+    {
+      verb: "create",
+      summary: "Creates a static or oauth2 connection.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App to create the connection on (required)",
+        },
+        {
+          name: "name",
+          value: "<name>",
+          description:
+            "Connection name a manifest webhook rule's `connection` field references (required)",
+        },
+        {
+          name: "allowed-host",
+          value: "<host>",
+          description:
+            "Host-binding: an exact DNS host or a single leftmost '*.' wildcard (required)",
+        },
+        {
+          name: "kind",
+          value: "<static|oauth2>",
+          description: "Defaults to static",
+        },
+        {
+          name: "provider",
+          value: "<text>",
+          description: 'Freeform display label, e.g. "hubspot"',
+        },
+        {
+          name: "label",
+          value: "<text>",
+          description: "Human-readable label for the connection",
+        },
+        {
+          name: "header-name",
+          value: "<name>",
+          description: "static only. Defaults to Authorization",
+        },
+        {
+          name: "header-value",
+          value: "<value>",
+          description:
+            'static only, required. The header value to send, e.g. "Bearer sk_live_..."',
+        },
+        {
+          name: "authorize-url",
+          value: "<url>",
+          description:
+            "oauth2 only, required. The provider's authorize endpoint",
+        },
+        {
+          name: "token-url",
+          value: "<url>",
+          description: "oauth2 only, required. The provider's token endpoint",
+        },
+        {
+          name: "client-id",
+          value: "<id>",
+          description: "oauth2 only, required. Your OAuth2 app's client id",
+        },
+        {
+          name: "client-secret",
+          value: "<secret>",
+          description: "oauth2 only, required. Your OAuth2 app's client secret",
+        },
+        {
+          name: "scopes",
+          value: "<text>",
+          description:
+            "oauth2 only. Space-delimited scopes for the authorize request",
+        },
+        {
+          name: "auth-scheme",
+          value: "<text>",
+          description: 'oauth2 only. Defaults to "Bearer"',
+        },
+        {
+          name: "instance-field",
+          value: "<field>",
+          description:
+            'oauth2 only. Token-response JSON field holding the API base URL, e.g. "instance_url"',
+        },
+        {
+          name: "auth-params",
+          value: "<json>",
+          description:
+            "oauth2 only. Extra key/values merged into the authorize redirect",
+        },
+        {
+          name: "token-params",
+          value: "<json>",
+          description:
+            "oauth2 only. Extra key/values merged into the token POST",
+        },
+      ],
+    },
+    {
+      verb: "list",
+      summary:
+        "Lists the app's connections as metadata plus a fingerprint, never a secret.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App to list connections for (required)",
+        },
+      ],
+    },
+    {
+      verb: "delete",
+      summary: "Deletes a connection, idempotently.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the connection belongs to (required)",
+        },
+        {
+          name: "name",
+          value: "<name>",
+          description: "Connection to delete (required)",
+        },
+      ],
+    },
+    {
+      verb: "authorize-url",
+      summary:
+        "Prints the browser URL that completes an oauth2 connection's owner consent. Never fetched by this command.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the connection belongs to (required)",
+        },
+        {
+          name: "name",
+          value: "<name>",
+          description: "oauth2 connection to build the URL for (required)",
+        },
+      ],
+    },
+  ],
+  notes: [
+    "--app accepts either the app_id or its slug (resolved via GET /v1/apps?slug= when it does not look like a cuid).",
+    "A connection is the stored credential a manifest webhook rule authenticates its delivery target with, bound to a host so it can never be sent to another one. There is no update verb: change a connection by deleting and recreating it.",
+    "Every stored secret (a static header value, or an oauth2 client secret and its tokens) is encrypted at rest and never returned by any call; list returns metadata plus a non-reversible fingerprint only.",
+    "OAuth2 consent is inherently a human-in-a-browser step: the relay refuses an agent-key caller at the authorize endpoint. authorize-url never makes a network call, it builds the URL locally so you can hand it to the signed-in app owner to open. A newly created oauth2 connection starts in pending_auth until the owner completes it.",
+  ],
+};
+
 const KEY: NounSpec = {
   noun: "key",
   tagline: "your agent's API key",
@@ -775,10 +1080,10 @@ const TASTE: NounSpec = {
 
 const FEEDBACK: NounSpec = {
   noun: "feedback",
-  tagline: "feedback to the relay operator",
+  tagline: "report a problem with homespun itself",
   group: "other",
   rootSummary:
-    "One-shot feedback to the relay operator: create, list. Bug reports, feature requests, and notes.",
+    "Report a problem with homespun itself to the relay operator: create, list. Bug reports, feature requests, and notes.",
   verbs: [
     {
       verb: "create",
@@ -821,8 +1126,12 @@ const FEEDBACK: NounSpec = {
     },
   ],
   notes: [
-    "Feedback is a one-shot bug report, feature request, or note from your agent to whoever runs the relay. Submissions are stored in the relay DB and the operator triages them out of band.",
-    "create does not echo the message back. list prints { items: [...], next_before } so you can pass --before <cursor> from a previous page to fetch the next one.",
+    "Feedback is a one-shot bug report, feature request, or note from your agent to whoever runs the relay. Submissions are stored in the relay DB and the operator triages them out of band. This is the channel that turns a problem you hit into a problem that gets fixed, so file without being asked: nobody will prompt you, and an unreported failure is one the operator cannot see.",
+    "File a report when: a command returns a 5xx or an error code the skill does not describe; documented and observed behaviour disagree; what you need cannot be expressed at all (a missing capability, a self-contradictory schema); a deployed app misbehaves in a way that traces back to the platform rather than to HTML you wrote; or the skill was wrong, ambiguous or silent and you had to guess. An error envelope carrying a `report` field is the CLI telling you the failure was homespun's, not yours.",
+    "Do not file: problems with the human's own task, or bugs in an app you authored; presentation preferences, which belong in 'homespun taste'; the human's own configuration, such as a missing API key or the wrong account; or a 4xx caused by arguments you got wrong, unless the error message itself sent you the wrong way, which is a documentation bug worth --type note.",
+    "Report once, not once per retry. Run 'homespun feedback list' first and skip anything already recorded; one report per distinct failure per session. An agent in a retry loop filing the same row twenty times buries the signal it was trying to send.",
+    "Say enough that it can be fixed without you: the operator sees the row, not your session, so \"deploy failed\" is unactionable. Structure the message as surface (mcp|cli|relay|app-runtime); where (the command or route); versions (cli from 'homespun --version', skill from 'homespun skill version'); expected, one line; observed, one line carrying the exact error code and message; repro, the minimal steps or the arguments you passed. Pipe it in with --message - rather than fighting shell quoting.",
+    "There is no reply channel, so never use feedback for anything you need an answer to. create does not echo the message back. list prints { items: [...], next_before } so you can pass --before <cursor> from a previous page to fetch the next one.",
   ],
 };
 
@@ -968,8 +1277,9 @@ const DEPLOY: NounSpec = {
   ],
   notes: [
     "Packaging has one canonical shape and one escape hatch. A directory deploy (homespun deploy ./my-app) reads ./my-app/index.html and ./my-app/manifest.json: fixed filenames, no discovery heuristics, and both files are required. The single-file escape hatch (homespun deploy ./index.html --manifest ./manifest.json) takes the manifest from --manifest, which accepts a file path or inline JSON.",
+    "Files to serve alongside the document go in ./my-app/assets/. Everything under it ships as the deploy's asset bundle and is served on the app's own origin at the same path, so ./my-app/assets/fonts/inter.woff2 is referenced by the page as assets/fonts/inter.woff2. Nested directories are kept, dot-prefixed entries are skipped, and the limits are 50 files at up to 5 MB each. Only assets/ is shipped: anything else sitting next to index.html is reported on stderr and left behind, so a stray node_modules or package.json is never published. Scripts and stylesheets cannot be assets. The relay serves .js, .css and .svg as an inert download, so a browser would refuse to run or apply them; the app CSP allows inline script and style, so put them in index.html.",
     "Create versus redeploy is decided by the presence of --app, not by two verbs. With no --app this creates an app (POST /v1/apps); new apps default to private (owner plus invited members, sign-in gated), --slug is accepted with private or public visibility including the default, and an explicit --visibility link always gets a server-generated slug and rejects --slug. With --app <id> this redeploys (POST /v1/apps/:id/versions), where --slug and --visibility are rejected because the slug is immutable and visibility changes go through 'homespun apps update'.",
-    "On redeploy, what you do not send is kept. 'homespun deploy ./index.html --app <id>' ships the document alone and keeps the live manifest; 'homespun deploy --app <id> --manifest ./manifest.json' ships the manifest alone and keeps the live document, with no file argument at all; a directory deploy still ships both. The live asset set is carried forward either way. A create can inherit nothing, so it still needs both halves.",
+    "On redeploy, what you do not send is kept. 'homespun deploy ./index.html --app <id>' ships the document alone and keeps the live manifest; 'homespun deploy --app <id> --manifest ./manifest.json' ships the manifest alone and keeps the live document, with no file argument at all; a directory deploy still ships both. Assets follow the same rule, decided by whether the directory has an assets/ folder: with one, the full set on disk is sent, so deleting a file there removes it from the app; with none, nothing is sent and the live asset set is carried forward untouched. A create can inherit nothing, so it still needs both halves.",
     "--check is a dry run. It runs the full manifest and asset validation (shape and MIME), the redeploy compat gate (with --app), and the schedule-timezone advisory, then prints { ok, warnings, compat, breaks } without creating a version or mutating anything. An invalid manifest fails the same way a real deploy would, and a redeploy the compat gate would refuse reports the break instead of applying it. It resolves omitted fields exactly as a real redeploy would, so it reports on the deploy that would actually run.",
   ],
   outputNote:
@@ -1425,6 +1735,8 @@ const NOUNS: NounSpec[] = [
   DATA,
   MEMBERS,
   GRANTS,
+  CREDENTIALS,
+  CONNECTIONS,
   INGEST,
   PUBLISHER,
   TEMPLATE,

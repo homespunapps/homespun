@@ -1,7 +1,10 @@
 // stdout/stderr helpers. The CLI is JSON-by-default: machine-readable on
 // stdout, human errors on stderr.
 
-import { HomespunApiError } from "@homespunapps/core";
+import {
+  HomespunApiError,
+  RELAY_FAILURE_REPORT_HINT,
+} from "@homespunapps/core";
 import { fileURLToPath } from "node:url";
 import {
   detectInstallMethod,
@@ -13,6 +16,15 @@ import {
 /** Print a value as pretty JSON to stdout. */
 export function printJson(value: unknown): void {
   process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+}
+
+/**
+ * Print a non-fatal advisory to STDERR. Never stdout: stdout carries the JSON
+ * result a caller pipes into `jq`, and a warning mixed into it would make that
+ * output unparseable.
+ */
+export function warn(message: string): void {
+  process.stderr.write(`warning: ${message}\n`);
 }
 
 /**
@@ -32,6 +44,12 @@ export interface ErrorExtra {
   hint?: string;
   retryable?: boolean;
   docs_url?: string;
+  /**
+   * Set only on a relay-side failure (5xx), telling the agent to file the
+   * failure through `homespun feedback create`. Distinct from `hint`, which the
+   * relay owns and uses to explain how to fix the CALLER's own request.
+   */
+  report?: string;
 }
 
 /** Print an error envelope to stderr and exit non-zero. */
@@ -45,6 +63,7 @@ export function fail(
   if (extra?.hint !== undefined) error["hint"] = extra.hint;
   if (extra?.retryable !== undefined) error["retryable"] = extra.retryable;
   if (extra?.docs_url !== undefined) error["docs_url"] = extra.docs_url;
+  if (extra?.report !== undefined) error["report"] = extra.report;
   if (details !== undefined) error["details"] = details;
   process.stderr.write(JSON.stringify({ error }) + "\n");
   process.exit(1);
@@ -69,6 +88,11 @@ export function failFromError(err: unknown): never {
       hint: err.hint,
       retryable: err.retryable,
       docs_url: err.docsUrl,
+      // 5xx only: the relay failed, so the agent is the only witness and the
+      // report is worth prompting. A 4xx is normally the caller's own bad
+      // argument, and prompting there would fill the operator's queue with
+      // rows they have to triage and close.
+      ...(err.status >= 500 ? { report: RELAY_FAILURE_REPORT_HINT } : {}),
     });
   }
   fail(err instanceof Error ? err.message : String(err), "internal");

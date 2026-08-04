@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.44 -->
+<!-- homespun skill v1.6.45 -->
 
 # homespun
 
@@ -238,10 +238,11 @@ triggers creates an app session on the app's own origin.
 **Email a person when a collection changes (`notify`).** Declare a `notify`
 array in the manifest to have the relay send a plain-text email when a row is
 created or updated. This is declarative: you write the rule, the relay resolves
-the recipients and sends. In this phase the only recipients are **`owner`** (the
-app's owner) and **`members`** (the app's non-owner members) - always resolved
-to the *verified account email on file*, never an address from the manifest or
-the row, so a manifest can never email an arbitrary stranger.
+the recipients and sends. A recipient is always a principal the platform
+already knows, resolved to that principal's own verified account email (or,
+for the `submitter` target below, the address the row's own author entered),
+never an address named in the manifest or the row, so a manifest can never
+email an arbitrary stranger.
 
 ```json
 "notify": [
@@ -266,13 +267,20 @@ the row, so a manifest can never email an arbitrary stranger.
 Rules of the road:
 
 - **`on`** is `"create"` or `"update"`. **`collection`** must be one you declared.
-- **`to`** is a non-empty array of **roles** - `"owner"`, `"members"`, and/or
-  `"submitter"`. A literal email address is always rejected at deploy. `"owner"`
-  and `"members"` resolve to *verified account emails*. `"submitter"` (see
-  "Confirmation emails" below) emails the person who submitted the row, at the
-  address they themselves entered - it is only allowed when the rule declares a
-  `submitterEmailField`, and only when the operator has enabled the external
-  path (otherwise the rule is rejected at deploy with `notify_submitter_not_enabled`).
+- **`to`** is a non-empty array drawn from a closed target grammar:
+  `"owner"`, `"members"`, `"submitter"`, `"author"`, `"creator"`,
+  `"role:<name>"` (a declared custom role) and `"field:<relationName>"` (a
+  declared relation on the rule's own collection). A literal email address is
+  always rejected at deploy. `"owner"` and `"members"` resolve to *verified
+  account emails*. `"submitter"` (see "Confirmation emails" below) emails the
+  person who submitted the row, at the address they themselves entered; it is
+  only allowed when the rule declares a `submitterEmailField`, and only when
+  the operator has enabled the external path (otherwise the rule is rejected
+  at deploy with `notify_submitter_not_enabled`). Every target, including
+  `"owner"` and `"members"`, is authorized against the triggering row before
+  it is sent, so a resolved recipient who cannot read that row receives
+  nothing rather than an email. See the reference below before targeting a
+  role or a relation.
 - **`when`** is optional and holds exactly ONE operator besides `field`. The
   *level* forms fire whenever the after-write value satisfies the comparison:
   `equals` / `notEquals` (`{ "field": "x", "equals": "v" }`), `in` / `notIn`
@@ -302,6 +310,26 @@ Rules of the road:
   recipient, and each app has an hourly send cap - so a flood of public
   submissions can't bury an owner's inbox. A failed send never affects the
   write; the row is saved regardless.
+- **`channels`** is an optional non-empty array naming which transports carry
+  the rule, defaulting to `["email"]`. **`excludeActor`** is an optional
+  boolean deciding whether the write's own actor is dropped from the resolved
+  audience; its default depends on the rule's own targets and channels. Both
+  are covered in full in the reference below.
+
+> **Read `references/notify-targets.md` before writing a `to` that names
+> `"role:<name>"`, `"field:<relationName>"`, `"author"` or `"creator"`.** It
+> has the full grammar for each, worked examples (including the relation
+> declaration `field:` depends on), the `channels` and `excludeActor` keys,
+> and a worked example of the row-level authorization gate that silently
+> suppresses a recipient who cannot read the row that fired the rule, which is
+> the single most common way a rule looks broken while working exactly as
+> declared. Do not target a role or a relation from memory: the authorization
+> interaction is not guessable and getting it wrong reads as a missing
+> notification rather than as an error anywhere.
+>
+> If this skill reached you over HTTP rather than as files on disk, fetch it
+> with `homespun skill show --section notify-targets`, or
+> `GET <relay>/skills/homespun/references/notify-targets.md`.
 
 **Confirmation emails to the submitter (`to: ["submitter"]`).** To email the
 person who submitted a public form - an order/booking/signup confirmation - add
@@ -1301,6 +1329,20 @@ A **grant link** is different: `homespun grants mint --app <app> --role <name>`
 mints a link carrying exactly ONE role, because a link *is* a handout of that
 role. The link's holder still gets everything that role includes.
 
+A grant-link holder gets the **live mirror** on the same terms as anyone else:
+`collections.snapshot()` and `collections.on()` see exactly what their HTTP reads
+see, no more and no less. If the link was minted with a pin (one row key, or a
+filter), the live mirror is narrowed by it too, so an app cannot use the socket
+to reach past a pin the read door enforces.
+
+**A grant link works on a private or link app, not just a public one.** The
+holder opens the URL, the relay claims the link for them and remembers it in the
+browser, and the app loads. They never need a Homespun account, and they are
+never asked to sign in. This is the normal way to hand an app to someone outside
+your members list: shop staff, a helper, a neighbour. Send them the URL exactly
+as `homespun grants mint` printed it, fragment and all, because the part after
+the `#` is the secret and a URL trimmed at the `#` opens nothing.
+
 **Role names are also usable in the narrowing forms.** `reviewer:creator` on
 `update` means "a reviewer, and only on rows they created"; `reviewer:own` means
 "and only on rows they wrote last". The base of the suffix must be a declared
@@ -2236,6 +2278,61 @@ key. The raw key is never retrievable again (save it now), the sibling shows up
 in a later `key list` made WITH it, and the owner can `key revoke` it like any
 other key.
 
+**Pointing your own backend at an app: service credentials.** `homespun key
+mint` above is about YOUR OWN agent identity. A **service credential** (MCP:
+`credentials`) is a different thing: a bearer token scoped to ONE app that you
+hand to a backend the owner hosts themselves, so their server can read and
+write that app's data without holding the owner's full account access.
+Effective permission is always the INTERSECTION of the credential's allowlist
+and what the app's owner could do, so a credential can only ever narrow, never
+widen, and it carries no role of its own.
+
+```sh
+# Mint a credential scoped to two collections, narrowing as the app grows
+homespun credentials mint --app grocery-list --mode following \
+  --grants '[{"collection":"items","ops":["read","create","update"]}]' \
+  --label "sync worker"
+# -> { id, token, token_prefix, mode, grants, members, label, expires_at }
+# `token` is shown ONCE. Only its hash is stored; if you lose it, rotate or mint another.
+
+homespun credentials list --app grocery-list          # allowlist + status, never a token
+homespun credentials pause --app grocery-list --credential <id>   # reversible stop
+homespun credentials resume --app grocery-list --credential <id>  # undo a pause
+homespun credentials rotate --app grocery-list --credential <id>  # fresh token, old one keeps
+                                                                    # working for an overlap window
+homespun credentials revoke --app grocery-list --credential <id>  # permanent
+```
+
+`--mode explicit` (the default) denies any collection you did not name;
+`--mode following` tracks the app as it grows and each `--grants` entry only
+NARROWS one collection. An entry's `scope: "own"` limits it to rows the
+credential itself wrote last. This is NOT a grant link: a grant link
+(`homespun grants mint`) hands ONE person a role-based capability URL; a
+service credential is a static bearer token for a MACHINE, bound to one app,
+with an allowlist instead of a role. Read `references/webhooks.md` for how
+`connections` and the manifest's `webhooks`/`ingest` fit into the same
+bring-your-own-backend picture.
+
+**Storing the credential a webhook rule authenticates with: connections.**
+`homespun connections` (MCP: `connections`) manages the stored credential (a
+static header token, or a full generic OAuth2 client) a manifest `webhooks`
+rule's `connection` field references. There is no update verb: change one by
+deleting and recreating it.
+
+```sh
+homespun connections create --app grocery-list --name hubspot \
+  --allowed-host api.hubapi.com --header-value "Bearer sk_live_..."
+homespun connections list --app grocery-list     # metadata + a fingerprint, never the secret
+homespun connections delete --app grocery-list --name hubspot
+```
+
+An `--kind oauth2` connection starts in `pending_auth`; consent is inherently
+a human-in-a-browser step, so `homespun connections authorize-url` only BUILDS
+the URL (it never fetches it) for you to hand to the signed-in owner to open.
+Read `references/webhooks.md` before creating an oauth2 connection: it has the
+full field list, the host-binding exfiltration defence, and the redirect URI
+to register with the provider first.
+
 **Community templates over MCP, not the CLI.** Publishing an app as a community
 template, taking your own listing back down, reading a template's install-time
 config contract, and installing a template into your own account all work
@@ -2343,5 +2440,73 @@ data-exposure trap, not a style nit, so read it first.
    harmless good practice (it guarantees your elements exist). What you must
    still do is `await homespun.ready` before your first synchronous read.
 
+## Reporting a problem with homespun itself
+
+The gotchas above are the failures already known about. When you hit one that is
+**not** on that list, report it. `feedback` (`create`) is a one-shot channel
+straight to whoever runs the relay, and it is the only route by which a problem
+you hit becomes a problem that gets fixed. **Filing is part of doing the work,
+not a favour**: nobody will prompt you, and an unreported failure is one the
+operator cannot see.
+
+**File a report when:**
+
+- a tool, command or endpoint returns a **5xx**, or an error code this guide
+  does not describe
+- **documented and observed behaviour disagree**: this guide says one thing and
+  the relay does another
+- **what you need cannot be expressed at all**: a missing capability, or a
+  schema that contradicts itself
+- **a deployed app misbehaves in a way that traces back to the platform** (the
+  bridge, the runtime, serving, the data API) rather than to HTML you wrote
+- **this guide was wrong, ambiguous or silent**, and you had to guess
+
+**Do not file:**
+
+- problems with the human's own task, or bugs in an app you authored. Fix those
+- presentation preferences. Those belong in `taste`
+- the human's own configuration: a missing API key, the wrong account
+- a 4xx caused by arguments you got wrong, **unless the error message itself
+  sent you the wrong way**, which is a real documentation bug worth a `note`
+
+An error carrying a **`report`** field has already made this judgement for you:
+that field appears only on a 5xx, and it means the failure was homespun's, not
+yours.
+
+**Report once, not once per retry.** `feedback` (`list`) returns your own
+submissions, newest first. Read it before filing and skip anything already
+recorded. One report per distinct failure per session. An agent in a retry loop
+filing the same row twenty times buries the signal it was trying to send.
+
+**Say enough that it can be fixed without you.** The operator sees the row, not
+your session, so "deploy failed" is unactionable. Use this shape:
+
+```
+surface: mcp | cli | relay | app-runtime
+where: <the tool, command or route>
+versions: skill=<version>   (add cli=<version> if you used the CLI)
+expected: <one line>
+observed: <one line, with the exact error code and message>
+repro: <the minimal steps, or the arguments you passed>
+```
+
+The skill version is the `<!-- homespun skill vX.Y.Z -->` comment at the top of
+this document, so it costs no extra call, and it identifies the relay build that
+served it.
+
+`type` is **`bug`** for something broken, **`feature`** for something missing,
+and **`note`** for a rough edge or a confusing doc. Pass `app_id` when the
+problem is specific to one app. **There is no reply channel**, so never use this
+for anything you need an answer to, and never for a question you want the human
+to answer.
+
 <!-- homespun:core:end -->
+
+Filing one from the CLI, with the report piped in so shell quoting cannot
+mangle it:
+
+```sh
+homespun feedback create --type bug --message -   # reads the body from stdin
+homespun feedback list                            # what you have already filed
+```
 

@@ -42,6 +42,11 @@ export type {
   CommunitySetupStep,
   RetentionAxes,
   CollectionRetentionView,
+  ServiceCredentialGrant,
+  MintAppCredentialResult,
+  AppCredentialSummary,
+  RotateAppCredentialResult,
+  ConnectionSummary,
 } from "./client.js";
 
 export { openStream } from "./stream.js";
@@ -62,6 +67,7 @@ export { registerAgent } from "./register.js";
 export type { RegisterAgentOptions, RegisterAgentResult } from "./register.js";
 
 export { feedbackTypeSchema, submitFeedbackSchema } from "./schemas.js";
+export { RELAY_FAILURE_REPORT_HINT } from "./feedback-prompt.js";
 
 export {
   validateIconEmoji,

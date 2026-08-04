@@ -8,7 +8,7 @@
 // GET /v1/apps?slug=. CUID_APP below is cuid-shaped so it's used as-is.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -371,5 +371,183 @@ describe("--check (dry run)", () => {
       },
     ]);
     expect(calls.some((c) => c.method === "redeployApp")).toBe(false);
+  });
+});
+
+// Issue #1225: the relay has always accepted a multi-file `assets[]` bundle,
+// and the CLI silently dropped every file that was not index.html or
+// manifest.json. The failure was in the SUCCESS direction (deploy reports a
+// version, app 404s on the asset), so these tests pin both that assets now
+// ship and that the things which must NOT ship still do not.
+describe("asset bundle", () => {
+  /** Write `<dir>/assets/<rel>`, creating intermediate directories. */
+  function writeAsset(rel: string, contents: Buffer | string): void {
+    const full = join(dir, "assets", rel);
+    mkdirSync(full.slice(0, full.lastIndexOf("/")), { recursive: true });
+    writeFileSync(full, contents);
+  }
+
+  /** The `assets` array the CLI passed to deployApp, or undefined. */
+  function deployedAssets(): unknown {
+    const call = calls.find((c) => c.method === "deployApp")!;
+    return (call.args[0] as { assets?: unknown }).assets;
+  }
+
+  it("ships files under assets/ as base64, keeping the assets/ prefix", async () => {
+    writeAsset("logo.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await runDeploy(argv([dir]));
+    expect(deployedAssets()).toEqual([
+      { path: "assets/logo.png", content_base64: "iVBORw==" },
+    ]);
+  });
+
+  it("preserves nested paths and sorts for a deterministic bundle", async () => {
+    writeAsset("fonts/inter.woff2", "b");
+    writeAsset("img/a.png", "a");
+    await runDeploy(argv([dir]));
+    expect((deployedAssets() as { path: string }[]).map((a) => a.path)).toEqual(
+      ["assets/fonts/inter.woff2", "assets/img/a.png"],
+    );
+  });
+
+  it("omits assets entirely when there is no assets/ directory", async () => {
+    await runDeploy(argv([dir]));
+    expect(deployedAssets()).toBeUndefined();
+  });
+
+  it("sends an empty array for an empty assets/ directory (the relay's explicit clear)", async () => {
+    mkdirSync(join(dir, "assets"));
+    await runDeploy(argv([dir]));
+    expect(deployedAssets()).toEqual([]);
+  });
+
+  it("skips dotfiles rather than letting them consume the asset budget", async () => {
+    writeAsset(".DS_Store", "junk");
+    writeAsset("keep.png", "x");
+    await runDeploy(argv([dir]));
+    expect((deployedAssets() as { path: string }[]).map((a) => a.path)).toEqual(
+      ["assets/keep.png"],
+    );
+  });
+
+  it("declares a mime for types the relay cannot sniff, and omits it for types it can", async () => {
+    writeAsset("data.json", "{}");
+    writeAsset("pic.png", "x");
+    await runDeploy(argv([dir]));
+    expect(deployedAssets()).toEqual([
+      {
+        path: "assets/data.json",
+        content_base64: "e30=",
+        mime: "application/json",
+      },
+      { path: "assets/pic.png", content_base64: "eA==" },
+    ]);
+  });
+
+  it("refuses a .js asset by name, explaining it would serve as an inert download", async () => {
+    writeAsset("app.js", "console.log(1)");
+    await expect(runDeploy(argv([dir]))).rejects.toThrow("__exit_1__");
+    expectExit(1);
+    expect(stderr).toContain("assets/app.js");
+    expect(stderr).toContain("nosniff");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a .css asset the same way", async () => {
+    writeAsset("style.css", "body{}");
+    await expect(runDeploy(argv([dir]))).rejects.toThrow("__exit_1__");
+    expectExit(1);
+    expect(stderr).toContain("assets/style.css");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a file over the per-asset byte cap, naming it", async () => {
+    writeAsset("big.png", Buffer.alloc(5_000_001));
+    await expect(runDeploy(argv([dir]))).rejects.toThrow("__exit_1__");
+    expectExit(1);
+    expect(stderr).toContain("assets/big.png");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses more than 50 assets before base64-ing them", async () => {
+    for (let i = 0; i < 51; i++) writeAsset(`f${i}.png`, "x");
+    await expect(runDeploy(argv([dir]))).rejects.toThrow("__exit_1__");
+    expectExit(1);
+    expect(stderr).toContain("too many assets");
+    expect(calls).toEqual([]);
+  });
+
+  it("warns on stdout-safe stderr about files it is not shipping", async () => {
+    writeFileSync(join(dir, "notes.txt"), "hi");
+    mkdirSync(join(dir, "node_modules"));
+    await runDeploy(argv([dir]));
+    expect(stderr).toContain("not deploying");
+    expect(stderr).toContain("node_modules/");
+    expect(stderr).toContain("notes.txt");
+    // The warning must never reach stdout, which stays parseable JSON.
+    expect(() => JSON.parse(stdout)).not.toThrow();
+  });
+
+  it("does not warn when the directory holds only the three deployable things", async () => {
+    writeAsset("logo.png", "x");
+    await runDeploy(argv([dir]));
+    expect(stderr).toBe("");
+  });
+
+  it("forwards the bundle on a redeploy", async () => {
+    writeAsset("logo.png", "x");
+    await runDeploy(argv([dir, "--app", CUID_APP]));
+    const call = calls.find((c) => c.method === "redeployApp")!;
+    expect((call.args[1] as { assets?: unknown }).assets).toEqual([
+      { path: "assets/logo.png", content_base64: "eA==" },
+    ]);
+  });
+
+  it("omits assets on a redeploy from a directory with no assets/, leaving the live set alone", async () => {
+    await runDeploy(argv([dir, "--app", CUID_APP]));
+    const call = calls.find((c) => c.method === "redeployApp")!;
+    expect((call.args[1] as { assets?: unknown }).assets).toBeUndefined();
+  });
+
+  it("forwards the bundle on --check so a dry run validates what a real deploy would send", async () => {
+    writeAsset("logo.png", "x");
+    await runDeploy(argv([dir, "--check"]));
+    const call = calls.find((c) => c.method === "checkDeploy")!;
+    expect((call.args[0] as { assets?: unknown }).assets).toEqual([
+      { path: "assets/logo.png", content_base64: "eA==" },
+    ]);
+  });
+});
+
+describe("asset paths the relay would reject", () => {
+  function writeAsset(rel: string, contents: string): void {
+    const full = join(dir, "assets", rel);
+    mkdirSync(full.slice(0, full.lastIndexOf("/")), { recursive: true });
+    writeFileSync(full, contents);
+  }
+
+  it("refuses a filename with a space locally, rather than round-tripping to the relay", async () => {
+    writeAsset("my logo.png", "x");
+    await expect(runDeploy(argv([dir]))).rejects.toThrow("__exit_1__");
+    expectExit(1);
+    expect(stderr).toContain("my logo.png");
+    expect(stderr).toContain("A-Za-z0-9._/-");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses an accented filename the same way", async () => {
+    writeAsset("café.png", "x");
+    await expect(runDeploy(argv([dir]))).rejects.toThrow("__exit_1__");
+    expectExit(1);
+    expect(calls).toEqual([]);
+  });
+
+  it("accepts the characters the relay's charset does allow", async () => {
+    writeAsset("a-b_c.2/d.png", "x");
+    await runDeploy(argv([dir]));
+    const call = calls.find((c) => c.method === "deployApp")!;
+    expect((call.args[0] as { assets: { path: string }[] }).assets).toEqual([
+      { path: "assets/a-b_c.2/d.png", content_base64: "eA==" },
+    ]);
   });
 });
