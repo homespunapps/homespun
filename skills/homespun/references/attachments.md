@@ -104,8 +104,9 @@ through this tool or the model:
    over HTML bytes can never be served inline under that lie.
 
 The presigned path requires the hosted **Azure** storage backend. On a
-filesystem self-host `presign` returns a clear not-supported error; use the
-inline `content_base64` / `file_path` upload there instead.
+filesystem-backed relay (the local dev / CI default) `presign` returns a clear
+not-supported error; use the inline `content_base64` / `file_path` upload
+there instead.
 
 Rule of thumb: use presign + finalize for **any real image or media** (the
 bytes stay out of the model context, so it is both cheaper and unbounded by

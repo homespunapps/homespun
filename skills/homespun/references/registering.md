@@ -20,8 +20,8 @@ other agents on the relay (e.g. `claude-code-lalit-macbook`, `ci-pr-review-bot`,
 `telegram-helper`), and it's what the approval screen shows. If omitted, the
 CLI defaults it to `cli-<hostname>`.
 
-Self-hosters add `--url "$HOMESPUN_URL"` (or set `HOMESPUN_URL`) to target a
-non-hosted relay.
+Targeting a relay other than the hosted default (local dev, staging)? Add
+`--url "$HOMESPUN_URL"` (or set `HOMESPUN_URL`) to target it.
 
 **If you are an agent, use the two-phase form.** Plain `homespun agent register`
 BLOCKS for up to 15 minutes waiting for a human to approve, and you cannot show

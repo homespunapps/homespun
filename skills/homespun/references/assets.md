@@ -153,5 +153,5 @@ Because an app-scoped attachment needs the app id, the order for a NEW app is:
 `deploy_app` to create it (get `app_id`), then `fetch` / `presign` with
 `scope: "app"` and that id, then redeploy with
 `assets: [{ path, attachment_id }]`. For an EXISTING app, do it in one redeploy.
-On a filesystem self-host (no presign backend) fall back to inline
-`content_base64`: still correct, just not zero-context.
+On a filesystem-backed relay (no presign backend, the local dev / CI default)
+fall back to inline `content_base64`: still correct, just not zero-context.

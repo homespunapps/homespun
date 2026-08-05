@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.45 -->
+<!-- homespun skill v1.6.46 -->
 
 # homespun
 
@@ -57,11 +57,11 @@ works out of the box. The CLI needs:
   `HOMESPUN_API_KEY`), or obtained yourself via `homespun agent register` (see
   `references/registering.md`). Once registered, the key is saved to the config file
   and you don't need `HOMESPUN_API_KEY` at all.
-- **A relay URL.** Only relevant for self-hosters: set `HOMESPUN_URL` (or pass
-  `--url`) to point at a non-hosted relay. Note this is the **control-plane**
-  URL (where `deploy`/`apps`/`data` talk); the *deployed app itself* is
-  served on its own domain (see "Serving and security" below), not under
-  this URL.
+- **A relay URL.** Only relevant when targeting a relay other than the hosted
+  default (local dev, staging): set `HOMESPUN_URL` (or pass `--url`) to point
+  at it. Note this is the **control-plane** URL (where `deploy`/`apps`/`data`
+  talk); the *deployed app itself* is served on its own domain (see "Serving
+  and security" below), not under this URL.
 
 Output is JSON on stdout. Errors are `{"error":{"code","message"}}` on stderr
 with a non-zero exit.
@@ -810,16 +810,18 @@ Fields, exactly:
       scope it (`countRead: ["creator"]`); publish the whole-collection total
       only when the total itself is genuinely public.
   - **`relations`**: optional object mapping a relation NAME to `{ "field":
-    "<top-level field>", "set": "caller"? }`. Names a row scope of the
+    "<top-level field>", "set": "caller" | "writer" }`. Names a row scope of the
     collection's own: "the caller whose principal id is the value in this row's
     `<field>`". A declared name is then a permission subject in `update`,
     `delete` and `read`, bare or as `<role>:<relation>`, and rejected in `write`
-    and `countRead` exactly like `creator`. `set: "caller"` makes the server
-    stamp the field on create and refuse every later change to it; omit it to
-    let the writer choose whom the row belongs to (the agent-writes-for-a-human
-    shape). At most 8 per collection, and the field must be a declared,
-    string-capable property when the collection declares a schema. See "Rows
-    that belong to a person" below, which is where the recipes are.
+    and `countRead` exactly like `creator`. **`set` is required on any relation a
+    permission list names**, and a deploy that omits it is refused: `"caller"`
+    makes the server stamp the field on create and refuse every later change to
+    it, `"writer"` lets the create set it freely and then lets only the row's
+    creator change it (the agent-writes-for-a-human shape). At most 8 per
+    collection, and the field must be a declared, string-capable property when
+    the collection declares a schema. See "Rows that belong to a person" below,
+    which is where the recipes are.
   - **`keyClaim`**: optional string, one of `"free"` (default), `"server"` or
     `"caller"`. Decides **which row key a caller may claim** when creating a
     row, which `write` says nothing about. `"free"` is today's behaviour and is
@@ -1381,7 +1383,7 @@ text any writer can overwrite.
 "tasks": {
   "schema": { "$ref": "#/$defs/Task" },
   "relations": {
-    "assignee": { "field": "assignedTo" },
+    "assignee": { "field": "assignedTo", "set": "writer" },
     "reporter": { "field": "reportedBy", "set": "caller" }
   },
   "read":   ["assignee", "admin"],
@@ -1403,16 +1405,32 @@ from `homespun.session.humanId`, and everyone else's from
 holding `"alice@example.com"` or `"Alice"` matches nobody and grants nothing,
 silently, so put an id there.
 
-**`set: "caller"` is what makes it authorization rather than a claim.** With it,
-the SERVER fills the field in with the caller's own id when the row is created,
-overwriting whatever the client sent, and refuses every later attempt to change
-it. Without it, whoever `write` admits chooses the value, which is exactly what
-you want when an **agent creates a row that a human owns**: the agent writes
-`assignedTo: "<the human's id>"`, and from that moment the human can edit and
-read their own row even though they could never have created it.
+**`set` is what makes it authorization rather than a claim, and a relation any
+permission list names must declare it.** There are two answers, and the deploy
+refuses a referenced relation that gives neither:
 
-Use `set: "caller"` when the row belongs to whoever made it. Omit it when
-somebody else decides who the row belongs to.
+- **`set: "caller"`**: the SERVER fills the field in with the caller's own id
+  when the row is created, overwriting whatever the client sent, and refuses
+  every later attempt to change it. Use it when the row belongs to whoever made
+  it.
+- **`set: "writer"`**: the create sets the field to whatever it likes, and
+  afterwards **only the principal who created the row may change it**. This is
+  the **agent creates a row that a human owns** shape: the agent writes
+  `assignedTo: "<the human's id>"`, and from that moment the human can edit and
+  read their own row even though they could never have created it, while nobody
+  else admitted by `update` can reassign it out from under them.
+
+Under `set: "writer"` a non-creator's update may still send the field back
+unchanged, or leave it out entirely (it carries forward). Sending a *different*
+value is refused `403 relation_set_forbidden` and **nothing lands**, the rest of
+the payload included: the write is refused rather than quietly stripped, because
+data that does not arrive with no error is worse than an error.
+
+**It is the CREATOR, not the author.** The author of a row is whoever wrote it
+last and it transfers on every write, so a rule keyed on it would be defeated in
+two requests: edit the row once without touching the relation field to become
+its author, then edit again and name whoever you like. The creator is stamped
+once and does not move.
 
 A relation name may not collide with a built-in subject or a role you declared,
 and its `field` must be a schema-declared property that can hold a string
@@ -1450,15 +1468,20 @@ worth knowing:
 > field declared `unique`) also resolves to the caller's own row and nobody
 > else's.
 
-> **A relation WITHOUT `set: "caller"` is a rule keyed on a field the caller
-> controls, so freeze it.** Omitting `set` is the right shape for the
-> agent-writes-for-a-human case, but it means whoever `write` admits chooses who
-> the row belongs to, and can keep choosing on every later update. Add the field
-> to `immutable` and the answer is pinned to whatever the create said:
+> **A relation with no `set` at all is refused at deploy.** It used to be legal
+> and it was a rule keyed on a field every writer controls: whoever `write`
+> admitted chose who the row belonged to and could keep choosing on every later
+> update, so an assignee could reassign somebody else's task to themselves, or
+> hand it away and lose it. Say `"caller"` or `"writer"` and the question has an
+> answer. The error names the collection, the field and both values.
+>
+> **To pin the assignment even for the creator, add the field to `immutable`.**
+> `set: "writer"` lets the creator reassign the row later, which is usually what
+> you want; `immutable` says the create is the last word, for everyone:
 >
 > ```json
 > "tasks": {
->   "relations": { "assignee": { "field": "assignedTo" } },
+>   "relations": { "assignee": { "field": "assignedTo", "set": "writer" } },
 >   "immutable": ["assignedTo"],
 >   "write":  ["owner"],
 >   "update": ["assignee"],
@@ -1467,9 +1490,8 @@ worth knowing:
 > }
 > ```
 >
-> Without the freeze, an assignee could reassign the row to themselves off
-> somebody else's task, or hand it away and lose it. With `set: "caller"` the
-> server owns the field outright and no `immutable` entry is needed.
+> With `set: "caller"` the server owns the field outright and no `immutable`
+> entry is needed.
 
 **Anonymous visitors satisfy no relation**, for the same reason they satisfy no
 `creator`: they have no identity to compare a field against. If the collection
@@ -1514,7 +1536,7 @@ read and correct their own.
 ```json
 "reports": {
   "schema": { "$ref": "#/$defs/Report" },
-  "relations": { "subject": { "field": "forPerson" } },
+  "relations": { "subject": { "field": "forPerson", "set": "writer" } },
   "read":   ["subject", "owner"],
   "write":  ["owner"],
   "update": ["subject", "owner"],
@@ -1522,11 +1544,11 @@ read and correct their own.
 }
 ```
 
-No `set` here, on purpose: you are choosing who the row is for, so the
-value has to be yours to write. That is the one case where a
-client-supplied relation value is the point rather than the hole, and it is safe
-only because `write` is `["owner"]`. **If `write` admits a wider audience, add
-`set: "caller"`,** or anyone admitted to write can name anyone they like.
+`set: "writer"` is what this recipe is for: you are choosing who the row is for,
+so the value has to be yours to write, and it stays yours. The subject can read
+and correct their own row through `update`, but they cannot point `forPerson`
+at somebody else, because only the row's creator (you) may move it. Use
+`set: "caller"` instead when the row belongs to whoever made it.
 
 ### Schema gotchas (two that bite at deploy time)
 
@@ -1703,8 +1725,8 @@ still anonymous and with no grant, so the control is safe to leave in public.
 
 If you must build that URL by hand (a plain `<a href>`, or a page not using the
 SDK): `<main-domain>` is the relay's own domain (`homespun.dev` for the hosted
-relay, whatever `MAIN_DOMAIN` is for a self-hosted one, so this is exactly the
-part `login()` saves you from hardcoding). `return` is optional and must be an
+relay, whatever `MAIN_DOMAIN` is configured to otherwise, so this is exactly
+the part `login()` saves you from hardcoding). `return` is optional and must be an
 absolute URL on the app's OWN origin. Anything else (another app, an
 off-platform host, `http:`, a malformed value) is not an error, it is silently
 replaced with the app's root. The slug is the leftmost label of the app's own

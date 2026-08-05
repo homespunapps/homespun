@@ -85,7 +85,7 @@ collection is rejected at deploy.
   "collections": {
     "tasks": {
       "relations": {
-        "assignee": { "field": "assignedTo" }
+        "assignee": { "field": "assignedTo", "set": "writer" }
       },
       "read": ["assignee", "owner"],
       "write": ["owner"],
@@ -148,7 +148,7 @@ submissions assigned to them, rather than every submission a reviewer can see:
 
 ```json
 "submissions": {
-  "relations": { "assignee": { "field": "assignedTo" } },
+  "relations": { "assignee": { "field": "assignedTo", "set": "writer" } },
   "read": ["owner", "reviewer:assignee"],
   "write": ["member"],
   "update": ["reviewer:assignee"],
@@ -232,6 +232,102 @@ already holds: a `{"type": "notification", "notification": {...}}` frame on
 `/_hs/ws`, delivered only to the connections belonging to the recipient. It
 carries the same object the HTTP routes return, so a page can apply both
 through one code path.
+
+### `"push"`: a web push notification on the device
+
+Where `"inapp"` waits for the recipient's next visit, `"push"` reaches them
+when the app is closed. It runs through exactly the same pipeline as the other
+two: the same targets, the same per-recipient authorization gate, the same
+visible suppression for a recipient the gate refuses.
+
+```json
+{
+  "on": "update",
+  "collection": "tasks",
+  "when": { "field": "status", "changedTo": "review" },
+  "to": ["field:assignee"],
+  "channels": ["inapp", "push"],
+  "link": "/reviews",
+  "subject": "Ready for review: {{title}}",
+  "body": "{{title}} is ready for your review."
+}
+```
+
+Four things worth knowing before you reach for it:
+
+- **What arrives on the device carries no row data.** It is the app's name, a
+  line naming the collection that changed, and the rule's `link`. Not the
+  rendered `subject`, not the rendered `body`. A push payload travels through
+  Apple's, Google's or Mozilla's push service, and homespun authorizes
+  notification content per recipient against the row that fired it, so handing
+  that same content to a third party would undo the check. The recipient taps,
+  your app opens, and your own reads serve the content. Use `link` to point
+  them at the right screen and `GET /_hs/notifications` to tell them which row.
+- **It needs `"offline": true`.** A push message is only ever delivered to a
+  service worker, and the relay serves one only to an app that declares offline
+  serving. A `push` channel on a manifest without it is a hard deploy error.
+- **Nothing is sent until the viewer opts in, from your own UI.** The platform
+  never prompts. Your page calls `homespun.push.enable()`, which is the one
+  call in the whole SDK that shows a browser prompt, and you call it from a
+  user gesture: a "notify me" toggle, a "watch this" button. A prompt the
+  viewer denies blocks the origin permanently in most browsers, so an app gets
+  one chance and it should be spent at a moment the viewer understands.
+  `homespun.push.status()` reads where they stand without prompting, and
+  `homespun.push.disable()` stops it.
+- **iOS needs the app on the home screen first.** That is an Apple constraint
+  with no way around it, which is why `"inapp"` carries most of the value for a
+  link-shared app and push is the escalation.
+
+## Letting a recipient say stop
+
+Every recipient can mute any channel, per app, and your page is the only place
+that control can live: much of an app's audience holds a grant link or is an
+anonymous visitor, and neither has a console to visit, so there is no platform
+settings page and no unsubscribe link to fall back on.
+
+```js
+const prefs = await homespun.notifications.preferences.get();
+if (prefs?.notifiable) {
+  emailToggle.checked = !prefs.muted.email;
+  emailToggle.onchange = () =>
+    homespun.notifications.preferences.set({
+      channel: "email",
+      muted: !emailToggle.checked,
+    });
+}
+```
+
+Four things worth knowing:
+
+- **Nothing needs setting up.** A recipient who has never touched this is not
+  muted, so notifications work before any preference exists. There is no
+  default row to write and no opt-in step.
+- **A mute is per app and per channel**, not per rule. Muting `"email"` still
+  leaves that recipient's in-app notifications arriving, which is usually what
+  someone means by "stop emailing me".
+- **`get()` returns `null` when the app declares no notify channel**, because
+  there is no such route for an app that sends nothing. `notifiable: false`
+  means this particular viewer has no identity the relay can store a
+  preference for: an anonymous visitor, whose only identity is a cookie the SDK
+  transport deliberately does not send. Hide the control rather than render one
+  whose write would fail. A signed-in member and a grant-link holder are both
+  notifiable.
+- **A muted channel leaves no trace.** Nothing is sent, nothing is stored, and
+  no delivery record is written, which is different from the platform
+  suppressing a notification because the recipient may not read the row that
+  fired it.
+
+## `link`
+
+`link` is where the recipient's client should go: a static, same-origin path
+starting with `/`, such as `"/orders"`. It is stored on every in-app
+notification the rule creates and is the url a push notification opens.
+
+It is deliberately **not** a template. `subject` and `body` accept `{{field}}`
+placeholders; `link` refuses them as a deploy error, because the link is what
+travels in a push payload and that payload must never contain row data. Point
+it at a screen, not at a row, and let the app read `/_hs/notifications` (which
+carries the `collection_name` and `row_key`) to work out which row to show.
 
 ## `excludeActor`
 

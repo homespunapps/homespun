@@ -61,9 +61,6 @@ The connector URL is always:
 https://homespun.dev/mcp
 ```
 
-(Running your own relay? Use `https://<your-relay-host>/mcp` instead, the same
-OAuth flow is built into every self-hosted relay.)
-
 ---
 
 ## Claude (web, desktop, mobile)
