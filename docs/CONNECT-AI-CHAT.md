@@ -65,13 +65,15 @@ https://homespun.dev/mcp
 
 ## Claude (web, desktop, mobile)
 
-1. On the web, open the **Add custom connector** dialog directly:
-   <https://claude.ai/new?modal=add-custom-connector#settings/customize-connectors>.
-   The desktop and mobile apps take no deep link, so open **Settings → Connectors**
-   there (on mobile: profile → Settings → Connectors).
-2. On desktop and mobile, click **Add custom connector**. The web link above
-   already lands you on it.
-3. **Name** it `Homespun` and paste the **URL** `https://homespun.dev/mcp`.
+1. On the web, open the **Add custom connector** dialog with the name and the
+   URL already filled in:
+   <https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Homespun&connectorUrl=https%3A%2F%2Fhomespun.dev/mcp>.
+   Check the two fields and skip to step 4. The desktop and mobile apps take no
+   deep link, so open **Settings → Connectors** there (on mobile: profile →
+   Settings → Connectors).
+2. On desktop and mobile, click **Add custom connector**.
+3. **Name** it `Homespun` and paste the **URL** `https://homespun.dev/mcp`. The
+   web link above fills both in for you.
 4. Save, then click **Connect**. A browser window opens on the Homespun relay.
 5. **Log in** with your email. You'll get a magic link; click it to sign in.
 6. On the **consent screen** ("Allow Claude to access your app account?"),
