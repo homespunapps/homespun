@@ -40,9 +40,9 @@ Rules of the road:
   target that resolves to a loopback / private / link-local / CGNAT / cloud-
   metadata address, and it never follows a redirect (a 3xx is a failed attempt) -
   so a webhook cannot be turned into a request against your internal network.
-- The feature is **gated** (off until the operator flips `WEBHOOKS_ENABLED`) and,
-  once on, delivery is **immediate** (no digest window), retried with exponential
-  backoff, and bounded by a per-app hourly cap.
+- The feature is **gated** on `WEBHOOKS_ENABLED`. It is **enabled on the hosted relay**, and off on
+  a self-hosted one until its operator flips it. Once on, delivery is **immediate** (no digest
+  window), retried with exponential backoff, and bounded by a per-app hourly cap.
 
 **The payload** is a JSON body:
 

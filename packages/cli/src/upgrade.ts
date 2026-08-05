@@ -72,7 +72,7 @@ export function detectInstallMethod(entryPath: string): InstallMethod {
  * portable command exists — escalate to the human."
  *
  * Always pin the upgrade target to `>=${minVersion}` instead of `@latest`
- * so a self-hosted relay that requires 0.0.7 doesn't drag the client to a
+ * so a relay that requires 0.0.7 doesn't drag the client to a
  * future 0.1.0 that may have its own incompatibilities. The trailing
  * `@latest`-equivalent is fine for the operator who deliberately
  * fast-forwards.

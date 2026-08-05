@@ -35,8 +35,8 @@ export interface ConfigDescription {
 
 /**
  * The hosted Homespun relay. Used as the relay-URL fallback so a fresh user only
- * needs an API key — `homespun agent register` against the hosted relay, then go. A
- * self-hoster overrides it with `--url` / `HOMESPUN_URL` / `homespun agent register --url`.
+ * needs an API key — `homespun agent register` against the hosted relay, then go. An
+ * operator overrides it with `--url` / `HOMESPUN_URL` / `homespun agent register --url`.
  */
 export const DEFAULT_RELAY_URL = "https://homespun.dev";
 

@@ -184,8 +184,9 @@ not expect the notify rule to grant a visibility the collection itself denies.
 when omitted. `"inapp"` and `"push"` parse as part of the grammar, but each is
 rejected at deploy (error `notify_channel_not_enabled`) until the relay
 operator enables it, the same shape as the `submitter` gate:
-`NOTIFY_INAPP_ENABLED` and `NOTIFY_PUSH_ENABLED` each flip on independently,
-and neither is enabled on the hosted relay today.
+`NOTIFY_INAPP_ENABLED` and `NOTIFY_PUSH_ENABLED` each flip on independently.
+**Both are enabled on the hosted relay**, so a rule may name either there; a
+self-hosted relay has them off until its operator sets the variable.
 
 ### `"inapp"`: the in-app notification store
 

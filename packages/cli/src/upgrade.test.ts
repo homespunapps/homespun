@@ -111,7 +111,7 @@ describe("upgradeCommandFor", () => {
   });
 
   it("pins the upgrade target to >=min, not @latest", () => {
-    // Self-hosted relay at 0.0.7 must not pull a future 0.1.0 that may
+    // A relay at 0.0.7 must not pull a future 0.1.0 that may
     // have its own incompatibilities. The relay says 'min', we install
     // 'min or above', npm picks the satisfying latest.
     expect(upgradeCommandFor("npm-global", "0.0.7")).toContain(">=0.0.7");

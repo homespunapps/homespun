@@ -183,7 +183,7 @@ const APPS: NounSpec = {
   ],
   notes: [
     "<app> accepts either the app_id or its slug (resolved via GET /v1/apps?slug= when it does not look like a cuid).",
-    'watch streams the app\'s change feed as JSON-lines on stdout, one compact SerializedFeedEntry object per line, identical whether served over the live WebSocket (primary) or the long-poll fallback (used automatically when the WS upgrade fails, for example self-host mode has no WS support yet, or a locked-down network blocks outbound WS). A dormancy transition mid-watch emits a single {"type":"_dormant"} line and exits 0.',
+    'watch streams the app\'s change feed as JSON-lines on stdout, one compact SerializedFeedEntry object per line, identical whether served over the live WebSocket (primary) or the long-poll fallback (used automatically when the WS upgrade fails, for example a locked-down network blocks outbound WS). A dormancy transition mid-watch emits a single {"type":"_dormant"} line and exits 0.',
   ],
   outputNote:
     'Output is JSON, and JSON-lines for watch. Errors go to stderr as {"error":{"code","message"}} with a non-zero exit.',

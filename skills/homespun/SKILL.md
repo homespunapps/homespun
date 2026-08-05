@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.47 -->
+<!-- homespun skill v1.6.48 -->
 
 # homespun
 
@@ -432,6 +432,11 @@ Rules of the road:
   the deploy result saying exactly that. Set the zone with `homespun apps update
   <app> --timezone <IANA zone>` (it then shows up under `homespun apps show`).
   Free apps have a per-day reminder cap and a rule-count cap, both modest by design.
+- **The whole feature is gated on the relay's `SCHEDULES_ENABLED`, and a deploy never tells
+  you.** It is **enabled on the hosted relay**, so reminders fire there. On a self-hosted relay
+  with it off, the scan worker simply never starts: the manifest still validates, the deploy
+  still succeeds, and no reminder ever fires. So on a self-hosted relay a successful deploy is
+  **not** evidence a reminder will arrive, so check the variable.
 
 **POST to a URL when a collection changes (`webhooks`).** The machine-consumer
 sibling of `notify`. Instead of emailing a person, the relay fires a signed HTTP

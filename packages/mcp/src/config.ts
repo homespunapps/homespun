@@ -24,8 +24,8 @@ import { join, dirname } from "node:path";
 import { HomespunClient, registerAgent } from "@homespunapps/core";
 
 /**
- * The hosted Homespun relay — the URL fallback when nothing else is set. A
- * self-hoster overrides it with HOMESPUN_URL or a registered profile.
+ * The hosted Homespun relay — the URL fallback when nothing else is set. An
+ * operator overrides it with HOMESPUN_URL or a registered profile.
  */
 export const DEFAULT_RELAY_URL = "https://homespun.dev";
 
@@ -235,7 +235,7 @@ function resolveApiKey(): string | undefined {
  * CLI and any later MCP launch reuse the same identity, and the human never
  * has to run `homespun agent register` by hand.
  *
- * A self-hoster on a `secret`-mode relay (or anyone who prefers explicit
+ * An operator on a `secret`-mode relay (or anyone who prefers explicit
  * provisioning) sets HOMESPUN_API_KEY / HOMESPUN_TOKEN and the auto-register path is
  * never taken.
  *
