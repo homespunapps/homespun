@@ -1883,6 +1883,77 @@ export class HomespunClient {
   }
 
   // -------------------------------------------------------------------------
+  // Template updates (#1502). An installed template is a fork, so these act on
+  // an APP, not on a template ref: the question is "is there a newer version of
+  // the template THIS app came from", which only the app can answer.
+  //
+  // Nothing here happens on its own. There is no follow/pin policy, so an agent
+  // that wants its owner's apps current has to ask, every time.
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /v1/apps/:id/upgrade: is a newer version of this app's source template
+   * available, would it apply cleanly, and what would it newly be allowed to
+   * reach. No side effects; the verdict is computed by the same validation the
+   * apply path re-runs.
+   */
+  async checkTemplateUpgrade(appId: string): Promise<TemplateUpgradePreview> {
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/upgrade`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<TemplateUpgradePreview>(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/upgrade: apply it.
+   *
+   * `acceptPermissions` is REQUIRED when the preview reports a non-empty
+   * permission diff, and is deliberately not defaulted: an agent must state
+   * that its owner accepted the widening rather than have the absence of a
+   * field satisfy the gate. `expectVersion` refuses if the offer moved since
+   * the preview, so an agent never applies a version it did not describe.
+   *
+   * Refuses outright, with no override, when the new version would strand rows
+   * the app already holds.
+   */
+  async upgradeTemplate(
+    appId: string,
+    opts?: { acceptPermissions?: boolean; expectVersion?: string },
+  ): Promise<TemplateUpgradeResult> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/upgrade`,
+      {
+        ...(opts?.acceptPermissions !== undefined
+          ? { accept_permissions: opts.acceptPermissions }
+          : {}),
+        ...(opts?.expectVersion !== undefined
+          ? { expect_version: opts.expectVersion }
+          : {}),
+      },
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<TemplateUpgradeResult>(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/upgrade/revert: put back the version the app ran before
+   * its last template upgrade. Refuses when rows written since would have
+   * nowhere to live under the older version.
+   */
+  async revertTemplateUpgrade(appId: string): Promise<TemplateRevertResult> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/upgrade/revert`,
+      {},
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<TemplateRevertResult>(r);
+  }
+
+  // -------------------------------------------------------------------------
   // Community publisher identity (marketplace PR 1). All three act AS the
   // calling agent's owning human. claim/update additionally need a verified
   // email server-side.
@@ -2730,6 +2801,61 @@ export interface CommunityInstallResult {
   app_id: string;
   slug: string;
   url: string;
+}
+
+/** One narrowing the compat gate reports, in the manifest author's words. */
+export interface TemplateUpgradeBreak {
+  path: string;
+  message: string;
+}
+
+/** Everything a caller needs to decide whether to apply a template update. */
+export interface TemplateUpgradePreview {
+  /** Is a newer live version of this app's template line available at all? */
+  available: boolean;
+  from_version: string | null;
+  to_version: string | null;
+  changelog: unknown;
+  snapshot_id: string | null;
+  compat: "clean" | "forced" | "incompatible" | null;
+  /**
+   * Breaks that BLOCK the update: it would strand rows the app already holds.
+   * No acceptance clears these.
+   */
+  breaks: TemplateUpgradeBreak[];
+  /**
+   * Breaks saying the new version discloses more than the installed one. These
+   * are what `accept_permissions` clears, and the human-readable peer is
+   * `permission_lines`.
+   */
+  disclosure_breaks: TemplateUpgradeBreak[];
+  permissions: {
+    external_hosts: string[];
+    embeds: string[];
+    capabilities: string[];
+    cdn: boolean;
+    offline: boolean;
+    webhook_rules: number;
+    is_empty: boolean;
+  };
+  /** One plain sentence per widening, for showing a person before accepting. */
+  permission_lines: string[];
+  blocked: boolean;
+  blocked_reason: "incompatible" | null;
+  revert_available: boolean;
+}
+
+export interface TemplateUpgradeResult {
+  from_version: string | null;
+  to_version: string;
+  snapshot_id: string;
+  /** The version now available to revert to. */
+  previous_version_id: string;
+}
+
+export interface TemplateRevertResult {
+  version_id: string;
+  template_version: string | null;
 }
 
 export interface PublishCommunityTemplateRequest {

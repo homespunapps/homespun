@@ -18,6 +18,9 @@ const fakeClient = {
   listCommunitySubmissions: vi.fn(),
   getCommunitySubmission: vi.fn(),
   reviewCommunitySubmission: vi.fn(),
+  checkTemplateUpgrade: vi.fn(),
+  upgradeTemplate: vi.fn(),
+  revertTemplateUpgrade: vi.fn(),
 };
 
 vi.mock("../config.js", () => ({
@@ -26,9 +29,14 @@ vi.mock("../config.js", () => ({
 }));
 
 import { runTemplate } from "./template.js";
-import { parseArgs, type ParsedArgs } from "../argv.js";
+import { parseArgs, BOOLEAN_FLAGS, type ParsedArgs } from "../argv.js";
 
-const TEMPLATE_TEST_BOOLS = new Set(["help", "attest-example-only"]);
+// The REAL parser set, not a local copy. A hand-written set here silently
+// passes flags the shipped binary rejects: `--accept-permissions` was missing
+// from BOOLEAN_FLAGS while these tests were green, so the flag threw
+// "requires a value" for an actual user and the suite never noticed. This is
+// the same masking argv.test.ts calls out as regression #827.
+const TEMPLATE_TEST_BOOLS = BOOLEAN_FLAGS;
 
 function makeArgs(tokens: string[]): ParsedArgs {
   return parseArgs(tokens, TEMPLATE_TEST_BOOLS);
@@ -267,5 +275,85 @@ describe("runTemplate dispatch", () => {
     await run([]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("missing verb");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Template updates (#1502)
+// ---------------------------------------------------------------------------
+
+describe("template upgrade verbs", () => {
+  let exitCode: number | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    exitCode = undefined;
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Error(`__exit_${code}__`);
+    }) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function run(tokens: string[]): Promise<void> {
+    try {
+      await runTemplate(makeArgs(tokens));
+    } catch (e) {
+      if (!String((e as Error).message).startsWith("__exit_")) throw e;
+    }
+  }
+
+  it("upgrade-check reads the preview for one app", async () => {
+    fakeClient.checkTemplateUpgrade.mockResolvedValue({
+      available: true,
+      to_version: "2.0.0",
+    });
+    await run(["upgrade-check", "app_1"]);
+    expect(fakeClient.checkTemplateUpgrade).toHaveBeenCalledWith("app_1");
+  });
+
+  // The consent gate's whole point is that somebody looked. An omitted flag
+  // must reach the SDK as "not accepted", never as an implicit yes.
+  it("upgrade does not accept permissions unless the flag is given", async () => {
+    fakeClient.upgradeTemplate.mockResolvedValue({ to_version: "2.0.0" });
+    await run(["upgrade", "app_1"]);
+    expect(fakeClient.upgradeTemplate).toHaveBeenCalledWith("app_1", {});
+  });
+
+  it("upgrade passes acceptance and the expected version when given", async () => {
+    fakeClient.upgradeTemplate.mockResolvedValue({ to_version: "2.0.0" });
+    await run([
+      "upgrade",
+      "app_1",
+      "--accept-permissions",
+      "--expect-version",
+      "2.0.0",
+    ]);
+    expect(fakeClient.upgradeTemplate).toHaveBeenCalledWith("app_1", {
+      acceptPermissions: true,
+      expectVersion: "2.0.0",
+    });
+  });
+
+  it("revert undoes the last update for one app", async () => {
+    fakeClient.revertTemplateUpgrade.mockResolvedValue({ version_id: "v1" });
+    await run(["revert", "app_1"]);
+    expect(fakeClient.revertTemplateUpgrade).toHaveBeenCalledWith("app_1");
+  });
+
+  it("each verb requires an app, and calls nothing without one", async () => {
+    for (const verb of ["upgrade-check", "upgrade", "revert"]) {
+      exitCode = undefined;
+      await run([verb]);
+      expect(exitCode, `${verb} with no app`).toBe(1);
+    }
+    expect(fakeClient.checkTemplateUpgrade).not.toHaveBeenCalled();
+    expect(fakeClient.upgradeTemplate).not.toHaveBeenCalled();
+    expect(fakeClient.revertTemplateUpgrade).not.toHaveBeenCalled();
   });
 });

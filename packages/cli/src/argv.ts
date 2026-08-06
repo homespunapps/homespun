@@ -85,6 +85,10 @@ export const BOOLEAN_FLAGS = new Set([
   // `homespun template publish --attest-example-only`: attest the captured template
   // and its seed rows carry no real personal data (marketplace PR 10).
   "attest-example-only",
+  // `homespun template upgrade --accept-permissions`: accept that the new version
+  // of a template asks for more than the installed one (#1502). Required when it
+  // does; it never clears an update that would strand rows.
+  "accept-permissions",
   // `homespun review respond --clear`: clear a publisher response (sends null).
   "clear",
   // `homespun credentials mint --no-expiry`: the explicit opt-in to NO EXPIRY

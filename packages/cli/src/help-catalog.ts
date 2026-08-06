@@ -559,9 +559,9 @@ const INGEST: NounSpec = {
         },
         {
           name: "secret",
-          value: "<value>",
+          value: "<value|->",
           description:
-            "set only: a provider-generated signing secret to store verbatim; omit to have the relay mint one (shown once)",
+            "set only: a provider-generated signing secret to store verbatim; omit to have the relay mint one (shown once). Pass - to read it from stdin, or set HOMESPUN_INGEST_SIGNING_SECRET, instead of putting it on the command line where ps and shell history can see it",
         },
         {
           name: "grace-seconds",
@@ -609,6 +609,7 @@ const INGEST: NounSpec = {
     "signing-secret manages a hook's OPT-IN signing secret, distinct from the URL secret above: it is what a provider (GitHub, Stripe, ...) HMACs the request body with. `set` without --secret mints one and returns { secret, fingerprint, setAt } with the value shown ONCE; `set --secret <value>` stores a provider-generated value verbatim and returns { fingerprint, setAt } without echoing it; `clear` removes it. A rotation keeps the previous secret valid for --grace-seconds so deliveries verify while you update the provider. A hook that declares `verify` in its manifest rule (GitHub scheme in v1) requires a valid signature over the raw body and stays fail-closed (401) until this secret is set; the fingerprint (a plaintext-derived id) lets you confirm which secret is set without the relay ever showing it.",
     "Hooks are declared in the app manifest (x-homespun-manifest.ingest) and materialized at deploy, so there is no create or delete verb here: add or remove a hook by editing the manifest and redeploying.",
     "backfill seeds a hook's collection with historical data: it POSTs an array of raw provider bodies to the OWNER endpoint (POST /v1/apps/:id/ingest-hooks/:name/backfill) and runs each through the SAME mapping the live public URL uses, so a backfilled row is byte-identical to a live delivery. It reads a JSON-array or NDJSON --file (each entry is a whole provider payload, any JSON value, not necessarily an object) and chunks it into --chunk bodies per call (default 500). It reuses the receive pipeline, so map/dedupeKey/upsertOn/row-schema validation and the collection quota all apply, but it SKIPS the public-URL brakes (the per-IP rate limit and the per-app hourly cap) and never verifies a signature (you are the authenticated owner). Wake is suppressed, so a large historical load never wakes a dormant app. Dedupe is ON: re-running the same file is idempotent for a body-path dedupeKey; a header:<name> dedupeKey cannot resolve here (no request headers), so it does not dedupe. Prints aggregate { total, accepted, dropped_duplicate, failed } counts.",
+    "--secret on signing-secret set takes the value straight from argv where it is visible in shell history and to other local users via ps for the life of the process. Prefer '--secret -' to read it from stdin, or set HOMESPUN_INGEST_SIGNING_SECRET, both of which never touch argv.",
   ],
 };
 
@@ -897,9 +898,9 @@ const CONNECTIONS: NounSpec = {
         },
         {
           name: "header-value",
-          value: "<value>",
+          value: "<value|->",
           description:
-            'static only, required. The header value to send, e.g. "Bearer sk_live_..."',
+            'static only, required. The header value to send, e.g. "Bearer sk_live_...". Pass - to read it from stdin, or set HOMESPUN_CONNECTION_HEADER_VALUE, instead of putting it on the command line where ps and shell history can see it',
         },
         {
           name: "authorize-url",
@@ -919,8 +920,9 @@ const CONNECTIONS: NounSpec = {
         },
         {
           name: "client-secret",
-          value: "<secret>",
-          description: "oauth2 only, required. Your OAuth2 app's client secret",
+          value: "<secret|->",
+          description:
+            "oauth2 only, required. Your OAuth2 app's client secret. Pass - to read it from stdin, or set HOMESPUN_CONNECTION_CLIENT_SECRET, instead of putting it on the command line where ps and shell history can see it",
         },
         {
           name: "scopes",
@@ -1004,6 +1006,7 @@ const CONNECTIONS: NounSpec = {
     "A connection is the stored credential a manifest webhook rule authenticates its delivery target with, bound to a host so it can never be sent to another one. There is no update verb: change a connection by deleting and recreating it.",
     "Every stored secret (a static header value, or an oauth2 client secret and its tokens) is encrypted at rest and never returned by any call; list returns metadata plus a non-reversible fingerprint only.",
     "OAuth2 consent is inherently a human-in-a-browser step: the relay refuses an agent-key caller at the authorize endpoint. authorize-url never makes a network call, it builds the URL locally so you can hand it to the signed-in app owner to open. A newly created oauth2 connection starts in pending_auth until the owner completes it.",
+    "--header-value and --client-secret on create take the value straight from argv where it is visible in shell history and to other local users via ps for the life of the process. Prefer '--header-value -' / '--client-secret -' to read the value from stdin, or set HOMESPUN_CONNECTION_HEADER_VALUE / HOMESPUN_CONNECTION_CLIENT_SECRET, both of which never touch argv.",
   ],
 };
 
@@ -1165,8 +1168,9 @@ const CONFIG: NounSpec = {
       flags: [
         {
           name: "api-key",
-          value: "<key>",
-          description: "Agent API key to save in the profile, required",
+          value: "<key|->",
+          description:
+            "Agent API key to save in the profile, required. Pass - to read it from stdin, or set HOMESPUN_CONFIG_API_KEY, instead of putting it on the command line where ps and shell history can see it",
         },
       ],
     },
@@ -1180,6 +1184,7 @@ const CONFIG: NounSpec = {
     "A profile is one url and api_key pair under a short name (dev, staging, prod). Switch via 'homespun config use', --profile <name>, or the HOMESPUN_PROFILE env var. The active profile is what every other command sees unless overridden by --url, --api-key, HOMESPUN_URL or HOMESPUN_API_KEY.",
     "Every verb is purely local: it inspects flags, env, and the saved config file and makes no network call. The full API key is never printed, only a short masked prefix. The config file lives at ${XDG_CONFIG_HOME:-~/.config}/homespun/config.json (mode 0600).",
     "add requires both --url and --api-key, and overwrites the existing values if the profile already exists. Use it when an operator handed you an API key out of band, for example a closed-registration relay; for self-register and secret-mode relays prefer 'homespun agent register --profile <name>'. It does not change current_profile unless it is the first profile added, so run 'homespun config use' afterwards to switch. rm clears current_profile when it removes the active profile, and the next command falls back to env or the default URL until another profile is selected.",
+    "--api-key on add takes the value straight from argv where it is visible in shell history and to other local users via ps for the life of the process. Prefer '--api-key -' to read it from stdin, or set HOMESPUN_CONFIG_API_KEY, both of which never touch argv.",
   ],
 };
 
@@ -1534,7 +1539,7 @@ const TEMPLATE: NounSpec = {
   tagline: "community marketplace templates",
   group: "other",
   rootSummary:
-    "Community marketplace templates: publish an owned app, unpublish your own listing, read a template's config-contract, install one, and the operator review queue (list-pending, show, approve, reject).",
+    "Community marketplace templates: publish an owned app, unpublish your own listing, read a template's config-contract, install one, keep an installed app current (upgrade-check, upgrade, revert), and the operator review queue (list-pending, show, approve, reject).",
   verbs: [
     {
       verb: "publish",
@@ -1615,6 +1620,44 @@ const TEMPLATE: NounSpec = {
           description: "Install config as inline JSON or a path to a JSON file",
         },
       ],
+    },
+    {
+      verb: "upgrade-check",
+      positionals: "<app>",
+      summary:
+        "Reports whether a newer version of the app's source template is available.",
+      flags: [],
+    },
+    {
+      verb: "upgrade",
+      positionals: "<app>",
+      summary:
+        "Updates an app in place to its template's current version, keeping its data.",
+      flags: [
+        {
+          name: "expect-version",
+          value: "<semver>",
+          description:
+            "Refuse unless this is still the version on offer, so a republish mid-flight cannot slip through",
+        },
+      ],
+      // A value-less flag belongs in `bools`, not `flags`: the catalog is what
+      // assertKnownFlags reads, so declaring it as a value flag makes the real
+      // parser reject `--accept-permissions` as missing its value.
+      bools: [
+        {
+          name: "accept-permissions",
+          description:
+            "Accept a version that asks for more than the installed one; required when it does",
+        },
+      ],
+    },
+    {
+      verb: "revert",
+      positionals: "<app>",
+      summary:
+        "Puts an app back on the version it ran before its last template update.",
+      flags: [],
     },
     {
       verb: "list-pending",

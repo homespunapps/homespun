@@ -37,7 +37,10 @@ function mockRelay(
   const calls: Call[] = [];
   const sleeps: number[] = [];
   const printed: string[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchImpl = (async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit,
+  ) => {
     const url = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     calls.push({ url, body });
@@ -217,7 +220,7 @@ describe("runDeviceFlow", () => {
   it("sends the CLI version header on both endpoints", async () => {
     const headersSeen: Array<Record<string, string>> = [];
     const fetchImpl = (async (
-      _input: RequestInfo | URL,
+      _input: Parameters<typeof fetch>[0],
       init?: RequestInit,
     ) => {
       headersSeen.push({ ...(init?.headers as Record<string, string>) });

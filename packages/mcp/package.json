@@ -1,7 +1,7 @@
 {
   "name": "@homespunapps/mcp",
   "mcpName": "dev.homespun/homespun",
-  "version": "1.6.48",
+  "version": "1.6.49",
   "description": "Model Context Protocol (stdio) server for Homespun: lets any MCP client (Claude Desktop, Cursor, …) deploy a multi-user web app with hosting, auth, a shared database and permissions included.",
   "license": "MIT",
   "type": "module",
@@ -40,13 +40,13 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
     "test": "vitest run",
     "test:unit": "vitest run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@homespunapps/core": "^1.6.48",
+    "@homespunapps/core": "^1.6.49",
     "zod": "^4.4.3"
   },
   "devDependencies": {

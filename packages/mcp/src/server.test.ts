@@ -159,7 +159,7 @@ describe("advertised input schema types", () => {
     const schemas = await advertisedSchemas();
     const manifest = (schemas.get("deploy_app") as Record<string, unknown>)
       .properties as Record<string, { type?: string }>;
-    expect(manifest.manifest.type).toBe("object");
+    expect(manifest.manifest?.type).toBe("object");
   });
 
   it("upsert_row + update_row data advertise an explicit typed anyOf (never a bare no-type schema)", async () => {
@@ -167,7 +167,7 @@ describe("advertised input schema types", () => {
     for (const name of ["upsert_row", "update_row"]) {
       const props = (schemas.get(name) as Record<string, unknown>)
         .properties as Record<string, Record<string, unknown>>;
-      const data = props.data;
+      const data = props.data!;
       // Not a bare `{}` (no-type) schema: it carries an anyOf whose branches
       // are each typed, and one of them is an object.
       expect(Array.isArray(data.anyOf), name).toBe(true);

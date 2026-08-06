@@ -3,6 +3,7 @@
 // vi.mock on ../config.js, mirroring grant.test.ts.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { Readable } from "node:stream";
 import { HomespunApiError } from "@homespunapps/core";
 
 const fakeClient = {
@@ -34,12 +35,18 @@ describe("runConnection dispatch", () => {
   let stdout: string;
   let stderr: string;
   let exitCode: number | undefined;
+  let savedClientSecretEnv: string | undefined;
+  let savedHeaderValueEnv: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     stdout = "";
     stderr = "";
     exitCode = undefined;
+    savedClientSecretEnv = process.env.HOMESPUN_CONNECTION_CLIENT_SECRET;
+    savedHeaderValueEnv = process.env.HOMESPUN_CONNECTION_HEADER_VALUE;
+    delete process.env.HOMESPUN_CONNECTION_CLIENT_SECRET;
+    delete process.env.HOMESPUN_CONNECTION_HEADER_VALUE;
     vi.spyOn(process.stdout, "write").mockImplementation((s) => {
       stdout += String(s);
       return true;
@@ -52,11 +59,53 @@ describe("runConnection dispatch", () => {
       exitCode = code;
       throw new Error(`__exit_${code}__`);
     }) as never);
+    // Pretend stdin is a TTY by default, matching a real interactive shell,
+    // so a bare `-` sentinel test doesn't accidentally block on real stdin.
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      get: () => true,
+    });
   });
 
   afterEach(() => {
+    if (savedClientSecretEnv === undefined) {
+      delete process.env.HOMESPUN_CONNECTION_CLIENT_SECRET;
+    } else {
+      process.env.HOMESPUN_CONNECTION_CLIENT_SECRET = savedClientSecretEnv;
+    }
+    if (savedHeaderValueEnv === undefined) {
+      delete process.env.HOMESPUN_CONNECTION_HEADER_VALUE;
+    } else {
+      process.env.HOMESPUN_CONNECTION_HEADER_VALUE = savedHeaderValueEnv;
+    }
     vi.restoreAllMocks();
   });
+
+  // Swap process.stdin for a piped Readable for the duration of `fn`, then
+  // restore it — mirrors the pattern in feedback.test.ts / taste.test.ts.
+  async function withPipedStdin(
+    lines: string[],
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      get: () => false,
+    });
+    const piped = Readable.from(lines) as unknown as typeof process.stdin;
+    const originalStdin = process.stdin;
+    Object.defineProperty(process, "stdin", {
+      configurable: true,
+      get: () => piped,
+    });
+    try {
+      await fn();
+    } finally {
+      Object.defineProperty(process, "stdin", {
+        configurable: true,
+        get: () => originalStdin,
+      });
+    }
+  }
 
   async function run(tokens: string[]): Promise<void> {
     try {
@@ -95,6 +144,110 @@ describe("runConnection dispatch", () => {
       headerName: "Authorization",
     });
     expect(JSON.parse(stdout).connection.id).toBe("conn_1");
+  });
+
+  it("create (static) reads --header-value from stdin when '-' is given", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.createConnection.mockResolvedValue({
+      connection: { id: "conn_1", name: "hubspot", kind: "static" },
+    });
+
+    await withPipedStdin(["Bearer sk_live_from_stdin\n"], () =>
+      run([
+        "create",
+        "--app",
+        CUID,
+        "--name",
+        "hubspot",
+        "--allowed-host",
+        "api.hubapi.com",
+        "--header-value",
+        "-",
+      ]),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(fakeClient.createConnection).toHaveBeenCalledWith(CUID, {
+      name: "hubspot",
+      kind: "static",
+      allowedHost: "api.hubapi.com",
+      headerValue: "Bearer sk_live_from_stdin",
+      headerName: "Authorization",
+    });
+  });
+
+  it("create (static) refuses --header-value - when stdin is a TTY", async () => {
+    await run([
+      "create",
+      "--app",
+      CUID,
+      "--name",
+      "hubspot",
+      "--allowed-host",
+      "api.hubapi.com",
+      "--header-value",
+      "-",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("TTY");
+    expect(fakeClient.createConnection).not.toHaveBeenCalled();
+  });
+
+  it("create (static) falls back to HOMESPUN_CONNECTION_HEADER_VALUE when --header-value is omitted", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.createConnection.mockResolvedValue({
+      connection: { id: "conn_1", name: "hubspot", kind: "static" },
+    });
+    process.env.HOMESPUN_CONNECTION_HEADER_VALUE = "Bearer sk_live_from_env";
+
+    await run([
+      "create",
+      "--app",
+      CUID,
+      "--name",
+      "hubspot",
+      "--allowed-host",
+      "api.hubapi.com",
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(fakeClient.createConnection).toHaveBeenCalledWith(CUID, {
+      name: "hubspot",
+      kind: "static",
+      allowedHost: "api.hubapi.com",
+      headerValue: "Bearer sk_live_from_env",
+      headerName: "Authorization",
+    });
+  });
+
+  it("create (static) still accepts --header-value on argv, with a stderr warning", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.createConnection.mockResolvedValue({
+      connection: { id: "conn_1", name: "hubspot", kind: "static" },
+    });
+
+    await run([
+      "create",
+      "--app",
+      CUID,
+      "--name",
+      "hubspot",
+      "--allowed-host",
+      "api.hubapi.com",
+      "--header-value",
+      "Bearer sk_live_x",
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(fakeClient.createConnection).toHaveBeenCalledWith(CUID, {
+      name: "hubspot",
+      kind: "static",
+      allowedHost: "api.hubapi.com",
+      headerValue: "Bearer sk_live_x",
+      headerName: "Authorization",
+    });
+    expect(stderr).toContain("--header-value");
+    expect(stderr).toContain("warning:");
   });
 
   it("create (static) requires --header-value", async () => {
@@ -177,6 +330,133 @@ describe("runConnection dispatch", () => {
       scopes: "read write",
       authParams: { access_type: "offline" },
     });
+  });
+
+  it("create (oauth2) reads --client-secret from stdin when '-' is given", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.createConnection.mockResolvedValue({
+      connection: { id: "conn_2", name: "crm", kind: "oauth2" },
+    });
+
+    await withPipedStdin(["s3cr3t_from_stdin\n"], () =>
+      run([
+        "create",
+        "--app",
+        CUID,
+        "--name",
+        "crm",
+        "--kind",
+        "oauth2",
+        "--allowed-host",
+        "api.example.com",
+        "--authorize-url",
+        "https://accounts.example.com/oauth/authorize",
+        "--token-url",
+        "https://accounts.example.com/oauth/token",
+        "--client-id",
+        "abc123",
+        "--client-secret",
+        "-",
+      ]),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(fakeClient.createConnection).toHaveBeenCalledWith(
+      CUID,
+      expect.objectContaining({ clientSecret: "s3cr3t_from_stdin" }),
+    );
+  });
+
+  it("create (oauth2) refuses --client-secret - when stdin is a TTY", async () => {
+    await run([
+      "create",
+      "--app",
+      CUID,
+      "--name",
+      "crm",
+      "--kind",
+      "oauth2",
+      "--allowed-host",
+      "api.example.com",
+      "--authorize-url",
+      "https://accounts.example.com/oauth/authorize",
+      "--token-url",
+      "https://accounts.example.com/oauth/token",
+      "--client-id",
+      "abc123",
+      "--client-secret",
+      "-",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("TTY");
+    expect(fakeClient.createConnection).not.toHaveBeenCalled();
+  });
+
+  it("create (oauth2) falls back to HOMESPUN_CONNECTION_CLIENT_SECRET when --client-secret is omitted", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.createConnection.mockResolvedValue({
+      connection: { id: "conn_2", name: "crm", kind: "oauth2" },
+    });
+    process.env.HOMESPUN_CONNECTION_CLIENT_SECRET = "s3cr3t_from_env";
+
+    await run([
+      "create",
+      "--app",
+      CUID,
+      "--name",
+      "crm",
+      "--kind",
+      "oauth2",
+      "--allowed-host",
+      "api.example.com",
+      "--authorize-url",
+      "https://accounts.example.com/oauth/authorize",
+      "--token-url",
+      "https://accounts.example.com/oauth/token",
+      "--client-id",
+      "abc123",
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(fakeClient.createConnection).toHaveBeenCalledWith(
+      CUID,
+      expect.objectContaining({ clientSecret: "s3cr3t_from_env" }),
+    );
+  });
+
+  it("create (oauth2) still accepts --client-secret on argv, with a stderr warning", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.createConnection.mockResolvedValue({
+      connection: { id: "conn_2", name: "crm", kind: "oauth2" },
+    });
+
+    await run([
+      "create",
+      "--app",
+      CUID,
+      "--name",
+      "crm",
+      "--kind",
+      "oauth2",
+      "--allowed-host",
+      "api.example.com",
+      "--authorize-url",
+      "https://accounts.example.com/oauth/authorize",
+      "--token-url",
+      "https://accounts.example.com/oauth/token",
+      "--client-id",
+      "abc123",
+      "--client-secret",
+      "s3cr3t",
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(fakeClient.createConnection).toHaveBeenCalledWith(
+      CUID,
+      expect.objectContaining({ clientSecret: "s3cr3t" }),
+    );
+    expect(stderr).toContain("--client-secret");
+    expect(stderr).toContain("warning:");
   });
 
   it("create (oauth2) rejects malformed --auth-params JSON", async () => {

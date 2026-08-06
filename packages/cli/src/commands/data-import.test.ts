@@ -26,10 +26,11 @@ const fakeClient = {
       appId: string,
       collection: string,
       rows: { key?: string; data: { i: number } }[],
+      opts?: { emitEffects?: boolean; on?: string },
     ) => {
       calls.push({
         method: "batchRows",
-        args: [appId, collection, rows.length],
+        args: [appId, collection, rows.length, opts],
       });
       const results = rows.map((row, idx) => {
         if (row.data.i === 105) {
@@ -142,10 +143,8 @@ describe("homespun data import", () => {
 
     expect(fakeClient.batchRows).toHaveBeenCalledTimes(1);
     // emitEffects was passed through to the batch call.
-    const opts = fakeClient.batchRows.mock.calls[0]![3] as {
-      emitEffects?: boolean;
-    };
-    expect(opts.emitEffects).toBe(true);
+    const opts = fakeClient.batchRows.mock.calls[0]![3];
+    expect(opts?.emitEffects).toBe(true);
     const summary = JSON.parse(stdout);
     expect(summary.total).toBe(3);
     expect(summary.imported).toBe(3);

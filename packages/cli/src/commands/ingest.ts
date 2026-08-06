@@ -22,6 +22,7 @@ import { nounSpec, renderNounHelp, specFor } from "../help-catalog.js";
 import { makeClient } from "../config.js";
 import { fail, failFromError, printJson } from "../output.js";
 import { resolveAppId } from "../resolve-app.js";
+import { resolveSecretFlag } from "../input.js";
 
 export async function runIngest(args: ParsedArgs): Promise<void> {
   const verb = args.positionals[0];
@@ -150,7 +151,11 @@ async function runSigningSecretSet(args: ParsedArgs): Promise<void> {
       "invalid_args",
     );
   }
-  const secret = args.flags.get("secret");
+  const secret = await resolveSecretFlag(
+    args.flags.get("secret"),
+    "HOMESPUN_INGEST_SIGNING_SECRET",
+    "--secret",
+  );
   const graceRaw = args.flags.get("grace-seconds");
   let graceSeconds: number | undefined;
   if (graceRaw !== undefined) {

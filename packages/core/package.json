@@ -1,6 +1,6 @@
 {
   "name": "@homespunapps/core",
-  "version": "1.6.48",
+  "version": "1.6.49",
   "description": "Homespun relay client: typed HTTP + WebSocket operations against a Homespun relay. Framework-free.",
   "license": "MIT",
   "type": "module",
@@ -36,7 +36,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
     "test": "vitest run",
     "test:unit": "vitest run"
   },

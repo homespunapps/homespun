@@ -20,6 +20,7 @@ import { nounSpec, renderNounHelp, specFor } from "../help-catalog.js";
 import { makeClient } from "../config.js";
 import { fail, failFromError, printJson } from "../output.js";
 import { resolveAppId } from "../resolve-app.js";
+import { resolveSecretFlag } from "../input.js";
 
 export async function runConnection(args: ParsedArgs): Promise<void> {
   const verb = args.positionals[0];
@@ -106,7 +107,11 @@ async function runCreate(args: ParsedArgs): Promise<void> {
       const authorizeUrl = args.flags.get("authorize-url");
       const tokenEndpoint = args.flags.get("token-url");
       const clientId = args.flags.get("client-id");
-      const clientSecret = args.flags.get("client-secret");
+      const clientSecret = await resolveSecretFlag(
+        args.flags.get("client-secret"),
+        "HOMESPUN_CONNECTION_CLIENT_SECRET",
+        "--client-secret",
+      );
       if (!authorizeUrl || !tokenEndpoint || !clientId || !clientSecret) {
         fail(
           "kind=oauth2 requires --authorize-url, --token-url, --client-id and --client-secret",
@@ -155,7 +160,11 @@ async function runCreate(args: ParsedArgs): Promise<void> {
       );
       return;
     }
-    const headerValue = args.flags.get("header-value");
+    const headerValue = await resolveSecretFlag(
+      args.flags.get("header-value"),
+      "HOMESPUN_CONNECTION_HEADER_VALUE",
+      "--header-value",
+    );
     if (!headerValue) {
       fail(
         "--header-value is required for a static connection",

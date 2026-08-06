@@ -243,8 +243,23 @@ describe("tool listing", () => {
   });
 
   it("idempotent mutators set idempotentHint", () => {
-    for (const name of ["upsert_row", "update_row", "delete_row", "apps"]) {
+    for (const name of ["update_row", "delete_row"]) {
       expect(tool(name).annotations.idempotentHint, name).toBe(true);
+    }
+  });
+
+  it("mint/rotate-shaped consolidated tools are NOT idempotent", () => {
+    // upsert_row is idempotent only when `key` is supplied (dedup returns
+    // the existing row); without it, a retry mints a second row, so the
+    // tool-level hint is the conservative false. apps exposes
+    // share_link_rotate, which issues a new share token and revokes the old
+    // link on every call. grants exposes mint, which returns a fresh
+    // capability URL every call, so a retry leaves a second live credential
+    // behind. grants is the case #1414 reported and needs pinning here: the
+    // "idempotent mutators" list above never named it, so nothing else in
+    // this file would catch a revert.
+    for (const name of ["upsert_row", "apps", "grants"]) {
+      expect(tool(name).annotations.idempotentHint, name).toBe(false);
     }
   });
 
@@ -271,12 +286,14 @@ describe("tool listing", () => {
       idempotentHint: true,
       openWorldHint: false,
     });
-    // Consolidated action-enum tool that CAN delete → destructive.
+    // Consolidated action-enum tool that CAN delete → destructive. Also
+    // exposes share_link_rotate, which mints a new share token and revokes
+    // the old one on every call, so idempotentHint is false, not true.
     expect(tool("apps").annotations).toEqual({
       title: "Manage Apps",
       readOnlyHint: false,
       destructiveHint: true,
-      idempotentHint: true,
+      idempotentHint: false,
       openWorldHint: false,
     });
     // The middle category: writes, but every action is additive. This sample

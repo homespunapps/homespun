@@ -1132,6 +1132,9 @@ const communityShape = {
       "unpublish",
       "get_config_contract",
       "install",
+      "upgrade_check",
+      "upgrade",
+      "revert",
       "list_pending",
       "get_submission",
       "approve",
@@ -1139,7 +1142,7 @@ const communityShape = {
       "set_trust_level",
     ])
     .describe(
-      "publish: publishes one of the caller's apps as a community template (app_id; optional title/description/category/tags). Privacy consequence: publishing makes the template content and the captured seed rows (the live rows of every seedOnInstall collection, captured at publish time) public to every platform user once approved, so an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private) is not safe to publish: seed data must be example-only. attest_example_only:true records that this was checked. The capture (html + manifest + seed rows) lands pending review, installable by its returned direct link but not listed until approved; an established publisher is fast-tracked, and the response's expedited/auto_approved fields report which path it took. unpublish: takes one of the caller's own published templates back down (snapshot_id). It removes the listing from the public gallery, from search, and from the direct snapshot install link. Existing installs keep working untouched, because an install is a fresh private copy rather than a live reference. It is idempotent (unpublishing an already-unpublished template is a no-op), and a snapshot that does not exist or belongs to someone else reads as not found either way. Publishing a new version is what puts the listing back. get_config_contract: read a template's install-time config contract by `ref` (a namespaced '<handle>/<slug>' or a snapshot id): its settings_collection, ordered config_steps (each with key/kind/required/secret/choices/default), and connect_steps (inbound hooks the app receives on). An 'upload' step wants a file, pre-uploaded with the attachments tool (scope agent) and passed as its attachment id. A template installed with connect_steps provisions hook URLs, which the `ingest` tool's list action returns for the new app_id, ready to wire into the external service. install: installs a template by `ref` for the caller, whose owning human becomes the owner. `config` is { stepKey: value } from the contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. An omitted required step is rejected. Returns the new app's id, slug, and url; installs always create a fresh private copy. list_pending / get_submission / approve / reject / set_trust_level are relay-operator-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows plus external_destinations, the hosts it can send data to or pull data from, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').",
+      "publish: publishes one of the caller's apps as a community template (app_id; optional title/description/category/tags). Privacy consequence: publishing makes the template content and the captured seed rows (the live rows of every seedOnInstall collection, captured at publish time) public to every platform user once approved, so an app whose seedOnInstall collections hold real personal data (names, emails, addresses, messages, anything private) is not safe to publish: seed data must be example-only. attest_example_only:true records that this was checked. The capture (html + manifest + seed rows) lands pending review, installable by its returned direct link but not listed until approved; an established publisher is fast-tracked, and the response's expedited/auto_approved fields report which path it took. unpublish: takes one of the caller's own published templates back down (snapshot_id). It removes the listing from the public gallery, from search, and from the direct snapshot install link. Existing installs keep working untouched, because an install is a fresh private copy rather than a live reference. It is idempotent (unpublishing an already-unpublished template is a no-op), and a snapshot that does not exist or belongs to someone else reads as not found either way. Publishing a new version is what puts the listing back. get_config_contract: read a template's install-time config contract by `ref` (a namespaced '<handle>/<slug>' or a snapshot id): its settings_collection, ordered config_steps (each with key/kind/required/secret/choices/default), and connect_steps (inbound hooks the app receives on). An 'upload' step wants a file, pre-uploaded with the attachments tool (scope agent) and passed as its attachment id. A template installed with connect_steps provisions hook URLs, which the `ingest` tool's list action returns for the new app_id, ready to wire into the external service. install: installs a template by `ref` for the caller, whose owning human becomes the owner. `config` is { stepKey: value } from the contract: a 'config' step's value is a string, an 'upload' step's value is a pre-uploaded attachment id. An omitted required step is rejected. Returns the new app's id, slug, and url; installs always create a fresh private copy. list_pending / get_submission / approve / reject / set_trust_level are relay-operator-only review actions: list_pending (the review queue, expedited submissions first), get_submission (a submission's full html+manifest+seedRows plus external_destinations, the hosts it can send data to or pull data from, by snapshot_id), approve (snapshot_id, lists it in the gallery + supersedes the app's prior approved version), reject (snapshot_id + a required note that lands in the publisher's app feed), set_trust_level (promote/demote a publisher by handle: handle + trust_level 'new'|'established').\n\nupgrade_check / upgrade / revert keep an already-installed app current with its source template (app_id). An install is a one-shot fork, so nothing updates on its own and there is no follow/pin: you have to ask. upgrade_check reports whether a newer live version of that app's template line exists, whether it would apply cleanly, and what it would newly be allowed to reach. upgrade applies it in place, keeping the app's address, collections and rows, and landing as a new version you can undo. It refuses outright, with no override, when the new version would strand rows the app already holds; when the new version merely asks for more than the installed one, pass accept_permissions:true, but only after showing the owner what `permission_lines` says. revert puts the app back on the version it ran before the last update, and refuses when rows written since would have nowhere to live under the older one.",
     ),
   ref: z
     .string()
@@ -1156,7 +1159,21 @@ const communityShape = {
   app_id: z
     .string()
     .optional()
-    .describe("publish only. The id of an app the caller owns, to publish."),
+    .describe(
+      "publish / upgrade_check / upgrade / revert. For publish, the app to publish. For the three upgrade actions, the installed app to act on: an installed template is a fork, so the question is whether a newer version of the template that app came from exists, which only the app can answer.",
+    ),
+  accept_permissions: z
+    .boolean()
+    .optional()
+    .describe(
+      "upgrade only. Required when upgrade_check reports a non-empty `permissions` diff, meaning the new version asks for more than the installed one (new hosts it can send data to, new device capabilities, a service worker, CDN scripts). Never assume it: show the owner `permission_lines` and set this only once they have agreed. It does not clear a version that would strand rows, which nothing can.",
+    ),
+  expect_version: z
+    .string()
+    .optional()
+    .describe(
+      "upgrade only. The version upgrade_check reported. When given, the upgrade is refused if the offer has moved since, so a publisher shipping again mid-flight cannot slip a version past you that you never showed anyone.",
+    ),
   title: z
     .string()
     .optional()
@@ -1588,14 +1605,20 @@ export const TOOLS: ToolDef[] = [
   {
     name: "upsert_row",
     description:
-      "Create a row in a v2 app's collection, or return the existing row when `key` is already present (deduped:true). Row creation goes through this tool; there is no separate strict-create verb. Omit `key` to add a new row with a server-generated key, or pass `key` to ensure a row exists at that key. The collection must be declared in the app's manifest with 'agent' in its `write` list, which is the list that gates creates. When `key` matches a row the collection's `read` list does not reach for this caller, the result is row_not_found rather than the row, matching what get_row would return, so this never reads past `read`. Returns { row, deduped? }.",
+      "Create a row in a v2 app's collection, or return the existing row when `key` is already present (deduped:true). Row creation goes through this tool; there is no separate strict-create verb. Omit `key` to add a new row with a server-generated key, or pass `key` to ensure a row exists at that key. Passing `key` is also what makes a retry safe: a call unsure whether it already landed can repeat it and get the same row back rather than a duplicate. Without `key`, a retry mints a second row with its own server-generated key, since there is nothing to dedup against. The collection must be declared in the app's manifest with 'agent' in its `write` list, which is the list that gates creates. When `key` matches a row the collection's `read` list does not reach for this caller, the result is row_not_found rather than the row, matching what get_row would return, so this never reads past `read`. Returns { row, deduped? }.",
     inputSchema: upsertRowShape,
     annotations: {
       title: "Upsert Row",
       readOnlyHint: false,
       // Create-or-return-existing. Removes nothing.
       destructiveHint: false,
-      idempotentHint: true,
+      // NOT idempotent as a tool-level default: idempotence here is a
+      // per-call property of `key`, not a per-tool one, and a single boolean
+      // cannot express "safe when this argument is passed, unsafe
+      // otherwise." A call made without `key` mints a second row on retry,
+      // so the safe default is false; the description spells out the
+      // `key` condition that makes a retry safe, for a caller that reads it.
+      idempotentHint: false,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -1775,7 +1798,12 @@ export const TOOLS: ToolDef[] = [
       readOnlyHint: false,
       // Destructive: `delete` removes an app.
       destructiveHint: true,
-      idempotentHint: true,
+      // NOT idempotent: `share_link_rotate` issues a new share token and
+      // revokes the old link on every call, so a retried call invalidates a
+      // link someone may already hold and mints a different one rather than
+      // having no additional effect. Matches the `grants` tool, which is the
+      // same shape.
+      idempotentHint: false,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -1980,7 +2008,11 @@ export const TOOLS: ToolDef[] = [
       readOnlyHint: false,
       // Destructive: `revoke` kills a live capability URL.
       destructiveHint: true,
-      idempotentHint: true,
+      // NOT idempotent: `mint` creates a fresh capability URL each call, so
+      // a retried call leaves a second live grant link behind rather than
+      // having no additional effect. Matches the `key` tool, which is the
+      // same shape.
+      idempotentHint: false,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -2861,6 +2893,39 @@ export const TOOLS: ToolDef[] = [
             return jsonResult(
               await client.installCommunityTemplate(ref, config),
             );
+          }
+          case "upgrade_check": {
+            const appId = str(args, "app_id");
+            if (appId === undefined) {
+              return invalidArgs("upgrade_check requires `app_id`");
+            }
+            return jsonResult(await client.checkTemplateUpgrade(appId));
+          }
+          case "upgrade": {
+            const appId = str(args, "app_id");
+            if (appId === undefined) {
+              return invalidArgs("upgrade requires `app_id`");
+            }
+            const opts: {
+              acceptPermissions?: boolean;
+              expectVersion?: string;
+            } = {};
+            // Only ever set when the caller passed it. An absent field must
+            // not satisfy the consent gate, or an agent could accept a
+            // widening on its owner's behalf by simply not mentioning it.
+            if (args["accept_permissions"] === true) {
+              opts.acceptPermissions = true;
+            }
+            const expect = str(args, "expect_version");
+            if (expect !== undefined) opts.expectVersion = expect;
+            return jsonResult(await client.upgradeTemplate(appId, opts));
+          }
+          case "revert": {
+            const appId = str(args, "app_id");
+            if (appId === undefined) {
+              return invalidArgs("revert requires `app_id`");
+            }
+            return jsonResult(await client.revertTemplateUpgrade(appId));
           }
           case "list_pending": {
             const opts: { limit?: number; cursor?: string } = {};

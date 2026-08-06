@@ -23,6 +23,7 @@ import {
   upsertProfile,
 } from "../store.js";
 import { printJson, fail } from "../output.js";
+import { resolveSecretFlag } from "../input.js";
 
 const showHelp = `homespun config show — show the resolved relay config
 
@@ -96,7 +97,10 @@ If <profile> already exists, the existing values are overwritten.
 
 Options:
   --url <url>         Relay base URL.            REQUIRED.
-  --api-key <key>     Agent API key.             REQUIRED.
+  --api-key <key|->   Agent API key.              REQUIRED.
+                       Pass - to read it from stdin, or set
+                       HOMESPUN_CONFIG_API_KEY, instead of putting it on
+                       the command line where ps and shell history can see it.
   -h, --help          Show this help.
 
 Output (stdout, JSON):
@@ -183,7 +187,11 @@ async function runConfigAdd(args: ParsedArgs): Promise<void> {
     );
   }
   const url = args.flags.get("url");
-  const apiKey = args.flags.get("api-key");
+  const apiKey = await resolveSecretFlag(
+    args.flags.get("api-key"),
+    "HOMESPUN_CONFIG_API_KEY",
+    "--api-key",
+  );
   if (!url) {
     fail(
       "--url is required — usage: homespun config add <profile> --url <url> --api-key <key>",

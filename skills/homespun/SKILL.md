@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.48 -->
+<!-- homespun skill v1.6.49 -->
 
 # homespun
 
@@ -1774,6 +1774,18 @@ An anonymous visitor gets the live count but a `GET /_hs/c/signups` (or
 owner-only. The count is a whole-collection total of live (non-deleted) rows;
 there is no field projection and no filtering in v1. A collection that never
 declared `countRead` refuses the count with `403 collection_count_forbidden`.
+
+This recipe is what makes the number public, on purpose: the count moving
+from 49 to 50 tells every visitor a row was just created (or from 50 to 49
+that one was deleted), even though the row's own fields never leave the
+server. Fine for a spots-left counter, where that fact is the whole point.
+Avoid this shape on a collection where a row's mere existence is itself
+sensitive (a waitlist for something embarrassing, an incident log); scope
+`countRead` to match `read` instead (see "Known leak" above), or accept the
+count is not truly private. Deploying a collection with this exact pair
+returns a `warnings[]` entry in the deploy result naming the collection, the
+same mechanism the schedules-without-timezone warning above uses; it never
+blocks the deploy.
 
 <!-- homespun:core:end -->
 

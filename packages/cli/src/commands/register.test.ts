@@ -61,7 +61,7 @@ let calls: string[];
 /** Answer every relay call with one scripted response, recording the paths. */
 function mockFetch(responses: Array<{ status: number; body: unknown }>): void {
   vi.spyOn(globalThis, "fetch").mockImplementation((async (
-    input: RequestInfo | URL,
+    input: Parameters<typeof fetch>[0],
   ) => {
     calls.push(String(input));
     const next = responses.shift();

@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { runConfig } from "./config.js";
 import { upsertProfile, readStore, storePath } from "../store.js";
 import { parseArgs } from "../argv.js";
@@ -23,6 +24,7 @@ let savedXdg: string | undefined;
 let savedUrl: string | undefined;
 let savedKey: string | undefined;
 let savedProfile: string | undefined;
+let savedConfigApiKey: string | undefined;
 let stdout: string;
 let stderr: string;
 let exitCode: number | undefined;
@@ -33,10 +35,12 @@ beforeEach(() => {
   savedUrl = process.env.HOMESPUN_URL;
   savedKey = process.env.HOMESPUN_API_KEY;
   savedProfile = process.env.HOMESPUN_PROFILE;
+  savedConfigApiKey = process.env.HOMESPUN_CONFIG_API_KEY;
   process.env.XDG_CONFIG_HOME = dir;
   delete process.env.HOMESPUN_URL;
   delete process.env.HOMESPUN_API_KEY;
   delete process.env.HOMESPUN_PROFILE;
+  delete process.env.HOMESPUN_CONFIG_API_KEY;
   stdout = "";
   stderr = "";
   exitCode = undefined;
@@ -52,6 +56,11 @@ beforeEach(() => {
     exitCode = code;
     throw new Error(`__exit_${code}__`);
   }) as never);
+  // Pretend stdin is a TTY by default, matching a real interactive shell.
+  Object.defineProperty(process.stdin, "isTTY", {
+    configurable: true,
+    get: () => true,
+  });
 });
 
 afterEach(() => {
@@ -64,6 +73,11 @@ afterEach(() => {
   else process.env.HOMESPUN_API_KEY = savedKey;
   if (savedProfile === undefined) delete process.env.HOMESPUN_PROFILE;
   else process.env.HOMESPUN_PROFILE = savedProfile;
+  if (savedConfigApiKey === undefined) {
+    delete process.env.HOMESPUN_CONFIG_API_KEY;
+  } else {
+    process.env.HOMESPUN_CONFIG_API_KEY = savedConfigApiKey;
+  }
   vi.restoreAllMocks();
 });
 
@@ -72,6 +86,32 @@ async function run(tokens: string[]): Promise<void> {
     await runConfig(argv(tokens));
   } catch (e) {
     if (!(e instanceof Error && e.message.startsWith("__exit_"))) throw e;
+  }
+}
+
+// Swap process.stdin for a piped Readable for the duration of `fn`, then
+// restore it — mirrors the pattern in feedback.test.ts / taste.test.ts.
+async function withPipedStdin(
+  lines: string[],
+  fn: () => Promise<void>,
+): Promise<void> {
+  Object.defineProperty(process.stdin, "isTTY", {
+    configurable: true,
+    get: () => false,
+  });
+  const piped = Readable.from(lines) as unknown as typeof process.stdin;
+  const originalStdin = process.stdin;
+  Object.defineProperty(process, "stdin", {
+    configurable: true,
+    get: () => piped,
+  });
+  try {
+    await fn();
+  } finally {
+    Object.defineProperty(process, "stdin", {
+      configurable: true,
+      get: () => originalStdin,
+    });
   }
 }
 
@@ -234,6 +274,45 @@ describe("homespun config add", () => {
     await run(["add", "dev"]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("--url");
+  });
+
+  it("reads --api-key from stdin when '-' is given", async () => {
+    await withPipedStdin(["pk_from_stdin\n"], () =>
+      run(["add", "dev", "--url", "https://dev", "--api-key", "-"]),
+    );
+    expect(exitCode).toBeUndefined();
+    expect(readStore().profiles["dev"]).toEqual({
+      url: "https://dev",
+      apiKey: "pk_from_stdin",
+    });
+  });
+
+  it("refuses --api-key - when stdin is a TTY", async () => {
+    await run(["add", "dev", "--url", "https://dev", "--api-key", "-"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("TTY");
+    expect(readStore().profiles["dev"]).toBeUndefined();
+  });
+
+  it("falls back to HOMESPUN_CONFIG_API_KEY when --api-key is omitted", async () => {
+    process.env.HOMESPUN_CONFIG_API_KEY = "pk_from_env";
+    await run(["add", "dev", "--url", "https://dev"]);
+    expect(exitCode).toBeUndefined();
+    expect(readStore().profiles["dev"]).toEqual({
+      url: "https://dev",
+      apiKey: "pk_from_env",
+    });
+  });
+
+  it("still accepts --api-key on argv, with a stderr warning", async () => {
+    await run(["add", "dev", "--url", "https://dev", "--api-key", "pk_dev"]);
+    expect(exitCode).toBeUndefined();
+    expect(readStore().profiles["dev"]).toEqual({
+      url: "https://dev",
+      apiKey: "pk_dev",
+    });
+    expect(stderr).toContain("--api-key");
+    expect(stderr).toContain("warning:");
   });
 
   it("rejects invalid profile names", async () => {

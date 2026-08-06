@@ -24,7 +24,7 @@ export async function runTemplate(args: ParsedArgs): Promise<void> {
   }
   if (verb === undefined) {
     fail(
-      "missing verb: homespun template <publish|unpublish|config-contract|install|list-pending|show|approve|reject>",
+      "missing verb: homespun template <publish|unpublish|config-contract|install|upgrade-check|upgrade|revert|list-pending|show|approve|reject>",
       "invalid_args",
     );
   }
@@ -47,6 +47,12 @@ export async function runTemplate(args: ParsedArgs): Promise<void> {
       return runConfigContract(sub);
     case "install":
       return runInstall(sub);
+    case "upgrade-check":
+      return runUpgradeCheck(sub);
+    case "upgrade":
+      return runUpgrade(sub);
+    case "revert":
+      return runRevert(sub);
     case "list-pending":
       return runListPending(sub);
     case "show":
@@ -57,7 +63,7 @@ export async function runTemplate(args: ParsedArgs): Promise<void> {
       return runReject(sub);
     default:
       fail(
-        `unknown verb '${verb}' (homespun template <publish|unpublish|config-contract|install|list-pending|show|approve|reject>)`,
+        `unknown verb '${verb}' (homespun template <publish|unpublish|config-contract|install|upgrade-check|upgrade|revert|list-pending|show|approve|reject>)`,
         "invalid_args",
       );
   }
@@ -280,6 +286,67 @@ async function runReject(args: ParsedArgs): Promise<void> {
         note: note!,
       }),
     );
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// upgrade-check / upgrade / revert (#1502)
+//
+// These take an APP, not a template ref. An installed template is a fork, so
+// the question is "is there a newer version of the template THIS app came
+// from", which only the app can answer.
+// ---------------------------------------------------------------------------
+
+async function runUpgradeCheck(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("template", "upgrade-check"));
+  const appId = args.positionals[0];
+  if (!appId) {
+    fail("usage: homespun template upgrade-check <app>", "invalid_args");
+  }
+  const client = makeClient(args);
+  try {
+    printJson(await client.checkTemplateUpgrade(appId!));
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+async function runUpgrade(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("template", "upgrade"));
+  const appId = args.positionals[0];
+  if (!appId) {
+    fail("usage: homespun template upgrade <app>", "invalid_args");
+  }
+  const client = makeClient(args);
+  const expectVersion = args.flags.get("expect-version");
+  try {
+    printJson(
+      await client.upgradeTemplate(appId!, {
+        // Only ever true when the flag is present. An omitted flag must not
+        // satisfy the consent gate: the point of the gate is that somebody
+        // looked at what the new version is asking for.
+        ...(args.bools.has("accept-permissions")
+          ? { acceptPermissions: true }
+          : {}),
+        ...(expectVersion !== undefined ? { expectVersion } : {}),
+      }),
+    );
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+async function runRevert(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("template", "revert"));
+  const appId = args.positionals[0];
+  if (!appId) {
+    fail("usage: homespun template revert <app>", "invalid_args");
+  }
+  const client = makeClient(args);
+  try {
+    printJson(await client.revertTemplateUpgrade(appId!));
   } catch (e) {
     failFromError(e);
   }
