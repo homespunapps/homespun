@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.49 -->
+<!-- homespun skill v1.6.50 -->
 
 # homespun
 
@@ -869,6 +869,46 @@ Fields, exactly:
       the collection's own `update` / `delete` list, so the exception opens the
       gate rather than granting the verb, and an `update` list beside it is
       legal and meaningful.
+  - **`unique`**: optional array of top-level field names. Declaring a field
+    here means at most one **live** row in the collection may hold any given
+    value for it, checked and enforced on every create, upsert, and update
+    (string values are compared trimmed and case-folded; a row that leaves the
+    field absent, `null`, or empty claims no slot, so many rows may share "no
+    value"). A colliding write is refused `409 unique_conflict` naming the
+    field, with a hint to send a different value or to upsert on that field
+    instead of creating a duplicate. Deleting a row frees the value it held,
+    which is also why a restore can lose a race: `409 restore_conflict` fires
+    when another live row claimed that value while this row sat tombstoned,
+    and the row stays recoverable so you can resolve it and restore again. It
+    is also the field an ingest rule's `upsertOn` merge key must name: a merge
+    key with no enforced uniqueness would let two concurrent deliveries create
+    duplicate rows instead of merging into one. **Adding a field to `unique`
+    on a redeploy is never a compat break by itself, even on a collection that
+    already holds live rows:** the relay backfills the constraint over every
+    row already there, and if two or more of them already share a value for
+    the new field, the WHOLE redeploy is rejected `409
+    unique_backfill_conflict` naming the field, rather than landing a
+    constraint the current data cannot hold. Delete or edit the colliding
+    rows and redeploy again.
+  - **`retention`**: optional object, `{ maxRows?, maxAgeDays? }` with at
+    least one bound present. Caps how many rows the collection keeps, by count
+    and/or by age: a background sweeper hard-deletes live, non-seed rows over
+    either bound on a slow cadence. The prune is feed-silent (no tombstone, no
+    per-row delete event), so a watching client learns via a resync signal
+    rather than a flood of deletes. The author default, the owner's runtime
+    override, and the full mechanics live at
+    https://docs.homespun.dev/agents/collection-retention/; this is only the
+    manifest shape.
+  - **`mirror`**: optional string, one of `"auto"` (default), `"eager"`, or
+    `"server"`. Decides how much of the collection the browser's local mirror
+    holds. `"auto"` mirrors rows up to the per-account cap and then flags the
+    collection server-backed; `"eager"` always mirrors every row, ignoring
+    that cap; `"server"` never mirrors at all, so the SDK marks the collection
+    server-backed from the start. A server-backed collection reads through
+    `homespun.collections.list()` and `.count()` instead of the synchronous
+    `.snapshot()`, since there is no full local copy to read synchronously.
+    Reach for `"server"` on a collection too large, or too private in
+    aggregate, for every visitor's browser to hold a complete copy of.
   - **`seedOnInstall`**: optional boolean (default `false`). Only meaningful on
     a *template* (a published/first-party snapshot someone installs). Set `true`
     to pre-fill this collection with the template's starter rows when the
@@ -2349,8 +2389,9 @@ credential itself wrote last. This is NOT a grant link: a grant link
 (`homespun grants mint`) hands ONE person a role-based capability URL; a
 service credential is a static bearer token for a MACHINE, bound to one app,
 with an allowlist instead of a role. Read `references/webhooks.md` for how
-`connections` and the manifest's `webhooks`/`ingest` fit into the same
-bring-your-own-backend picture.
+`connections` and the manifest's `webhooks` fit into the same
+bring-your-own-backend picture; the inbound counterpart, a catch-hook that
+RECEIVES data instead of sending it, is `references/ingest.md`.
 
 **Storing the credential a webhook rule authenticates with: connections.**
 `homespun connections` (MCP: `connections`) manages the stored credential (a
@@ -2371,6 +2412,26 @@ the URL (it never fetches it) for you to hand to the signed-in owner to open.
 Read `references/webhooks.md` before creating an oauth2 connection: it has the
 full field list, the host-binding exfiltration defence, and the redirect URI
 to register with the provider first.
+
+**Receiving data from other systems: ingest catch-hooks.** The inbound
+counterpart to `webhooks` above: instead of the relay pushing a row change
+out, an external system (Stripe, Zapier, Make, Home Assistant, a GitHub repo,
+or anything that can POST JSON) POSTs to a secret URL and the relay writes it
+straight into a declared collection, with no agent online to receive it.
+Declared in the manifest's `ingest` array, and managed with `homespun ingest`.
+
+> **Read `references/ingest.md` before declaring an `ingest` rule.** It has
+> the full field list (`mode`, `upsertOn`, `map`, `dedupeKey`, `handshake`,
+> `verify`, `wake`), the two forms `dedupeKey` can take (a body dot-path, or a
+> `header:<name>` reference for a sender like GitHub whose delivery id lives
+> in a header), the `if_match` optimistic-lock body field for a
+> `mode: "upsert"` rule, and the one silent trap: an `append` rule with no
+> `dedupeKey` never deduplicates a redelivery, so a retry from a sender that
+> retries lands as a second row. Do not author an ingest rule from memory:
+> getting `dedupeKey` or `upsertOn` wrong either fails to catch a real
+> redelivery or gets the deploy rejected outright.
+>
+> Over HTTP rather than on disk: `homespun skill show --section ingest`.
 
 **Community templates over MCP, not the CLI.** Publishing an app as a community
 template, taking your own listing back down, reading a template's install-time

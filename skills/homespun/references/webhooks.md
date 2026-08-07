@@ -290,6 +290,49 @@ n8n **catch-hook URL** and let that automation platform hold the CRM credentials
 Zero auth on the Homespun side, and the same signed envelope arrives at the
 catch-hook.
 
+## Testing a receiver locally
+
+`http://localhost:3000/hook` - or any other loopback, RFC1918, CGNAT, or
+link-local address, or a `*.local` / `*.internal` / `metadata.google.internal`
+hostname - is refused as a webhook target, deliberately and without exception.
+This is the SSRF guard described under the `url` rule above: it re-resolves
+the host at send time and pins the connection to the resolved address, so
+nothing on the relay's own network is reachable through a webhook rule. There
+is no flag, setting, or manifest key that relaxes this for development; the
+same check runs every time, for every app.
+
+From the app author's side this is not a crash. The write that triggered the
+rule still commits, the delivery is enqueued exactly as it would be for a
+public target, and only the send attempt fails - visible as a normal failed
+delivery row (`GET /v1/apps/:id/webhooks/deliveries`) with an error such as
+`callback.url resolves to a non-routable address`, retried and eventually
+marked `failed` like any other unreachable target.
+
+To exercise a receiver you are running on your own machine against the hosted
+relay, put a public tunnel in front of it and point the rule's `url` (or the
+value an `urlFromSetting` field resolves to) at the tunnel instead of
+`localhost`:
+
+1. Start the receiver locally, e.g. listening on `http://localhost:3000`.
+2. Start a tunnel to it and copy the `https://` URL it prints:
+   - **ngrok**: `ngrok http 3000` -> `https://<subdomain>.ngrok-free.app`
+   - **cloudflared**: `cloudflared tunnel --url http://localhost:3000` ->
+     `https://<subdomain>.trycloudflare.com`
+3. Use that public URL as the rule's target, e.g.
+   `https://<subdomain>.ngrok-free.app/hook`. It is an ordinary public `https`
+   host as far as the SSRF guard is concerned, so it passes the same check any
+   other receiver would - nothing about the guard is bypassed or weakened.
+4. Trigger the rule (create or update a row it matches) and watch requests
+   reach the local receiver through the tunnel.
+
+The tunnel is throwaway dev infrastructure and has no bearing on the app
+itself: nothing in the manifest, the collections, or the webhook rule changes
+between "pointed at a tunnel" and "pointed at a real public endpoint" except
+the URL. Most free tunnel tiers mint a new random subdomain on every restart,
+so update the rule's `url` (or the settings row, for `urlFromSetting`) each
+time the tunnel is restarted, or the delivery will keep failing against a
+stale address.
+
 ## A target the installer supplies: `urlFromSetting`
 
 Instead of `url`, a rule may name **`urlFromSetting`**: the name of a top-level
