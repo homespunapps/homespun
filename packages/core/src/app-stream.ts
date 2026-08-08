@@ -59,6 +59,13 @@ export interface AppStreamHandlers {
   onCaughtUp?: () => void;
   /** Fired on a `resync` frame — the caller should full-resync each collection. */
   onResync?: () => void;
+  /**
+   * A task was queued for this app: claim now rather than waiting out the poll
+   * interval. A HINT ONLY, carrying nothing, so a consumer that never receives one
+   * (no socket, dropped frame, older relay) must still poll and lose nothing but
+   * time. Only agent-key sockets receive it.
+   */
+  onAgentTaskAvailable?: () => void;
   /** Fired on the terminal `_dormant` frame (the app went dormant). */
   onDormant?: () => void;
   /** Fired on the terminal `_suspended` frame (an operator suspended the
@@ -160,6 +167,9 @@ export function openAppStream(
       }
       case "resync":
         handlers.onResync?.();
+        return;
+      case "agent-task.available":
+        handlers.onAgentTaskAvailable?.();
         return;
       case "_dormant":
         handlers.onDormant?.();

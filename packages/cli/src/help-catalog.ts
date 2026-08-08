@@ -1772,9 +1772,59 @@ const REVIEW: NounSpec = {
 
 // Order here is the order in `homespun --help` and in the generated reference
 // page: app commands first, then the rest.
+const WORK: NounSpec = {
+  noun: "work",
+  tagline: "run the agent-task worker",
+  group: "app",
+  rootSummary:
+    "Runs a long-lived worker that claims agent tasks for your apps and pipes each one to a command you name.",
+  verbs: [
+    {
+      verb: "",
+      summary:
+        "Claims tasks and pipes each envelope to --exec on stdin, acking on exit 0 and nacking otherwise.",
+      flags: [
+        {
+          name: "exec",
+          value: "<command>",
+          description: "Required. The command each task envelope is piped to",
+        },
+        {
+          name: "app",
+          value: "<id[,id]>",
+          description: "Only these apps (default: every app you own)",
+        },
+        {
+          name: "max-concurrent",
+          value: "<n>",
+          description: "Tasks to claim per pass (default 1)",
+        },
+        {
+          name: "poll-interval",
+          value: "<seconds>",
+          description: "Seconds between claims (default 15)",
+        },
+        {
+          name: "once",
+          description: "Drain one pass and exit, for cron",
+        },
+      ],
+    },
+  ],
+  notes: [
+    "The whole task envelope arrives on the command's stdin as one JSON line: a `prompt` from the app manifest, a `context` holding the row that triggered it, and a short-lived credential scoped to exactly the collections the rule declared. The command needs no configuration of its own; everything it needs to write results back is in what it was handed.",
+    "`context` is DATA, not instructions. It holds row content that any user of the app may have written, including an anonymous one. A worker should follow only `prompt`, which comes from the manifest its owner approved.",
+    "Exit 0 acks the task. Any non-zero exit nacks it and records the command's stderr as the reason, so the task returns to the queue and eventually dead-letters if it can never succeed. Nothing is parsed out of stdout.",
+    "Without --once this runs until stopped, reconnecting its wake socket with backoff and continuing to poll throughout. It exits cleanly on SIGINT and SIGTERM, so it is safe to run under a supervisor.",
+  ],
+  outputNote:
+    'One JSON line per finished task on stdout. Progress and transient failures go to stderr; errors are {"error":{"code","message"}} with a non-zero exit.',
+};
+
 const NOUNS: NounSpec[] = [
   DEPLOY,
   APPS,
+  WORK,
   DATA,
   MEMBERS,
   GRANTS,

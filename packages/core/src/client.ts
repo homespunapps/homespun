@@ -1688,7 +1688,7 @@ export class HomespunClient {
   ): Promise<BatchResult> {
     const body: {
       rows: BatchRowInput[];
-      suppress?: ("notify" | "webhooks")[];
+      suppress?: ("notify" | "webhooks" | "agentTasks")[];
       emitEffects?: boolean;
       on?: string;
     } = { rows };
@@ -2677,7 +2677,7 @@ export interface BatchResult {
  * specific subset. Honored only for an owner/agent key.
  */
 export interface BatchWriteOptions {
-  suppress?: ("notify" | "webhooks")[];
+  suppress?: ("notify" | "webhooks" | "agentTasks")[];
   emitEffects?: boolean;
   /**
    * Wave C1 natural-key upsert: match (or create) each row on this

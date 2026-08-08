@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.52 -->
+<!-- homespun skill v1.6.53 -->
 
 # homespun
 
@@ -2237,6 +2237,30 @@ MCP-only convenience.
 An app can go **dormant** after a period of inactivity; a dormant app's live
 watchers get a terminal `{"type":"_dormant"}` frame. `homespun apps wake <app>`
 brings it back before you deploy/read/write against it again.
+
+**Work described in words, run on the owner's machine.** An app can declare
+`x-homespun-manifest.agentTasks`: a rule that turns a row write into a unit of work for the
+app owner's own agent. The relay queues it and runs nothing itself. Reach for it when the
+work is easier to describe than to implement, like reading a photographed receipt.
+
+> **Read `references/agent-tasks.md` before declaring an `agentTasks` rule**
+> (alongside this SKILL.md). It has the field table, how to write a prompt, what
+> `reads`/`writes` actually grant, the trusted/untrusted split between the prompt and
+> the row data, the loop rule the validator enforces at deploy, and how the owner runs
+> a worker. Do not author one from memory: the loop rule and the credential scoping are
+> not guessable, and getting them wrong either spends real model calls in a cycle or
+> hands an executor more of the owner's data than the app needs.
+>
+> If this skill reached you over HTTP rather than as files on disk, fetch it with
+> `homespun skill show --section agent-tasks`, or
+> `GET <relay>/skills/homespun/references/agent-tasks.md`.
+
+A socket opened with an **agent key** also receives
+`{"type":"agent-task.available"}` when a task is queued for the app. It is a wake
+hint and carries nothing else: no task id, no prompt, no row data. A worker claims
+through `POST /v1/agent-tasks/claim`, which is what authoritatively says what work
+exists, so a worker that misses the frame or never opens a socket still drains its
+queue by polling and loses nothing but time. Browser sockets never receive it.
 
 **Shipping assets with your app.** An app can ship files alongside its HTML:
 images, fonts, audio, video, data. They are served from the app's own origin at

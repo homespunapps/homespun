@@ -23,6 +23,7 @@ import {
 const DISPATCHED = [
   "deploy",
   "apps",
+  "work",
   "data",
   "members",
   "grants",

@@ -36,6 +36,7 @@ import { runBlob } from "./commands/attachment.js";
 import { runSkill } from "./commands/skill.js";
 import { runDeploy } from "./commands/deploy.js";
 import { runApps } from "./commands/apps.js";
+import { runWork } from "./commands/work.js";
 import { runData } from "./commands/data.js";
 import { runMembers } from "./commands/members.js";
 import { runGrant } from "./commands/grant.js";
@@ -134,6 +135,9 @@ async function main(): Promise<void> {
       break;
     case "apps":
       await runApps(args);
+      break;
+    case "work":
+      await runWork(args);
       break;
     case "data":
       await runData(args);
