@@ -41,7 +41,7 @@ interface Envelope {
   [k: string]: unknown;
 }
 
-interface WorkOptions {
+export interface WorkOptions {
   appIds: string[];
   exec: string;
   maxConcurrent: number;
@@ -110,7 +110,7 @@ export async function runWork(args: ParsedArgs): Promise<void> {
 
   const socket = opts.once
     ? null
-    : openWakeSocket(opts, cfg.apiKey, base, () => wake?.());
+    : await openWakeSocket(opts, cfg.apiKey, base, () => wake?.());
 
   try {
     for (;;) {
@@ -296,29 +296,78 @@ async function report(
  * worker that killed itself over a lost optimisation would be worse than one that
  * kept polling.
  */
-function openWakeSocket(
+/**
+ * Exported for testing. This function is the one part of `work` that had NO test and
+ * shipped broken twice over (a URL built from the app id rather than its real
+ * location, and a swallowed connect error), so it is worth being able to point a test
+ * straight at it rather than only at the command that calls it.
+ */
+export async function openWakeSocket(
   opts: WorkOptions,
   apiKey: string,
   base: string,
   onWake: () => void,
-): { close: () => void } | null {
+): Promise<{ close: () => void } | null> {
   if (opts.appIds.length !== 1) return null;
   const appId = opts.appIds[0]!;
 
+  // ASK THE RELAY where the app lives. This was reconstructed as `${base}/a/${appId}/`,
+  // which is wrong in two ways at once: an app is served under its SLUG, not its id,
+  // and on a usercontent deployment it is a different origin entirely
+  // (`<slug>.homespunapps.com`) rather than a path on the API host. The socket
+  // therefore never connected, and the reconnect logic below reported it as
+  // "wake socket lost", which reads like a transient blip rather than a URL that
+  // could never work. Found by running a worker against a live relay; no test
+  // covered this function at all.
+  //
+  // A failure here is NOT fatal: polling still drains the queue, so a worker that
+  // cannot resolve its app keeps working, just without the wake hint.
+  let appUrl: string;
+  try {
+    const res = await fetch(`${base}/v1/apps/${appId}`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) {
+      warn(
+        `cannot resolve app ${appId} for the wake socket (${res.status}); polling only`,
+      );
+      return null;
+    }
+    appUrl = ((await res.json()) as { url?: string }).url ?? "";
+    if (!appUrl) {
+      warn(`app ${appId} reports no url; polling only`);
+      return null;
+    }
+  } catch (err) {
+    warn(
+      `cannot resolve app ${appId} for the wake socket (${
+        err instanceof Error ? err.message : String(err)
+      }); polling only`,
+    );
+    return null;
+  }
+
   let closed = false;
+  let connectedOnce = false;
   let delay = RECONNECT_MIN_MS;
   let handle: { close: () => void } | null = null;
   let announcedOutage = false;
 
   const connect = (): void => {
     if (closed) return;
-    const wsUrl = appWsUrlFromAppUrl(`${base}/a/${appId}/`);
+    const wsUrl = appWsUrlFromAppUrl(appUrl);
     handle = openAppStream(
-      { wsUrl, apiKey, since: Number.MAX_SAFE_INTEGER },
+      // `since: 0`, not a huge sentinel. The intent was "do not replay history", and
+      // MAX_SAFE_INTEGER expressed that by sending a cursor the relay will not accept,
+      // so the socket was refused and the wake frame never arrived. The worker sets no
+      // `onEntry` handler at all, so a replayed batch is discarded as it is parsed:
+      // there is nothing to avoid.
+      { wsUrl, apiKey, since: 0 },
       {
         onHello: () => {
           // A successful connect resets the backoff, so a flapping link does not
           // inherit the previous outage's delay.
+          connectedOnce = true;
           delay = RECONNECT_MIN_MS;
           if (announcedOutage) {
             warn("wake socket reconnected");
@@ -326,16 +375,26 @@ function openWakeSocket(
           }
         },
         onAgentTaskAvailable: onWake,
-        onClose: () => scheduleReconnect(),
-        onError: () => scheduleReconnect(),
+        onClose: ({ code, reason }) =>
+          scheduleReconnect(`closed ${code}${reason ? ": " + reason : ""}`),
+        // The error is REPORTED, not swallowed. Discarding it is what made the
+        // original URL bug take three guesses to find: every failure looked
+        // identical from the outside.
+        onError: (err) =>
+          scheduleReconnect(err instanceof Error ? err.message : String(err)),
       },
     );
   };
 
-  const scheduleReconnect = (): void => {
+  const scheduleReconnect = (why: string): void => {
     if (closed) return;
     if (!announcedOutage) {
-      warn("wake socket lost; polling continues while it reconnects");
+      warn(
+        (connectedOnce
+          ? "wake socket lost; polling continues while it reconnects"
+          : "wake socket could not connect; polling only until it does") +
+          ` (${why})`,
+      );
       announcedOutage = true;
     }
     const wait = delay;
