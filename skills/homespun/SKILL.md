@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.54 -->
+<!-- homespun skill v1.6.55 -->
 
 # homespun
 
@@ -714,11 +714,20 @@ Fields, exactly:
     updates unless the collection declares its own `update` list, so on a
     collection with no `update`, `write` means "may add rows **and** may
     overwrite every row already in the collection, including other people's".
-    Read "Who may change a row" below before you leave it that way.
-  - **`update`**: optional array of roles that may change an EXISTING row
-    (`update`, and the update half of an `on:`-field upsert). **Omitted means
-    "same as `write`"**, so a collection that leaves it off is governed by
-    `write` for both halves. Declare it to split adding from editing:
+    Read "Who may change a row" below before you leave it that way. Putting
+    `"anyone"` in `write` makes `update` **required**, so the dangerous half of
+    that sentence can no longer be reached by saying nothing.
+  - **`update`**: array of roles that may change an EXISTING row (`update`, and
+    the update half of an `on:`-field upsert). **Omitted means "same as
+    `write`"**, so a collection that leaves it off is governed by `write` for
+    both halves. **REQUIRED whenever `write` includes `"anyone"`**: leaving it
+    off there is refused at deploy with `permission_role_invalid`, because the
+    inherited list would let any anonymous caller overwrite rows it did not
+    create. Every affirmative answer stays legal, including `update: ["anyone"]`
+    if you genuinely want the inherited behaviour, said out loud. The one
+    exception is `appendOnly: true`, which already refuses every update and so
+    neither needs nor permits an `update` list. Optional everywhere else.
+    Declare it to split adding from editing:
     `write: ["anyone"]` plus `update: ["creator"]` is "anyone may add a row,
     only the person who created it may change it", which `write` alone cannot
     express. It takes the same subjects `delete` does, including the
@@ -1072,7 +1081,10 @@ how you say *whose* rows.
 
 **Wrong**, and it looks careful: any signed-in visitor may rewrite any entry,
 and the rewrite makes that entry theirs, so it drops out of its original
-writer's `read: ["author"]` view at the same moment.
+writer's `read: ["author"]` view at the same moment. **This no longer deploys
+at all**: a collection with `"anyone"` in `write` and no `update` list is
+refused `permission_role_invalid`, because the omitted list would inherit
+`write`. It is kept here because it is the shape people reach for.
 
 ```json
 "entries": {

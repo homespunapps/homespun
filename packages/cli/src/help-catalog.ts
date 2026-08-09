@@ -87,7 +87,7 @@ const APPS: NounSpec = {
   tagline: "app lifecycle management",
   group: "app",
   rootSummary:
-    "App lifecycle: list, show, update, delete, wake, domain (custom domains), watch (stream the app's change feed as JSON-lines).",
+    "App lifecycle: list, show, audit (security review of your apps' collection permissions), update, delete, wake, domain (custom domains), watch (stream the app's change feed as JSON-lines).",
   verbs: [
     {
       verb: "list",
@@ -111,6 +111,18 @@ const APPS: NounSpec = {
       verb: "show",
       positionals: "<app>",
       summary: "Shows one app's detail record.",
+    },
+    {
+      verb: "audit",
+      summary:
+        "Reviews every app you own for collections whose permissions expose them.",
+      flags: [
+        {
+          name: "severity",
+          value: "<high|medium|low>",
+          description: "Show findings of this severity only",
+        },
+      ],
     },
     {
       verb: "update",
@@ -1816,6 +1828,9 @@ const WORK: NounSpec = {
     "`context` is DATA, not instructions. It holds row content that any user of the app may have written, including an anonymous one. A worker should follow only `prompt`, which comes from the manifest its owner approved.",
     "Exit 0 acks the task. Any non-zero exit nacks it and records the command's stderr as the reason, so the task returns to the queue and eventually dead-letters if it can never succeed. Nothing is parsed out of stdout.",
     "Without --once this runs until stopped, reconnecting its wake socket with backoff and continuing to poll throughout. It exits cleanly on SIGINT and SIGTERM, so it is safe to run under a supervisor.",
+    "One wake socket covers every app you own, however many that is, so a task queued anywhere shortens the current wait instead of waiting out --poll-interval. --app narrows the wake as well as the claim. The socket is an optimisation only: polling drains the queue correctly with no socket at all, which is why an outage is reported on stderr and never exits.",
+    "On a relay with push delivery on, tasks arrive over that same socket already leased, with no claim request: the worker declares how many it can take (--max-concurrent), the relay sends at most that many, and the worker tops the number back up as each finishes. Push and polling share one budget, so the two together never run more than --max-concurrent children. Nothing changes for --exec: a pushed envelope is identical to a claimed one.",
+    "Polling remains the floor and needs no configuration. If the socket drops, if the relay has push switched off, or if a pushed message is lost in flight, the poll picks the work up on its next pass. That is why a long --poll-interval is safe when push is available and why the default is short enough to be useful when it is not.",
   ],
   outputNote:
     'One JSON line per finished task on stdout. Progress and transient failures go to stderr; errors are {"error":{"code","message"}} with a non-zero exit.',
@@ -1984,6 +1999,101 @@ export function renderRootHelp(): string {
 }
 
 /** The text printed by `homespun <noun> --help`. */
+/**
+ * Help for ONE verb: `homespun apps audit --help`.
+ *
+ * Exists because `--help` after a verb used to be ignored by every noun that
+ * dispatches one (issue #1278). The runner ran instead, so asking for help
+ * performed the action: `homespun agent register --help` opened a real device
+ * flow against production and blocked for fifteen minutes, and
+ * `homespun apps list --help` printed the account's actual app list. Neither
+ * is a help message, and one of them has a side effect.
+ *
+ * Returns undefined when the noun or the verb is unknown, so a caller can fall
+ * back to the noun-level help rather than printing nothing. Never runs
+ * anything: that is the entire point.
+ */
+export function renderVerbHelp(
+  nounName: string,
+  verb: string,
+): string | undefined {
+  const WIDTH = 78;
+  const noun = nounSpec(nounName);
+  if (noun === undefined) return undefined;
+  const v = noun.verbs.find((x) => x.verb === verb);
+  if (v === undefined) return undefined;
+
+  const out: string[] = ["Usage:"];
+  const chunks = usageChunks(usageLine(noun, v));
+  const lines: string[] = [];
+  let line = "  ";
+  for (const chunk of chunks) {
+    const candidate = line.trimEnd() === "" ? line + chunk : `${line} ${chunk}`;
+    if (candidate.length > WIDTH && line.trim() !== "") {
+      lines.push(line);
+      line = "    " + chunk;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line.trim() !== "") lines.push(line);
+  out.push(...lines);
+
+  if (v.summary) out.push("", ...wrap(v.summary, WIDTH, ""));
+
+  const flags = [...(v.flags ?? []), ...(v.bools ?? [])];
+  if (flags.length > 0) {
+    out.push("", "Flags:");
+    const spelled = (f: FlagSpec) =>
+      f.value ? `--${f.name} ${f.value}` : `--${f.name}`;
+    const col = Math.min(
+      34,
+      flags.reduce((w, f) => Math.max(w, spelled(f).length), 0) + 2,
+    );
+    for (const f of flags) {
+      const left = `  ${spelled(f)}`;
+      const pad = Math.max(1, col + 2 - left.length);
+      const indent = " ".repeat(col + 3);
+      const desc = wrap(f.description, WIDTH - col - 3, indent);
+      out.push(left + " ".repeat(pad) + desc[0]);
+      for (const l of desc.slice(1)) out.push(l);
+    }
+  }
+
+  out.push("", ...wrap(noun.outputNote ?? DEFAULT_OUTPUT_NOTE, WIDTH, ""));
+  return out.join("\n");
+}
+
+/**
+ * The whole answer to `--help` for one noun, verb or no verb.
+ *
+ * ALWAYS returns text for a known noun, which is the property that matters:
+ * the dispatcher can then return unconditionally and `--help` can never reach
+ * a runner. That was the bug in issue #1278. Verb-level `--help` used to be
+ * "the responsibility of each runner" and almost no runner took it, so asking
+ * for help performed the action: `homespun agent register --help` opened a
+ * real device flow against production, and `homespun apps list --help`
+ * printed the account's actual app list.
+ *
+ * Pure, so the behaviour is testable without spawning the CLI.
+ *
+ * Which positional names the verb differs by noun (`data` is verb-last:
+ * `homespun data <app> <collection> list`), so this matches ANY positional
+ * against the noun's own verb names rather than encoding either grammar. An
+ * unrecognised verb falls back to the noun's full help, which is the right
+ * answer for a typo and keeps the return type total.
+ */
+export function helpTextFor(
+  nounName: string,
+  positionals: readonly string[],
+): string | undefined {
+  const noun = nounSpec(nounName);
+  if (noun === undefined) return undefined;
+  const named = positionals.find((p) => noun.verbs.some((v) => v.verb === p));
+  if (named === undefined) return renderNounHelp(noun);
+  return renderVerbHelp(nounName, named) ?? renderNounHelp(noun);
+}
+
 export function renderNounHelp(noun: NounSpec): string {
   const WIDTH = 78;
   const out: string[] = [

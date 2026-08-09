@@ -16,6 +16,14 @@
 // correctly with no socket at all. That is why the reconnect logic below is allowed
 // to give up on the socket and keep working.
 //
+// ONE SOCKET FOR EVERY OWNED APP. Both halves of this command are owner-scoped: a
+// claim with no `--app` drains every app the identity owns, and the wake socket
+// (`/v1/agent-tasks/stream`) is subscribed to a per-owner channel, so `--app` is a
+// filter over both and never a decision about transport. Worth stating because the
+// first version was not like this: the hint rode the app's own feed socket, so `--app`
+// silently doubled as "which app's socket carries my wakes" and a worker that gained a
+// second app quietly stopped being pushed to.
+//
 // WHY THIS FILE CONTAINS RECONNECT LOGIC AT ALL, when `apps watch` does not: nothing
 // in this CLI has it. `apps watch` falls back to HTTP long-polling permanently on any
 // pre-connect WS failure, never retries, handles SIGINT but not SIGTERM, and parks on
@@ -25,7 +33,7 @@
 // backoff, says so on stderr when it does, and exits cleanly on SIGTERM.
 
 import { spawn } from "node:child_process";
-import { openAppStream, appWsUrlFromAppUrl } from "@homespunapps/core";
+import { openWorkerStream, type WorkerStreamHandle } from "@homespunapps/core";
 import type { ParsedArgs } from "../argv.js";
 import { assertKnownFlags } from "../argv.js";
 import { nounSpec, renderNounHelp, specFor } from "../help-catalog.js";
@@ -47,6 +55,75 @@ export interface WorkOptions {
   maxConcurrent: number;
   once: boolean;
   pollSeconds: number;
+}
+
+/**
+ * A bounded pool of running children, which is what makes `--max-concurrent` true.
+ *
+ * IT WAS NOT TRUE BEFORE. The flag sized the claim batch and nothing else: the batch
+ * then ran in a plain `for` loop with an `await` per task, so `--max-concurrent 4`
+ * claimed four tasks and ran them one after another. That is not a naming quibble, it
+ * manufactures duplicate work. Each of those four is LEASED from the moment it is
+ * claimed, the default lease is 120 s (`AGENT_TASKS_LEASE_SECONDS`), and a `claude -p`
+ * call takes tens of seconds, so the third and fourth leases could lapse before those
+ * tasks were started. A lapsed lease returns the task to the queue, so it gets handed
+ * out again and done twice, while the first worker is still holding a child for it.
+ *
+ * The pool also gives `capacity()`, which is the number the next claim should ask for.
+ * Claiming a full batch every pass regardless of what is already running is the same
+ * bug in a slower form.
+ */
+interface Pool {
+  /** Start `task`, waiting for a free slot first. Resolves once it has STARTED. */
+  admit(task: Envelope): Promise<void>;
+  /** Free slots against the cap: what a claim should ask for, and never below zero. */
+  capacity(): number;
+  /** Wait for every running child to finish. */
+  drain(): Promise<void>;
+}
+
+function createPool(
+  limit: number,
+  run: (task: Envelope) => Promise<void>,
+  onSlotFree: () => void,
+): Pool {
+  const running = new Set<Promise<void>>();
+
+  return {
+    async admit(task) {
+      // `Promise.race` on the live set, so this wakes on the FIRST finisher rather
+      // than the oldest. Racing the oldest would idle a free slot behind a long task.
+      while (running.size >= limit) await Promise.race(running);
+      const p = (async () => {
+        try {
+          await run(task);
+        } catch (err) {
+          // `runTask` is written not to throw, and if that ever stops being true the
+          // failure must not escape into the pool: an unhandled rejection here would
+          // abandon every sibling child mid-flight for the sake of one task.
+          warn(
+            `worker crashed on ${task.task_id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      })();
+      const settled = p.finally(() => {
+        running.delete(settled);
+        // A freed slot is a reason to claim again NOW rather than at the end of the
+        // poll interval. Without this the pool would idle out the rest of a 15 s sleep
+        // with nothing running, which is slower than the sequential version it replaces.
+        onSlotFree();
+      });
+      running.add(settled);
+    },
+    capacity() {
+      return Math.max(0, limit - running.size);
+    },
+    async drain() {
+      while (running.size > 0) await Promise.race(running);
+    },
+  };
 }
 
 /** Backoff bounds for the wake socket. Capped so a long outage does not spin. */
@@ -108,21 +185,58 @@ export async function runWork(args: ParsedArgs): Promise<void> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
+  // A finished child shortens the current sleep through the SAME `wake` the socket
+  // uses, because "there is capacity now" and "there is work now" both mean claim
+  // again, and one mechanism for both is one thing to keep correct.
+  const pool = createPool(
+    opts.maxConcurrent,
+    (task) => runTask(base, cfg.apiKey, task, opts.exec),
+    () => wake?.(),
+  );
+
+  // ONE BUDGET, SHARED BETWEEN PUSH AND POLL. The socket owns the credit accounting;
+  // this loop subtracts what it has promised. Capacity offered to the relay is capacity
+  // already spoken for, and a poll that claimed it as well would leave a worker told to
+  // run one task at a time holding two leases and starting one. That is the bug #1608
+  // fixed, arriving through a different door.
   const socket = opts.once
     ? null
-    : await openWakeSocket(opts, cfg.apiKey, base, () => wake?.());
+    : openWakeSocket(
+        opts,
+        cfg.apiKey,
+        base,
+        () => wake?.(),
+        () => pool.capacity(),
+        (task) => {
+          // Not awaited: this is a socket callback, and blocking it on a free slot would
+          // stall every other frame on the connection. The relay respected the credit, so
+          // a slot exists; `admit` waits only if it somehow did not.
+          void pool.admit(task);
+        },
+      );
 
   try {
     for (;;) {
-      const claimed = await claim(base, cfg.apiKey, opts);
+      // Restate the offer every pass. See `reoffer`: it is the drift repair, not a
+      // belt-and-braces resend.
+      const promised = socket?.reoffer() ?? 0;
+
+      // Ask for what can actually be STARTED and is not already promised away. Claiming
+      // four while three children are running leases work that waits out its own lease
+      // before anything begins on it.
+      const want = Math.max(0, pool.capacity() - promised);
+      const claimed = want > 0 ? await claim(base, cfg.apiKey, opts, want) : [];
       for (const task of claimed) {
-        await runTask(base, cfg.apiKey, task, opts.exec);
         if (stopping) break;
+        // Awaited, and only for a free SLOT: `admit` returns as soon as the child is
+        // spawned, so a batch larger than the cap is fed through rather than run in
+        // lockstep.
+        await pool.admit(task);
       }
       if (opts.once || stopping) break;
-      // Sleep, interruptible by the wake frame. `wake` is re-armed each pass so a
-      // frame that arrives WHILE tasks are running does not resolve a stale promise
-      // and get lost; the next sleep is what it shortens.
+      // Sleep, interruptible by the wake frame OR by a child finishing. `wake` is
+      // re-armed each pass so a frame that arrives WHILE tasks are running does not
+      // resolve a stale promise and get lost; the next sleep is what it shortens.
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, opts.pollSeconds * 1000);
         wake = () => {
@@ -133,6 +247,11 @@ export async function runWork(args: ParsedArgs): Promise<void> {
       wake = null;
     }
   } finally {
+    // Wait for the children BEFORE closing the socket and dropping the handlers.
+    // Under `--once` this is what makes the command mean "drain a pass", and on
+    // SIGTERM it is the difference between finishing the work in flight and stranding
+    // every lease it holds until expiry.
+    await pool.drain();
     socket?.close();
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
@@ -149,8 +268,12 @@ async function claim(
   base: string,
   apiKey: string,
   opts: WorkOptions,
+  max: number,
 ): Promise<Envelope[]> {
-  const body: Record<string, unknown> = { max: opts.maxConcurrent };
+  // `max` is the pool's free capacity, NOT `--max-concurrent`. The two are the same
+  // only on an idle worker, and asking for the flag's value while children are running
+  // is what leased work that could not be started.
+  const body: Record<string, unknown> = { max };
   if (opts.appIds.length > 0) body.app_ids = opts.appIds;
   try {
     const res = await fetch(`${base}/v1/agent-tasks/claim`, {
@@ -285,11 +408,16 @@ async function report(
 /**
  * The wake socket, with real reconnect.
  *
- * ONE APP ONLY, and this is the honest limitation of the frame rather than of this
- * command: the hint is published on the app's own `/_hs/ws`, so a worker draining
- * five apps would need five sockets. Polling already drains every app correctly, so
- * the socket is opened only when `--app` names exactly one and is simply skipped
- * otherwise. A multi-app worker polls, which costs latency and nothing else.
+ * ONE SOCKET, EVERY APP THIS IDENTITY OWNS. It connects to `/v1/agent-tasks/stream`
+ * on the API host, which the relay serves off a per-OWNER channel, so a worker
+ * draining a hundred apps holds one socket rather than a hundred.
+ *
+ * That removes two things this function used to need and got wrong. It no longer
+ * refuses to run unless `--app` names exactly one app, so `--app` is now purely a
+ * claim filter and nothing about the transport. And it no longer asks the relay where
+ * an app lives: the old wake frame was published on the app's own `/_hs/ws`, on a
+ * different origin entirely, and reconstructing that URL is what left the socket
+ * permanently unable to connect while reporting a transient-looking outage.
  *
  * Reconnects with capped exponential backoff and says so, once, per outage. It never
  * escalates to an exit: losing the socket makes this slower, not broken, and a
@@ -301,80 +429,104 @@ async function report(
  * shipped broken twice over (a URL built from the app id rather than its real
  * location, and a swallowed connect error), so it is worth being able to point a test
  * straight at it rather than only at the command that calls it.
+ *
+ * No longer async, and that is the visible sign of what changed: it used to have to
+ * ASK the relay where an app lived before it could build a URL. The worker stream is
+ * on the API host this CLI is already configured for, so there is nothing to look up.
  */
-export async function openWakeSocket(
+export interface WakeSocket {
+  close(): void;
+  /**
+   * Restate this worker's free capacity as credit, and return what is now outstanding.
+   *
+   * Called on every poll pass as well as on connect, and UNCONDITIONALLY rather than only
+   * when the number changed. That is the drift repair: if an assign frame was lost the
+   * relay spent a credit this worker never saw, so its count is lower than ours and one
+   * slot would sit idle indefinitely. `ready` is absolute, so restating it closes the gap,
+   * and because the relay compares against its OWN value the restatement reads as a rise
+   * and triggers a dispatch for whatever was stranded.
+   */
+  reoffer(): number;
+}
+
+export function openWakeSocket(
   opts: WorkOptions,
   apiKey: string,
   base: string,
   onWake: () => void,
-): Promise<{ close: () => void } | null> {
-  if (opts.appIds.length !== 1) return null;
-  const appId = opts.appIds[0]!;
-
-  // ASK THE RELAY where the app lives. This was reconstructed as `${base}/a/${appId}/`,
-  // which is wrong in two ways at once: an app is served under its SLUG, not its id,
-  // and on a usercontent deployment it is a different origin entirely
-  // (`<slug>.homespunapps.com`) rather than a path on the API host. The socket
-  // therefore never connected, and the reconnect logic below reported it as
-  // "wake socket lost", which reads like a transient blip rather than a URL that
-  // could never work. Found by running a worker against a live relay; no test
-  // covered this function at all.
-  //
-  // A failure here is NOT fatal: polling still drains the queue, so a worker that
-  // cannot resolve its app keeps working, just without the wake hint.
-  let appUrl: string;
-  try {
-    const res = await fetch(`${base}/v1/apps/${appId}`, {
-      headers: { authorization: `Bearer ${apiKey}` },
-    });
-    if (!res.ok) {
-      warn(
-        `cannot resolve app ${appId} for the wake socket (${res.status}); polling only`,
-      );
-      return null;
-    }
-    appUrl = ((await res.json()) as { url?: string }).url ?? "";
-    if (!appUrl) {
-      warn(`app ${appId} reports no url; polling only`);
-      return null;
-    }
-  } catch (err) {
-    warn(
-      `cannot resolve app ${appId} for the wake socket (${
-        err instanceof Error ? err.message : String(err)
-      }); polling only`,
-    );
-    return null;
-  }
+  capacity: () => number,
+  onAssign?: (task: Envelope) => void,
+): WakeSocket {
+  // `--app` filters the wake as well as the claim. A wake for an app this worker was
+  // told to ignore would otherwise cut the sleep short to run a claim that can only
+  // come back empty, which is a wasted round trip on every OTHER app's traffic. An
+  // empty filter means every app, matching the claim.
+  const wanted = new Set(opts.appIds);
+  const wants = (appId: string): boolean =>
+    wanted.size === 0 || wanted.has(appId);
 
   let closed = false;
   let connectedOnce = false;
   let delay = RECONNECT_MIN_MS;
-  let handle: { close: () => void } | null = null;
+  let handle: WorkerStreamHandle | null = null;
   let announcedOutage = false;
+  /** Does THIS relay push? Answered in its hello, never guessed. */
+  let pushes = false;
+  /**
+   * Restate free capacity as credit and return what is now outstanding.
+   *
+   * NOTHING IS TRACKED HERE, and two surviving mutations are what established that it
+   * should not be. Earlier versions decremented a running total on each assign and zeroed
+   * it on disconnect, and both lines could be deleted with every test still green. They
+   * were unobservable rather than untested: `capacity()` already excludes a child that a
+   * pushed task started, because `admit` occupies its slot before returning, so the
+   * recomputation below is always the same number the bookkeeping was maintaining. Code
+   * that looks load-bearing and is not is worse than no code, because the next person to
+   * chase a credit bug will trust it.
+   */
+  const offer = (): number => {
+    if (closed || !pushes || !handle) return 0;
+    const want = Math.max(0, capacity());
+    return handle.sendReady(want) ? want : 0;
+  };
 
   const connect = (): void => {
     if (closed) return;
-    const wsUrl = appWsUrlFromAppUrl(appUrl);
-    handle = openAppStream(
-      // `since: 0`, not a huge sentinel. The intent was "do not replay history", and
-      // MAX_SAFE_INTEGER expressed that by sending a cursor the relay will not accept,
-      // so the socket was refused and the wake frame never arrived. The worker sets no
-      // `onEntry` handler at all, so a replayed batch is discarded as it is parsed:
-      // there is nothing to avoid.
-      { wsUrl, apiKey, since: 0 },
+    handle = openWorkerStream(
+      { baseUrl: base, apiKey },
       {
-        onHello: () => {
+        onHello: ({ push }) => {
           // A successful connect resets the backoff, so a flapping link does not
           // inherit the previous outage's delay.
           connectedOnce = true;
           delay = RECONNECT_MIN_MS;
+          pushes = push;
           if (announcedOutage) {
             warn("wake socket reconnected");
             announcedOutage = false;
           }
+          // OFFER IMMEDIATELY, not at the next poll pass. A worker with a long
+          // `--poll-interval` would otherwise offer nothing until the interval elapsed,
+          // so a relay ready to push had no credit to push against and the whole feature
+          // waited out a timer that push exists to avoid.
+          offer();
         },
-        onAgentTaskAvailable: onWake,
+        onAgentTaskAvailable: ({ appId }) => {
+          if (wants(appId)) onWake();
+        },
+        onAssign: (task) => {
+          // A pushed task is already LEASED, so ignoring one costs a whole lease. It is
+          // still filtered by `--app`, but a task outside the filter is a relay bug
+          // rather than something to run quietly: the claim scope and the push scope are
+          // the same scope.
+          if (!wants(task.app_id)) {
+            warn(
+              `relay pushed a task for ${task.app_id}, which --app excludes; ignoring`,
+            );
+            return;
+          }
+          onAssign?.(task as Envelope);
+        },
         onClose: ({ code, reason }) =>
           scheduleReconnect(`closed ${code}${reason ? ": " + reason : ""}`),
         // The error is REPORTED, not swallowed. Discarding it is what made the
@@ -388,6 +540,11 @@ export async function openWakeSocket(
 
   const scheduleReconnect = (why: string): void => {
     if (closed) return;
+    // Credit dies with the connection. Anything the old socket was promised is gone, and
+    // the caller must be free to claim that capacity itself while this reconnects.
+    // `pushes` alone is enough: the next `offer` returns 0 while it is false, so the
+    // caller reclaims that capacity for its own polling on the very next pass.
+    pushes = false;
     if (!announcedOutage) {
       warn(
         (connectedOnce
@@ -408,6 +565,7 @@ export async function openWakeSocket(
       closed = true;
       handle?.close();
     },
+    reoffer: offer,
   };
 }
 

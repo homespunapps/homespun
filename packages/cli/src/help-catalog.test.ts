@@ -10,6 +10,7 @@
 import { describe, it, expect } from "vitest";
 import {
   allNouns,
+  helpTextFor,
   nounSpec,
   specFor,
   renderNounHelp,
@@ -241,5 +242,84 @@ describe("help catalog", () => {
   it("exposes nounSpec for each dispatched noun", () => {
     for (const n of DISPATCHED) expect(nounSpec(n)?.noun).toBe(n);
     expect(nounSpec("definitely-not-a-noun")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verb-level --help (issue #1278)
+//
+// The defect these pin: `--help` after a verb was "the responsibility of each
+// runner" and almost no runner took it, so asking for help RAN the verb.
+// `homespun agent register --help` opened a real RFC 8628 device flow against
+// production and blocked for fifteen minutes; `homespun apps list --help`
+// printed the account's actual app list. The property that fixes it is that
+// `helpTextFor` is TOTAL for a known noun, which is what lets the dispatcher
+// return unconditionally and never reach a runner.
+// ---------------------------------------------------------------------------
+describe("verb-level --help", () => {
+  it("returns help for every verb of every dispatched noun", () => {
+    // Exhaustive rather than sampled: the bug was per-noun, so a sample would
+    // have passed on whichever nouns happened to be checked.
+    const missing: string[] = [];
+    for (const noun of allNouns()) {
+      for (const v of noun.verbs) {
+        if (!v.verb) continue;
+        const text = helpTextFor(noun.noun, [v.verb]);
+        if (text === undefined || !text.includes("Usage:")) {
+          missing.push(`${noun.noun} ${v.verb}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("names the requested verb rather than falling back to the noun", () => {
+    const text = helpTextFor("apps", ["list"]);
+    expect(text).toContain("homespun apps list");
+    // The noun-level help leads with the tagline banner; the verb-level help
+    // must not, or this is silently the old fallback wearing a new name.
+    expect(text).not.toContain("app lifecycle management");
+  });
+
+  it("finds the verb of a verb-last noun, where it is not the first positional", () => {
+    // `homespun data <app> <collection> list`. Matching positionals[0] would
+    // read the app slug as the verb and fall back to the noun help.
+    //
+    // Asserting only that the usage line is present would be VACUOUS: the
+    // noun-level help lists every verb's usage line too, so the naive
+    // positionals[0] implementation passes it. The banner is what separates
+    // the two, because only noun-level help leads with the tagline.
+    const text = helpTextFor("data", ["myapp", "mycoll", "list"]);
+    expect(text).toContain("homespun data <app> <collection> list [--since");
+    expect(text).not.toContain("collection row CRUD for an app");
+    // And the fallback it must not have taken is genuinely reachable here.
+    expect(helpTextFor("data", ["myapp", "mycoll"])).toContain(
+      "collection row CRUD for an app",
+    );
+  });
+
+  it("falls back to the noun's help for an unrecognised verb, never undefined", () => {
+    const text = helpTextFor("apps", ["nosuchverb"]);
+    expect(text).toBeDefined();
+    expect(text).toContain("app lifecycle management");
+  });
+
+  it("returns the noun's help when no verb is given", () => {
+    const text = helpTextFor("apps", []);
+    expect(text).toContain("app lifecycle management");
+  });
+
+  it("is total for every dispatched noun, whatever the positionals", () => {
+    // Totality is the safety property: the dispatcher returns unconditionally
+    // on the strength of it, so a single undefined would put `--help` back
+    // into a runner.
+    for (const noun of allNouns()) {
+      expect(helpTextFor(noun.noun, [])).toBeDefined();
+      expect(helpTextFor(noun.noun, ["definitely-not-a-verb"])).toBeDefined();
+    }
+  });
+
+  it("returns undefined only for an unknown noun", () => {
+    expect(helpTextFor("not-a-noun", ["list"])).toBeUndefined();
   });
 });

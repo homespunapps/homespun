@@ -63,6 +63,14 @@ export type {
   AppStreamHandle,
 } from "./app-stream.js";
 
+export { openWorkerStream, workerWsUrlFromBase } from "./app-stream.js";
+export type {
+  OpenWorkerStreamOptions,
+  WorkerStreamHandlers,
+  WorkerStreamHandle,
+  WorkerTaskEnvelope,
+} from "./app-stream.js";
+
 export { registerAgent } from "./register.js";
 export type { RegisterAgentOptions, RegisterAgentResult } from "./register.js";
 

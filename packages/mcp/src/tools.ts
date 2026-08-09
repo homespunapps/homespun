@@ -618,6 +618,7 @@ const appsShape = {
     .enum([
       "list",
       "show",
+      "audit",
       "update",
       "share_link_rotate",
       "delete",
@@ -627,7 +628,13 @@ const appsShape = {
       "domain_remove",
     ])
     .describe(
-      "list: the caller's owning human's apps. show/update/delete/wake: act on one app (app_id). share_link_rotate: rotate a 'link' app's share token, returning a new share_url (the old link stops working); also generates one if the app has none yet. domain_set/domain_status/domain_remove: manage the app's custom domains (app_id; domain_set also needs domain).",
+      "list: the caller's owning human's apps. show/update/delete/wake: act on one app (app_id). audit: read-only security review of every app the caller owns. share_link_rotate: rotate a 'link' app's share token, returning a new share_url (the old link stops working); also generates one if the app has none yet. domain_set/domain_status/domain_remove: manage the app's custom domains (app_id; domain_set also needs domain).",
+    ),
+  severity: z
+    .enum(["high", "medium", "low"])
+    .optional()
+    .describe(
+      "audit only. Return findings of this severity only. The response's `counts` always describe the whole audit, so filtering never hides that other findings exist.",
     ),
   app_id: z
     .string()
@@ -1789,7 +1796,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "apps",
     description:
-      "The v2 app lifecycle apart from creation and redeploy, which deploy_app covers. Actions: list returns the owning human's apps; show returns full detail including manifest, timezone and has_share_token; update changes visibility and timezone, the slug being immutable, and switching to 'link' returns a share_url once; share_link_rotate issues a new share token for a 'link' app, returning a new share_url and revoking the old link, and generates one if the app has none; delete is an idempotent soft-delete; wake wakes a dormant app and is otherwise a no-op that reports the actual status; domain_set binds a custom domain and returns the DNS records the domain owner must publish, where the first domain bound serves the app and every later one redirects to it, which is how apex plus www is configured; domain_status returns the serving domain and its `aliases`, live-refreshed against Cloudflare when that is enabled, with last_error carrying the reason a domain is not activating; domain_remove unbinds one domain, or all of them when no `domain` is given, and is idempotent.",
+      "The v2 app lifecycle apart from creation and redeploy, which deploy_app covers. Actions: list returns the owning human's apps; show returns full detail including manifest, timezone and has_share_token; audit is a read-only security review of every app the caller owns, computed from each app's stored manifest, which is what makes it see apps that were deployed once and never redeployed (a deploy-time warning never reaches those). It reports collections whose declared permissions expose them, worst first: severity 'high' means an anonymous visitor can exploit it today, typically a collection that admits \"anyone\" to write with no separate 'update' list, so any visitor can overwrite rows other people created rather than only adding their own. It changes nothing; the fix is a redeploy declaring the missing list, and the right list differs per app, so read the app before proposing one. update changes visibility and timezone, the slug being immutable, and switching to 'link' returns a share_url once; share_link_rotate issues a new share token for a 'link' app, returning a new share_url and revoking the old link, and generates one if the app has none; delete is an idempotent soft-delete; wake wakes a dormant app and is otherwise a no-op that reports the actual status; domain_set binds a custom domain and returns the DNS records the domain owner must publish, where the first domain bound serves the app and every later one redirects to it, which is how apex plus www is configured; domain_status returns the serving domain and its `aliases`, live-refreshed against Cloudflare when that is enabled, with last_error carrying the reason a domain is not activating; domain_remove unbinds one domain, or all of them when no `domain` is given, and is idempotent.",
     inputSchema: appsShape,
     // Consolidated tool: read actions (list/show) + mutating ones (update/
     // delete/wake). Hint reflects delete, the most-privileged action.
@@ -1827,6 +1834,16 @@ export const TOOLS: ToolDef[] = [
               return invalidArgs("show requires `app_id`");
             }
             return jsonResult(await client.getApp(String(args["app_id"])));
+          case "audit": {
+            const opts: Record<string, unknown> = {};
+            if (args["severity"] !== undefined)
+              opts["severity"] = args["severity"];
+            return jsonResult(
+              await client.appAdvisories(
+                opts as Parameters<HomespunClient["appAdvisories"]>[0],
+              ),
+            );
+          }
           case "update": {
             if (str(args, "app_id") === undefined) {
               return invalidArgs("update requires `app_id`");

@@ -1,5 +1,6 @@
 // `homespun apps` — v2 app lifecycle management (spec-cli §3.2): list / show /
-// update / delete / wake, plus `watch` (spec-cli §3.4).
+// update / delete / wake, plus `watch` (spec-cli §3.4) and `audit` (the owner
+// security review, issue #1589 phase B).
 //
 // Naming note (deviation from spec-cli's literal top-level `homespun watch`):
 // this branch still carries the UNCHANGED v1 `homespun watch <homespun-id>` command
@@ -34,7 +35,7 @@ export async function runApps(args: ParsedArgs): Promise<void> {
   }
   if (verb === undefined) {
     fail(
-      "missing verb: homespun apps <list|show|update|share-link|delete|wake|watch|domain>",
+      "missing verb: homespun apps <list|show|audit|update|share-link|delete|wake|watch|domain>",
       "invalid_args",
     );
   }
@@ -53,6 +54,8 @@ export async function runApps(args: ParsedArgs): Promise<void> {
       return runList(sub);
     case "show":
       return runShow(sub);
+    case "audit":
+      return runAudit(sub);
     case "update":
       return runUpdate(sub);
     case "share-link":
@@ -67,7 +70,7 @@ export async function runApps(args: ParsedArgs): Promise<void> {
       return runDomain(sub);
     default:
       fail(
-        `unknown verb '${verb}': homespun apps <list|show|update|share-link|delete|wake|watch|domain>`,
+        `unknown verb '${verb}': homespun apps <list|show|audit|update|share-link|delete|wake|watch|domain>`,
         "invalid_args",
       );
   }
@@ -125,6 +128,68 @@ async function runShow(args: ParsedArgs): Promise<void> {
   } catch (e) {
     failFromError(e);
   }
+}
+
+// ---------------------------------------------------------------------------
+// audit
+// ---------------------------------------------------------------------------
+
+/**
+ * `homespun apps audit` — the owner security review (issue #1589 phase B).
+ *
+ * Exits 1 when any `high` finding exists, so this can gate a script or a CI
+ * step. That is a FINDINGS exit, not an error exit: the report still prints in
+ * full on the way out, and a transport or auth failure still goes through
+ * `failFromError` with its own code. A caller that only wants the data and
+ * never the gate reads the JSON and ignores the status.
+ */
+async function runAudit(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("apps", "audit"));
+  const severity = args.flags.get("severity") as
+    "high" | "medium" | "low" | undefined;
+  if (severity !== undefined && !["high", "medium", "low"].includes(severity)) {
+    fail("--severity must be high|medium|low", "invalid_args");
+  }
+
+  const client = makeClient(args);
+  let report;
+  try {
+    report = await client.appAdvisories(
+      severity !== undefined ? { severity } : {},
+    );
+  } catch (e) {
+    failFromError(e);
+    return;
+  }
+
+  if (args.bools.has("json")) {
+    printJson(report);
+  } else {
+    for (const app of report.items) {
+      for (const a of app.advisories) {
+        process.stdout.write(
+          `${a.severity.padEnd(6)} ${app.slug}  ${a.collection}  ${a.code}\n`,
+        );
+      }
+    }
+    const { high, medium, low } = report.counts;
+    process.stdout.write(
+      `\n${report.apps_affected} of ${report.apps_scanned} apps affected: ${high} high, ${medium} medium, ${low} low\n`,
+    );
+    if (report.truncated) {
+      // Never let a partial audit read as a clean one.
+      process.stdout.write(
+        "warning: the audit stopped before every app was scanned; this report is incomplete\n",
+      );
+    }
+    if (severity !== undefined && (high > 0 || medium > 0 || low > 0)) {
+      process.stdout.write(
+        `(counts describe the whole audit, not the --severity ${severity} filter)\n`,
+      );
+    }
+  }
+
+  if (report.counts.high > 0) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------

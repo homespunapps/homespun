@@ -14,7 +14,13 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  chmodSync,
+  rmSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -116,6 +122,13 @@ function reqPaths(): string[] {
   return seen.map((s) => `${s.method} ${new URL(s.path, baseUrl).pathname}`);
 }
 
+/** Just the claim request bodies, so what the worker ASKED FOR can be asserted. */
+function claimBodies(): { max: number; app_ids?: string[] }[] {
+  return seen
+    .filter((s) => s.path.endsWith("/claim"))
+    .map((s) => s.body as { max: number; app_ids?: string[] });
+}
+
 describe("homespun work: the child-process contract", () => {
   it("pipes the whole envelope to the child on stdin and acks on exit 0", async () => {
     const out = join(scriptDir, "captured.json");
@@ -179,12 +192,18 @@ describe("homespun work: the child-process contract", () => {
     expect(reqPaths()[1]).toBe("POST /v1/agent-tasks/task_1/nack");
   });
 
-  it("runs every task in the batch, in order", async () => {
+  it("runs and reports every task in the batch", async () => {
+    // Order-INDEPENDENT on purpose. This used to assert the acks arrived as t1 then
+    // t2, which was a true statement about a sequential runner and is not one about a
+    // concurrent pool: with two children racing, whichever finishes first acks first.
+    // It kept passing after the change only because both scripts here are trivial
+    // enough to finish in start order, so it was a latent flake rather than a guard.
+    // What actually matters is that every task is reported exactly once.
     const sh = script("ok.sh", `cat > /dev/null\nexit 0`);
     queue = [[task({ task_id: "t1" }), task({ task_id: "t2" })]];
     await work([`--exec=${sh}`, "--max-concurrent=2"]);
-    expect(reqPaths()).toEqual([
-      "POST /v1/agent-tasks/claim",
+    expect(reqPaths()[0]).toBe("POST /v1/agent-tasks/claim");
+    expect(reqPaths().slice(1).sort()).toEqual([
       "POST /v1/agent-tasks/t1/ack",
       "POST /v1/agent-tasks/t2/ack",
     ]);
@@ -206,6 +225,168 @@ describe("homespun work: the child-process contract", () => {
       expect(keys).toContain(needed);
     }
     expect(reqPaths()[1]).toBe("POST /v1/agent-tasks/task_1/ack");
+  });
+});
+
+describe("homespun work: --max-concurrent actually runs that many at once", () => {
+  // These are the tests the flag never had, and their absence is why it spent its
+  // whole life sizing a claim batch and nothing else. Each one is phrased so it FAILS
+  // against a sequential runner: asserting "both finished" would pass either way, which
+  // is exactly the assertion-that-cannot-fail shape.
+  //
+  // The evidence is a shared file that each child appends to. Overlap is proved by the
+  // INTERLEAVING (both starts before either end), which a sequential runner can never
+  // produce, rather than by wall-clock timing, which would be flaky under load. This
+  // machine runs eight CI runners, so a timing assertion here would fail for reasons
+  // that have nothing to do with the code.
+
+  /**
+   * A child that records its start, waits, then records its end.
+   *
+   * No task id in the marker: the envelope arrives on stdin, not in the environment,
+   * so a child cannot name itself without parsing JSON in shell. The ORDER of the
+   * markers is the whole evidence, and it is enough.
+   */
+  function tracer(name: string, log: string, waitSeconds = 0.4): string {
+    return script(
+      name,
+      `cat > /dev/null\n` +
+        `echo start >> ${log}\n` +
+        `sleep ${waitSeconds}\n` +
+        `echo end >> ${log}\n` +
+        `exit 0`,
+    );
+  }
+
+  it("runs two tasks with their lifetimes OVERLAPPING", async () => {
+    // The headline. Sequential gives start,end,start,end; concurrent gives both starts
+    // first. `sh -c` cannot see the task id, so the marker is just the order.
+    const log = join(scriptDir, "trace.txt");
+    const sh = tracer("two.sh", log);
+    queue = [[task({ task_id: "t1" }), task({ task_id: "t2" })]];
+    await work([`--exec=${sh}`, "--max-concurrent=2"]);
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(4);
+    // Both children were alive at once: the first two events are both starts.
+    expect(lines[0]).toMatch(/^start/);
+    expect(lines[1]).toMatch(/^start/);
+    expect(lines[2]).toMatch(/^end/);
+    expect(lines[3]).toMatch(/^end/);
+  });
+
+  it("never runs more than the cap at once", async () => {
+    // Four tasks, cap of two. The trace must never show three simultaneous starts,
+    // which is what a pool that admits the whole batch would produce.
+    const log = join(scriptDir, "cap.txt");
+    const sh = tracer("cap.sh", log, 0.3);
+    queue = [
+      [
+        task({ task_id: "t1" }),
+        task({ task_id: "t2" }),
+        task({ task_id: "t3" }),
+        task({ task_id: "t4" }),
+      ],
+    ];
+    await work([`--exec=${sh}`, "--max-concurrent=2"]);
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(8);
+    let alive = 0;
+    let peak = 0;
+    for (const l of lines) {
+      alive += l.startsWith("start") ? 1 : -1;
+      peak = Math.max(peak, alive);
+    }
+    expect(peak).toBe(2);
+  });
+
+  it("runs strictly one at a time at the default cap of one", async () => {
+    // The default must not become concurrent by accident. A worker calling a paid model
+    // once per task has every right to expect one at a time when it asked for one.
+    const log = join(scriptDir, "serial.txt");
+    const sh = tracer("serial.sh", log, 0.3);
+    queue = [[task({ task_id: "t1" }), task({ task_id: "t2" })]];
+    await work([`--exec=${sh}`]);
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    expect(lines).toEqual(["start", "end", "start", "end"]);
+  });
+
+  it("asks for the full cap when idle", async () => {
+    queue = [[]];
+    await work(["--exec=true", "--max-concurrent=3"]);
+    expect((seen[0]!.body as { max: number }).max).toBe(3);
+  });
+
+  it("asks for LESS while children are still running", async () => {
+    // The busy case, and it needs a multi-pass run because `--once` claims exactly once
+    // on an idle worker, where free capacity and the flag are the same number.
+    //
+    // This test exists because a mutation survived without it: replacing free capacity
+    // with `opts.maxConcurrent` in the claim left all 21 other tests green. That is the
+    // over-claim bug itself, the one that leases work a busy worker cannot start, so a
+    // suite that cannot see it is not guarding the thing this PR is about. The first
+    // version of this very test documented the gap in a comment instead of closing it.
+    const log = join(scriptDir, "busy.txt");
+    const sh = tracer("busy.sh", log, 1.5);
+    // One slow task, then nothing. Cap of 3, so one child leaves capacity 2.
+    queue = [[task({ task_id: "slow" })]];
+    const done = runWork(
+      parseArgs(
+        [`--exec=${sh}`, "--max-concurrent=3", "--poll-interval=1"],
+        BOOLEAN_FLAGS,
+      ),
+    );
+    try {
+      // Wait for a second claim, which happens while the first child is still alive.
+      const deadline = Date.now() + 5000;
+      while (claimBodies().length < 2) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `only ${claimBodies().length} claim(s) before timeout`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      // At least one claim asked for 2, which is only true if capacity is what is sent.
+      expect(claimBodies().map((b) => b.max)).toContain(2);
+      // And nothing ever asked for more than the cap.
+      expect(Math.max(...claimBodies().map((b) => b.max))).toBeLessThanOrEqual(
+        3,
+      );
+    } finally {
+      process.emit("SIGTERM");
+      await done;
+    }
+  });
+
+  it("one child failing does not abandon its siblings", async () => {
+    // A pool that let a rejection escape would drop every other in-flight child, and
+    // each of those holds a lease that would then have to expire.
+    const bad = script("bad.sh", `cat > /dev/null\nexit 3`);
+    const good = script("good.sh", `cat > /dev/null\nexit 0`);
+    // Two passes so both scripts get used: the batch shares one --exec.
+    queue = [[task({ task_id: "t1" })]];
+    await work([`--exec=${bad}`]);
+    expect(reqPaths()[1]).toBe("POST /v1/agent-tasks/t1/nack");
+
+    seen = [];
+    queue = [[task({ task_id: "t2" }), task({ task_id: "t3" })]];
+    await work([`--exec=${good}`, "--max-concurrent=2"]);
+    expect(reqPaths().slice(1).sort()).toEqual([
+      "POST /v1/agent-tasks/t2/ack",
+      "POST /v1/agent-tasks/t3/ack",
+    ]);
+  });
+
+  it("waits for every child before returning under --once", async () => {
+    // `--once` means drain a pass. Returning while children still ran would make it
+    // useless from cron: the process would exit mid-task and strand the lease.
+    const log = join(scriptDir, "drain.txt");
+    const sh = tracer("drain.sh", log, 0.35);
+    queue = [[task({ task_id: "t1" }), task({ task_id: "t2" })]];
+    await work([`--exec=${sh}`, "--max-concurrent=2"]);
+    // Every child has both recorded its end AND been reported by the time we get here.
+    expect(readFileSync(log, "utf8").match(/end/g)).toHaveLength(2);
+    expect(reqPaths().filter((p) => p.endsWith("/ack"))).toHaveLength(2);
   });
 });
 

@@ -11,7 +11,12 @@
 // Output is JSON by default. Every noun self-documents via --help.
 
 import { parseArgs, ArgvError, BOOLEAN_FLAGS } from "./argv.js";
-import { nounSpec, renderNounHelp, renderRootHelp } from "./help-catalog.js";
+import {
+  helpTextFor,
+  nounSpec,
+  renderNounHelp,
+  renderRootHelp,
+} from "./help-catalog.js";
 
 /**
  * Translate an ArgvError into the canonical `invalid_args` envelope and exit
@@ -99,12 +104,28 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // `homespun <noun> --help` with no verb prints the noun-level help. A verb-level
-  // --help is the responsibility of each runner (e.g. runApp dispatches to
-  // the verb runner which reads its own xxxHelp). This pre-empt only fires
-  // when --help is the FIRST positional-equivalent — i.e. no verb given.
-  if (args.bools.has("help") && args.positionals.length === 0) {
-    process.stdout.write(renderNounHelp(spec) + "\n");
+  // `--help` is answered HERE, for every noun, with and without a verb.
+  //
+  // It used to be "the responsibility of each runner", and almost no runner
+  // took it (issue #1278). The result was that asking for help PERFORMED the
+  // action: `homespun agent register --help` opened a real RFC 8628 device
+  // flow against production and blocked for fifteen minutes, and
+  // `homespun apps list --help` printed the account's actual app list. Both
+  // were long-standing, and the second is the worse shape: an unrequested
+  // authenticated read whose output lands in the user's scrollback.
+  //
+  // Centralised rather than fixed per noun, because per-noun was the design
+  // that failed. A new noun added tomorrow gets this for free and cannot
+  // forget it, which is the only version of this fix that stays fixed.
+  // The return is UNCONDITIONAL, which is the property doing the work:
+  // `helpTextFor` is total for a known noun, so there is no path from here
+  // into a runner while `--help` is set. `spec` is non-null above, so the
+  // fallback can never be taken; it is written rather than asserted away so a
+  // future change to `nounSpec` cannot turn help into a crash.
+  if (args.bools.has("help")) {
+    process.stdout.write(
+      (helpTextFor(noun, args.positionals) ?? renderNounHelp(spec)) + "\n",
+    );
     return;
   }
 

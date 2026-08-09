@@ -775,6 +775,31 @@ export class HomespunClient {
     return this.asObject<AppsPage>(r);
   }
 
+  /**
+   * GET /v1/apps/advisories — the owner security audit.
+   *
+   * Every security advisory the caller's OWN live apps earn, computed from
+   * their stored manifests rather than at deploy time. That is the point: a
+   * deploy-time warning only ever reaches an app that redeploys, so an app
+   * deployed once and never touched keeps its shape forever with nobody told.
+   *
+   * Read-only. It never changes an app; the repair is one redeploy per app,
+   * and the correct fix genuinely differs per app.
+   */
+  async appAdvisories(
+    opts: { severity?: "high" | "medium" | "low" } = {},
+  ): Promise<AppAdvisoriesReport> {
+    const q = new URLSearchParams();
+    if (opts.severity !== undefined) q.set("severity", opts.severity);
+    const qs = q.toString();
+    const r = await this.call(
+      "GET",
+      `/v1/apps/advisories${qs ? "?" + qs : ""}`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<AppAdvisoriesReport>(r);
+  }
+
   /** GET /v1/apps/:id — full app detail (manifest, current_version, quota). */
   async getApp(appId: string): Promise<AppDetail> {
     const r = await this.call("GET", `/v1/apps/${encodeURIComponent(appId)}`);
@@ -2282,6 +2307,43 @@ export interface AppDetail extends AppSummary {
 export interface AppsPage {
   items: AppSummary[];
   next_cursor: string | null;
+}
+
+/** One security finding against a collection's declared permission shape. */
+export interface CollectionAdvisory {
+  /** Stable identifier, safe to filter and count on. */
+  code: string;
+  collection: string;
+  /**
+   * `high` = exploitable by an anonymous caller today, with no precondition
+   * beyond opening the app. `medium` = a real weakness that needs something
+   * else to go wrong first. `low` = a design smell, frequently intentional.
+   */
+  severity: "high" | "medium" | "low";
+  message: string;
+}
+
+/** One app's findings, from `GET /v1/apps/advisories`. */
+export interface AppAdvisories {
+  app_id: string;
+  slug: string;
+  visibility: "private" | "link" | "public";
+  status: string;
+  current_version: number;
+  highest_severity: "high" | "medium" | "low";
+  advisories: CollectionAdvisory[];
+}
+
+/** `GET /v1/apps/advisories`: the owner security audit across every owned app. */
+export interface AppAdvisoriesReport {
+  /** Live apps considered, including those with nothing to report. */
+  apps_scanned: number;
+  apps_affected: number;
+  /** Counts across the WHOLE audit, unaffected by any `severity` filter. */
+  counts: { high: number; medium: number; low: number };
+  /** True when a cap stopped the walk before the owner's apps ran out. */
+  truncated: boolean;
+  items: AppAdvisories[];
 }
 
 /** `GET /v1/apps/:id/document`: an app's authored HTML source (current version). */
