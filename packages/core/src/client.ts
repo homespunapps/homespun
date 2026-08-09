@@ -3111,7 +3111,19 @@ export interface PublisherProfile {
   claimed_at: string | null;
   created_at: string;
   first_published_at: string | null;
+  /**
+   * Templates of this publisher that are LIVE right now: approved, not
+   * superseded by a newer version, and not withdrawn. A template republished
+   * several times counts once, and withdrawing one lowers the count.
+   */
   approved_template_count: number;
+  /**
+   * Ratings across ALL of this publisher's template lines, including ones since
+   * withdrawn - a rating is attached to the `<handle>/<slug>` line rather than
+   * to a single version, so it is not shed by taking a template down. Divide
+   * `rating_sum` by `rating_count` for the average; `rating_count` is 0 when
+   * nobody has rated anything yet.
+   */
   rating_count: number;
   rating_sum: number;
   trust_level: string;

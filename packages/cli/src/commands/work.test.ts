@@ -192,6 +192,29 @@ describe("homespun work: the child-process contract", () => {
     expect(reqPaths()[1]).toBe("POST /v1/agent-tasks/task_1/nack");
   });
 
+  it("survives a child that exits before reading stdin, however big the envelope", async () => {
+    // Issue #1616, and the production half of it. The envelope write races the
+    // child's exit. A broken pipe surfaces on the STREAM, not on the child, and
+    // an unhandled stream "error" event is FATAL to the process, so losing that
+    // race used to kill the worker and every other lease it held rather than
+    // nacking one task.
+    //
+    // `child.on("error")` does not cover it: that fires for a failed SPAWN,
+    // which with shell:true almost never happens because the shell starts fine.
+    //
+    // The oversized `prompt` is what makes this deterministic rather than a
+    // coin flip. The small-envelope form of the same race is exactly what
+    // reached CI as an intermittent "write EPIPE" in this file while every
+    // assertion passed, which is why it read as flake instead of as this bug.
+    // A large agent-task input (a document to parse) is ordinary, not exotic.
+    const sh = script("exits-immediately.sh", `exit 3`);
+    queue = [[task({ prompt: "x".repeat(2_000_000) })]];
+    await work([`--exec=${sh}`]);
+    // The worker is still alive AND it reported the task, rather than dying
+    // mid-flight and leaving the lease to lapse.
+    expect(reqPaths()[1]).toBe("POST /v1/agent-tasks/task_1/nack");
+  });
+
   it("runs and reports every task in the batch", async () => {
     // Order-INDEPENDENT on purpose. This used to assert the acks arrived as t1 then
     // t2, which was a true statement about a sequential runner and is not one about a

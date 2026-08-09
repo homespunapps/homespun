@@ -366,6 +366,30 @@ function runChild(
       resolve({ code: 127, stdout, stderr: stderr + String(err) });
     });
     child.on("close", (code) => resolve({ code, stdout, stderr }));
+    // The envelope write races the child's exit, and losing that race used to
+    // kill the WORKER, not the task.
+    //
+    // A broken pipe surfaces on the STREAM, and an unhandled stream "error"
+    // event is fatal to the process. `child.on("error")` above does not cover
+    // it: that fires for a failed SPAWN, which with `shell: true` almost never
+    // happens because the shell itself starts fine. So a child that exits
+    // before reading stdin (a typo in `--exec`, where the shell prints
+    // "not found" and exits 127; or any script that simply does not read)
+    // raised an uncaught EPIPE and took down every other task the worker held.
+    //
+    // Measured 2026-08-09: it is the race, not the payload. A 500-byte write to
+    // a child running `exit 0` crashed a Node 24 process every time, and an
+    // agent-task envelope is comfortably larger than that. It reached CI as an
+    // intermittent "write EPIPE" in this file's own tests (issue #1616) while
+    // every assertion passed, which is why it read as flake rather than as the
+    // bug it is.
+    //
+    // Swallowed rather than reported, because it is a SYMPTOM and the real
+    // outcome is already on its way: the child's exit code and stderr arrive on
+    // "close" and decide ack versus nack. Reporting here as well would nack
+    // twice for one failure. This mirrors `report`'s own rule a few lines
+    // below, that one task's trouble must never cost the worker the others.
+    child.stdin.on("error", () => {});
     child.stdin.write(stdin);
     child.stdin.end();
   });
