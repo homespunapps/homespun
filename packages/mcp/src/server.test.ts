@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { HomespunClient } from "@homespunapps/core";
 import { buildServer } from "./server.js";
+import { TOOLS } from "./tools.js";
 
 /** Wire a Client to a freshly-built server over a linked in-memory pair. */
 async function connect(client: HomespunClient) {
@@ -34,6 +35,7 @@ describe("MCP handshake", () => {
     // v2 app lifecycle + data tools.
     expect(names).toContain("deploy_app");
     expect(names).toContain("list_rows");
+    expect(names).toContain("count_rows");
     expect(names).toContain("upsert_row");
     expect(names).toContain("get_feed_events");
     // Consolidated management tools.
@@ -48,7 +50,11 @@ describe("MCP handshake", () => {
     expect(names).toContain("ingest");
     expect(names).toContain("publisher");
     expect(names).toContain("review");
-    expect(names).toHaveLength(24);
+    // Derived from the registry, not a literal: this test is about transport
+    // fidelity (does the in-memory handshake advertise every tool that IS
+    // registered), not about pinning the registry's own size. tools.test.ts
+    // is the one that pins the literal count, on purpose.
+    expect(names).toHaveLength(TOOLS.length);
     // Each advertised tool carries a description + JSON-schema inputSchema the
     // host shows to the model.
     for (const t of tools) {

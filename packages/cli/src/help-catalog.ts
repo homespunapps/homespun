@@ -238,6 +238,11 @@ const DATA: NounSpec = {
       ],
     },
     {
+      verb: "count",
+      summary:
+        "Shows the collection's live row count. Independent of read: works when the manifest opted the collection into countRead even for a caller who cannot list.",
+    },
+    {
       verb: "get",
       positionals: "<key>",
       summary: "Shows one row by key.",

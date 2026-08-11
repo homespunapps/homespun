@@ -29,7 +29,7 @@ export async function runData(args: ParsedArgs): Promise<void> {
   }
   if (!appArg || !collection || !verb) {
     fail(
-      "usage: homespun data <app> <collection> <list|get|upsert|update|delete|restore|deleted|purge|import|retention>",
+      "usage: homespun data <app> <collection> <list|count|get|upsert|update|delete|restore|deleted|purge|import|retention>",
       "invalid_args",
     );
   }
@@ -46,6 +46,8 @@ export async function runData(args: ParsedArgs): Promise<void> {
   switch (verb) {
     case "list":
       return runList(appArg!, collection!, sub);
+    case "count":
+      return runCount(appArg!, collection!, sub);
     case "get":
       return runGet(appArg!, collection!, sub);
     case "upsert":
@@ -66,7 +68,7 @@ export async function runData(args: ParsedArgs): Promise<void> {
       return runRetention(appArg!, collection!, sub);
     default:
       fail(
-        `unknown verb '${verb}': homespun data <app> <collection> <list|get|upsert|update|delete|restore|deleted|purge|import|retention>`,
+        `unknown verb '${verb}': homespun data <app> <collection> <list|count|get|upsert|update|delete|restore|deleted|purge|import|retention>`,
         "invalid_args",
       );
   }
@@ -119,6 +121,29 @@ async function runList(
         ...(sort !== undefined ? { sort } : {}),
       }),
     );
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// `homespun data <app> <coll> count`: live row count (spec B4, issue #1056),
+// the same aggregate the browser `/_hs/count/:name` door and the MCP
+// `count_rows` tool call through. Gated by the collection's `countRead`
+// opt-in, INDEPENDENT of `read`: a collection that opted in returns its count
+// even to a caller who cannot `list` the rows, and a collection that never
+// declared `countRead` refuses with collection_count_forbidden even for a
+// caller who could otherwise list. No `--where`/`--sort`/`--since`/`--limit`:
+// count is a whole-scope total, there is nothing here to filter or page.
+async function runCount(
+  appArg: string,
+  collection: string,
+  args: ParsedArgs,
+): Promise<void> {
+  assertKnownFlags(args, ...specFor("data", "count"));
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg);
+  try {
+    printJson(await client.countAppRows(appId, collection));
   } catch (e) {
     failFromError(e);
   }

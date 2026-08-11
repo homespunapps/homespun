@@ -523,6 +523,14 @@ const getRowShape = {
   key: z.string().min(1).describe("The key of the row to fetch."),
 };
 
+const countRowsShape = {
+  app_id: z.string().min(1).describe("The app id."),
+  collection: z
+    .string()
+    .min(1)
+    .describe("The collection name declared in the app's manifest."),
+};
+
 const upsertRowShape = {
   app_id: z.string().min(1).describe("The app id."),
   collection: z.string().min(1).describe("The collection name."),
@@ -1578,6 +1586,29 @@ export const TOOLS: ToolDef[] = [
               since: args["since"] as string | undefined,
               limit: args["limit"] as number | undefined,
             },
+          ),
+        );
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  },
+  {
+    name: "count_rows",
+    description:
+      "The live row count of a v2 app's collection (spec B4, issue #1056), a whole-scope total with no filter and no paging. Gated by the collection's countRead opt-in, independent of its read list: a collection that opted in returns its count even to a caller who cannot list the rows (the '3 spots left' shape), and a collection that never opted in refuses with collection_count_forbidden even for a caller who could otherwise list. Returns { count }.",
+    inputSchema: countRowsShape,
+    annotations: {
+      title: "Count Rows",
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+    handler: async (client, args) => {
+      try {
+        return jsonResult(
+          await client.countAppRows(
+            String(args["app_id"]),
+            String(args["collection"]),
           ),
         );
       } catch (e) {

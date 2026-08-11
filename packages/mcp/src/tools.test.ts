@@ -52,6 +52,7 @@ const EXPECTED_TOOLS = [
   // v2 app lifecycle + data (discrete, hot-path)
   "deploy_app",
   "list_rows",
+  "count_rows",
   "get_row",
   "upsert_row",
   "update_row",
@@ -120,10 +121,15 @@ describe("tool listing", () => {
     }
   });
 
-  it("registers exactly 24 tools", () => {
+  it("registers exactly 25 tools", () => {
     // Pinned so the directory-readiness annotation sweep can't silently lose or
-    // duplicate a tool.
-    expect(TOOLS).toHaveLength(24);
+    // duplicate a tool. DELIBERATELY a literal, not TOOLS.length: this IS the
+    // registry, so comparing it to its own length would always pass and the
+    // guard would be silently gone. server.test.ts and mcp-oauth.e2e.test.ts
+    // assert the SAME number at the wire layer, and there it is correct to
+    // derive from TOOLS.length, because those are checking transport fidelity
+    // (does the wire expose every registered tool), not the registry's size.
+    expect(TOOLS).toHaveLength(25);
   });
 
   it("every tool carries a Title-Case title and behavioural hints", () => {
@@ -163,6 +169,7 @@ describe("tool listing", () => {
     const READ_ONLY = [
       "get_skill",
       "list_rows",
+      "count_rows",
       "get_row",
       "get_feed_events",
       "list_deleted_rows",
@@ -233,6 +240,7 @@ describe("tool listing", () => {
     const READ_ONLY = [
       "get_skill",
       "list_rows",
+      "count_rows",
       "get_row",
       "get_feed_events",
       "list_deleted_rows",
@@ -1214,6 +1222,34 @@ describe("row CRUD tools", () => {
       since: "c1",
       limit: 10,
     });
+  });
+
+  it("count_rows forwards app_id/collection and returns { count }", async () => {
+    const countAppRows = vi.fn().mockResolvedValue({ count: 3 });
+    const res = await tool("count_rows").handler(fakeClient({ countAppRows }), {
+      app_id: "app_1",
+      collection: "orders",
+    });
+    expect(countAppRows).toHaveBeenCalledWith("app_1", "orders");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({ count: 3 });
+  });
+
+  it("count_rows surfaces a forbidden count as isError rather than throwing", async () => {
+    const countAppRows = vi
+      .fn()
+      .mockRejectedValue(
+        new HomespunApiError(
+          403,
+          "collection_count_forbidden",
+          "not permitted",
+        ),
+      );
+    const res = await tool("count_rows").handler(fakeClient({ countAppRows }), {
+      app_id: "app_1",
+      collection: "orders",
+    });
+    expect(res.isError).toBe(true);
+    expect(toolErrorCode(res)).toBe("collection_count_forbidden");
   });
 
   it("get_row fetches a single row via the dedicated route", async () => {

@@ -2,6 +2,7 @@
 // resolution (spec-cli §3.3).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { HomespunApiError } from "@homespunapps/core";
 
 const calls: { method: string; args: unknown[] }[] = [];
 const fakeClient = {
@@ -23,6 +24,10 @@ const fakeClient = {
   listAppRows: vi.fn((appId: unknown, collection: unknown, opts: unknown) => {
     calls.push({ method: "listAppRows", args: [appId, collection, opts] });
     return Promise.resolve({ rows: [], next_cursor: null, has_more: false });
+  }),
+  countAppRows: vi.fn((appId: unknown, collection: unknown) => {
+    calls.push({ method: "countAppRows", args: [appId, collection] });
+    return Promise.resolve({ count: 3 });
   }),
   getAppRow: vi.fn((appId: unknown, collection: unknown, key: unknown) => {
     calls.push({ method: "getAppRow", args: [appId, collection, key] });
@@ -223,5 +228,26 @@ describe("upsert/update/delete round-trips", () => {
       { method: "getAppRow", args: [CUID_APP, "items", "milk"] },
     ]);
     expect(JSON.parse(stdout).row.key).toBe("milk");
+  });
+
+  it("count calls the dedicated count route and prints { count }", async () => {
+    await runData(argv([CUID_APP, "items", "count"]));
+    expect(calls).toEqual([
+      { method: "getApp", args: [CUID_APP] },
+      { method: "countAppRows", args: [CUID_APP, "items"] },
+    ]);
+    expect(JSON.parse(stdout)).toEqual({ count: 3 });
+  });
+
+  it("count surfaces a forbidden count as a clean exit 1, not a leaked number", async () => {
+    fakeClient.countAppRows.mockRejectedValueOnce(
+      new HomespunApiError(403, "collection_count_forbidden", "not permitted"),
+    );
+    await expect(runData(argv([CUID_APP, "items", "count"]))).rejects.toThrow(
+      "__exit_1__",
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stderr).error.code).toBe("collection_count_forbidden");
+    expect(stdout).toBe("");
   });
 });

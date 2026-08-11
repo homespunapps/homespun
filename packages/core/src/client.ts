@@ -1547,6 +1547,28 @@ export class HomespunClient {
   }
 
   /**
+   * GET /v1/apps/:id/collections/:name/count: live row count (spec B4,
+   * issue #1056), the same aggregate the browser `/_hs/count/:name` door and
+   * the `count` MCP tool / CLI verb call through. Gated by the collection's
+   * `countRead` opt-in, INDEPENDENT of `read`: a caller who cannot list the
+   * rows can still get the count when the manifest opted the collection in,
+   * and a collection that never declared `countRead` refuses with
+   * `collection_count_forbidden` even for a caller who could otherwise list.
+   * No filter and no paging: it is a whole-scope total.
+   */
+  async countAppRows(
+    appId: string,
+    collection: string,
+  ): Promise<{ count: number }> {
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/collections/${encodeURIComponent(collection)}/count`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ count: number }>(r);
+  }
+
+  /**
    * GET /v1/apps/:id/collections/:name/:key — read one row. A dedicated
    * route (not a client-side scan like v1's `getRecord`) — spec-cli §8
    * ruling 3 confirms it as a first-class relay route.

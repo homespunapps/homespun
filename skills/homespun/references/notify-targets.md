@@ -264,9 +264,11 @@ Four things worth knowing before you reach for it:
   that same content to a third party would undo the check. The recipient taps,
   your app opens, and your own reads serve the content. Use `link` to point
   them at the right screen and `GET /_hs/notifications` to tell them which row.
-- **It needs `"offline": true`.** A push message is only ever delivered to a
-  service worker, and the relay serves one only to an app that declares offline
-  serving. A `push` channel on a manifest without it is a hard deploy error.
+- **It needs `"offline": true` and a public app.** A push message is only ever
+  delivered to a service worker, and the relay serves one only to a `public`
+  app that also declares offline serving, never to `link` or `private`. A
+  `push` channel on a manifest without `offline: true`, or on an app that
+  is not public, is a hard deploy error.
 - **Nothing is sent until the viewer opts in, from your own UI.** The platform
   never prompts. Your page calls `homespun.push.enable()`, which is the one
   call in the whole SDK that shows a browser prompt, and you call it from a
@@ -276,8 +278,10 @@ Four things worth knowing before you reach for it:
   `homespun.push.status()` reads where they stand without prompting, and
   `homespun.push.disable()` stops it.
 - **iOS needs the app on the home screen first.** That is an Apple constraint
-  with no way around it, which is why `"inapp"` carries most of the value for a
-  link-shared app and push is the escalation.
+  with no way around it. Push also does not reach a link-shared app at all:
+  the service worker requires `public` visibility specifically, so a `link`
+  app gets no worker either. For a link-shared app, `"inapp"` is the
+  escalation path, not `"push"`.
 
 ## Letting a recipient say stop
 

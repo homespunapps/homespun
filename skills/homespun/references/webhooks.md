@@ -60,8 +60,10 @@ Rules of the road:
 
 **Signing + verification.** Every request carries these headers:
 
-- `X-Homespun-Signature: t=<unixSeconds>,v1=<hex>` where `<hex>` is
-  `HMAC-SHA256(secret, "<t>.<rawBody>")`.
+- `X-Homespun-Signature: t=<unixSeconds>,v1=<hex>[,v1=<hex>...]` where each
+  `<hex>` is `HMAC-SHA256(secret, "<t>.<rawBody>")` for one currently-live
+  secret. Normally there is exactly one `v1=` entry; during a rotation's grace
+  window (see below) there are two, one per live secret.
 - `X-Homespun-Event` (the op), `X-Homespun-Collection`, `X-Homespun-Delivery`
   (a stable idempotency key), `Content-Type: application/json`,
   `User-Agent: Homespun-Webhooks/1`.
@@ -69,16 +71,18 @@ Rules of the road:
 The **signing secret** (`whsec_…`) is minted the first time you deploy a
 non-empty `webhooks` list and returned to you on the **deploy response** and the
 owner/agent app-detail read (`GET /v1/apps/:id` → `webhook_secret`). It is never
-shown on any public path and never rotated automatically. Configure it on your
-receiver, then verify each request:
+shown on any public path. Configure it on your receiver, then verify each
+request:
 
-1. Read `t` and `v1` from `X-Homespun-Signature`.
-2. Recompute `HMAC-SHA256(secret, t + "." + rawRequestBody)` and compare to `v1`
-   with a **constant-time** compare (e.g. `crypto.timingSafeEqual`).
-3. Reject if they differ, or if `t` is too old (say more than 5 minutes) to
+1. Read `t` and EVERY `v1=` entry from `X-Homespun-Signature` (split on `,`;
+   more than one key can share the name `v1`, Stripe-style).
+2. Recompute `HMAC-SHA256(secret, t + "." + rawRequestBody)` and compare it to
+   EACH `v1` value with a **constant-time** compare (e.g.
+   `crypto.timingSafeEqual`). Accept if ANY one matches.
+3. Reject if none matches, or if `t` is too old (say more than 5 minutes) to
    bound replay.
 
-Three details a receiver implementation gets wrong if it has to guess them:
+Four details a receiver implementation gets wrong if it has to guess them:
 
 - **The secret is the HMAC key VERBATIM, `whsec_` prefix included.** The prefix
   is part of the key, not a display convention, so stripping it makes every
@@ -90,6 +94,11 @@ Three details a receiver implementation gets wrong if it has to guess them:
   parsed object changes whitespace and key order, and the HMAC is over the bytes
   as sent. In Express that means a raw-body parser on this route rather than
   `express.json()`.
+- **Check every `v1=` value, never only the first.** During a rotation's grace
+  window the header carries two: the one you have not yet configured and the
+  one you have. Parsing only the first `v1=` makes half of every rotation look
+  like a signature failure, depending on which value the relay happened to put
+  first.
 
 Delivery is **at-least-once**: a receiver can see the same `X-Homespun-Delivery`
 id twice (a retry after a slow 2xx, or a relay worker that crashed after the
@@ -113,8 +122,49 @@ sends (default **6**), after which the delivery is marked `failed` and is not
 retried again. **Ordering is not guaranteed.** A delivery that fails and backs
 off arrives after deliveries created later, so a receiver that cares about order
 must sort on the envelope's `feed_seq` (the ordered feed position) rather than
-trusting arrival order. There is no documented rotation procedure for the signing
-secret; treat it as fixed for the life of the app.
+trusting arrival order.
+
+**Rotating the signing secret.** `POST /v1/apps/:id/webhook-secret/rotate`
+(owner-cookie or owning-agent-key) mints a fresh secret and returns it, while
+retaining the old one for a grace window so your receiver keeps verifying while
+you update its configuration:
+
+```json
+// POST /v1/apps/:id/webhook-secret/rotate
+// body: { "grace_seconds": 3600 }  // optional, default 3600 (1h), max 86400 (24h)
+
+// 200:
+{
+  "webhook_secret": "whsec_…",                          // the new current secret
+  "webhook_secret_previous": "whsec_…",                  // the one it replaced
+  "webhook_secret_previous_expires_at": "2026-…Z",       // when it stops being signed
+  "rotated_at": "2026-…Z"
+}
+```
+
+The **procedure**, in order:
+
+1. Call the rotate endpoint. Note the returned `webhook_secret` (the new value)
+   and `webhook_secret_previous_expires_at` (your deadline).
+2. Update your receiver's configured secret to the new `webhook_secret`, any
+   time before the deadline. Every delivery sent in between is signed with
+   **both** the new and the old secret (two `v1=` entries), so your receiver
+   verifies correctly whether it is still checking the old value or has
+   already switched to the new one - there is no window where deliveries fail.
+3. Once the deadline passes, the relay signs with only the new secret. If your
+   receiver has not updated by then, verification starts failing for it, same
+   as any other single-secret setup.
+
+Calling the endpoint again before the grace window closes replaces the
+retained secret with the one just displaced - it does not accumulate a chain
+of old secrets, so a receiver only ever needs to hold at most two values at
+once (current + immediately-previous). Rotating an app that has never deployed
+a non-empty `webhooks` list (no secret minted yet) is a `409`; deploy one
+first.
+
+Rotation is **owner/agent-triggered only** - nothing on the relay rotates a
+webhook secret automatically, so a receiver that has once configured the right
+value stays correct until you choose to rotate.
 
 **Authenticated webhooks (`connection` + `bodyTemplate`).** A webhook can also
 authenticate to its target with a stored credential and send a **custom JSON
