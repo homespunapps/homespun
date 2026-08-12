@@ -3,14 +3,14 @@
   "name": "dev.homespun/homespun",
   "title": "Homespun",
   "description": "Deploy a multi-user web app from your agent: hosting, auth, database, and permissions.",
-  "version": "1.6.58",
+  "version": "1.6.59",
   "websiteUrl": "https://homespun.dev",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@homespunapps/mcp",
-      "version": "1.6.58",
+      "version": "1.6.59",
       "transport": {
         "type": "stdio"
       },
