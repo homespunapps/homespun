@@ -131,20 +131,29 @@ capability URL (`/b/<token>?w=256`).
 
 A bare `<img src="/_hs/attachments/<id>?w=256">` works for the app's OWN
 attachment whatever its visibility. **The read route is gated on the APP's
-visibility, not per collection and not on a session:** a `public` or `link` app
-serves its attachments to ANYONE, anonymous visitors included, and a `private`
-app requires a signed-in owner/member session. So a public gallery needs no
-capability token and no sign-in, and the thumbnail renders on the app's own page
-just like the full image. The only thing without a width parameter is the
-JS-bytes read, `homespun.downloadBlob(id)`, so if you fetch the raw bytes in JS
-you get the full image; use the `?w=` URL form when you want a resized variant.
+visibility, not per collection and not on a session:** a `public` app serves its
+attachments to ANYONE, anonymous visitors included, while a `link` app requires
+a valid share pass and a `private` app requires a signed-in owner/member
+session. So a public gallery needs no capability token and no sign-in, and the
+thumbnail renders on the app's own page just like the full image. The only thing
+without a width parameter is the JS-bytes read, `homespun.downloadBlob(id)`, so
+if you fetch the raw bytes in JS you get the full image; use the `?w=` URL form
+when you want a resized variant.
 
 Rules worth knowing:
 
-- **Fixed width allowlist.** Only these widths are honoured: **64, 128, 256,
-  512, 1024, 2048**. Any other value (e.g. `?w=300`, `?w=99999`) is IGNORED and
-  the original image is served. The closed list bounds the number of cached
-  variants per image to at most six.
+- **Widths snap to a fixed allowlist.** Variants are only ever generated at
+  **64, 128, 256, 512, 1024, 2048**, which bounds the cached variants per image
+  to at most six. A width that is not on the list snaps **up** to the smallest
+  one that covers it, so `?w=80` serves the 128px variant and `?w=300` serves
+  the 512px one. You never get fewer pixels than you asked for. A width **above
+  2048** serves the original, because resizing is downscale-only and nothing
+  smaller could satisfy the request.
+- **Ask for roughly the size you will display.** The snap means a rough number
+  is fine, but the gap between widths is large: on a 4032x3024 photo, `?w=128`
+  is about 2.7 KB, `?w=1024` about 159 KB, and the original about 2 MB. Pick the
+  width from the CSS box the image renders into, times the device pixel ratio
+  you care about.
 - **Cached variants are free, regenerable cache.** A generated variant is NOT
   metered against your storage quota. It does not need to be: a variant is a
   downscale-only derivative of a source image that already counts against your

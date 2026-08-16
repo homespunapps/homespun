@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.62 -->
+<!-- homespun skill v1.6.63 -->
 
 # homespun
 
@@ -697,7 +697,8 @@ Fields, exactly:
     relay never fetches it; it is only emitted as the meta-tag value.
 - **`x-homespun-manifest.collections`**: a map of collection name →
   `{ schema?, read, write, update?, delete, countRead?, relations?, keyClaim?,
-  immutable?, appendOnly?, unique?, retention?, mirror?, seedOnInstall? }`.
+  immutable?, serverSet?, appendOnly?, unique?, retention?, mirror?,
+  anonWriteBudget?, antiAbuse?, seedOnInstall? }`.
   An app may declare zero collections (a purely presentational app).
   - **`schema`**: `{ "$ref": "#/$defs/<Name>" }` into the document's own
     `$defs`. Optional: omit it for a schemaless collection (rows validated
@@ -856,6 +857,64 @@ Fields, exactly:
     `set: "caller"` is chosen by whoever `write` admits, and without a freeze
     they can keep choosing after the fact. When the collection declares a
     schema, every name must be a declared top-level property of it.
+  - **`serverSet`**: optional object mapping a field name to a definition the
+    relay fills in when a row is CREATED. **This computes a value, it does not
+    validate one.** There is no condition form, "reject if the total is over
+    X" is out of scope on purpose (issue #1238): the manifest is the
+    install-time consent screen, an expression language over row contents
+    cannot be summarised into one sentence a person reads before installing,
+    and LLM-authored authorization measurably gets *worse*, not better, when
+    handed that kind of escape hatch. If a field cannot be computed cleanly
+    from data the app already has, `serverSet` is the wrong tool. Exactly two
+    forms, one per field:
+    - **Lookup**, `{ "from": "<collection>", "keyField": "<field>", "take":
+      "<field>" }`: `keyField` names a field on the row being written whose
+      value is the ROW KEY of a row in the `from` collection, and `take`
+      names the field to copy off that row. Matched by row key only, never by
+      an arbitrary field value.
+    - **Arithmetic**, `{ "product": [...] }` or `{ "sum": [...] }`: each
+      entry is either a `serverSet` field declared EARLIER in the same
+      collection, or a plain field on the row being written.
+
+    A caller-supplied value for a `serverSet` field is **rejected, never
+    silently overwritten**: `422 server_set_field_supplied`, on both the
+    browser door and the agent door, from every principal including you as
+    the owner's agent. On create the field's mere presence in the payload is
+    refused, whatever value it carries. On update, sending the row's existing
+    value back unchanged is fine (the honest-echo case every frozen field
+    allows), but a payload that changes it is refused the same way. A
+    lookup's `keyField` is implicitly frozen too, exactly like a field in
+    `immutable`: freezing only the computed field and leaving its input open
+    would let a later update retarget an already-computed value at a
+    different source row without ever touching the field itself. A missing
+    or deleted source row fails the WRITE, `422 server_set_source_missing`,
+    rather than landing with a blank value: an order line cannot reference a
+    product that does not exist. Depth is exactly one: a lookup's `take` may
+    not itself name a field that is `serverSet` on the source collection. At
+    most 8 `serverSet` fields per collection, and each must be a declared
+    top-level property of the collection's own schema. Evaluation happens
+    once, on create; the frozen `keyField` is what makes that safe, so a
+    product's price changing tomorrow correctly leaves an order line already
+    written at the price it sold for.
+
+    Worked example, a shop that prices its own order lines:
+    ```json
+    "order_lines": {
+      "schema": { "$ref": "#/$defs/OrderLine" },
+      "serverSet": {
+        "unitPrice": { "from": "products", "keyField": "productKey", "take": "sellPrice" },
+        "productName": { "from": "products", "keyField": "productKey", "take": "name" },
+        "lineTotal": { "product": ["unitPrice", "quantity"] }
+      },
+      "write": ["anyone"], "update": ["anyone"], "delete": ["owner"], "read": ["anyone"]
+    }
+    ```
+    A caller creates a row with only `productKey` and `quantity`; the relay
+    looks up the named product, fills in `unitPrice` and `productName`, and
+    multiplies `unitPrice` by the caller's own `quantity` into `lineTotal`.
+    Sending any of `unitPrice`, `productName` or `lineTotal` in the create
+    payload is refused, on either door, so a public order form cannot forge
+    its own price.
   - **`appendOnly`**: optional, either a boolean (default `false`) or
     `{ "except": [...] }`. Set `true` for a journal/event-shaped collection:
     rows can be created but never updated or deleted. **This is enforced, not
@@ -918,6 +977,35 @@ Fields, exactly:
     `.snapshot()`, since there is no full local copy to read synchronously.
     Reach for `"server"` on a collection too large, or too private in
     aggregate, for every visitor's browser to hold a complete copy of.
+  - **`anonWriteBudget`**: optional object, `{ perIpPerDay, perAppPerDay }`,
+    **both required** once you declare the key at all. A daily TOTAL on how
+    many rows anonymous visitors may add to this collection: `perIpPerDay`
+    caps one visitor's network, `perAppPerDay` caps the collection as a
+    whole across every visitor combined. `0` in either field means
+    unlimited for that dimension. This is a **different control** from the
+    platform's built-in per-IP rate limiter: the rate limiter bounds how
+    fast a stranger can write, this bounds how MANY they can ever write in a
+    day, which is what stops a slow drip of anonymous rows from quietly
+    filling your app's own row quota before you ever get to use it. **Only
+    accepted on a collection whose `write` list includes `"anyone"`**;
+    declaring it anywhere else is rejected at deploy, because a budget on a
+    collection anonymous visitors cannot write to at all could never apply.
+    Never applies to your own writes as owner, or to a member's.
+  - **`antiAbuse`**: optional string, only `"turnstile"` today. Requires a
+    Cloudflare Turnstile verification token on every anonymous write to this
+    collection: the page fetches a token from a Turnstile widget and the SDK
+    attaches it to the write, or the relay refuses with `turnstile_required`
+    (missing) or `turnstile_verification_failed` (rejected). **Fails open**:
+    if Cloudflare cannot be reached in time, the write proceeds rather than
+    being blocked, so a Cloudflare outage never takes down every public form
+    on the platform at once. `anonWriteBudget` above is the backstop that
+    makes that acceptable: even during a real outage, a stranger's total is
+    still bounded by the daily budget, so declare a budget alongside this
+    rather than relying on Turnstile alone. Also only accepted on a
+    collection whose `write` list includes `"anyone"`, and only when the
+    relay operator has Turnstile configured; if you get a deploy error
+    naming it, the relay is not configured for it and you should drop the
+    key or ask the operator to enable it.
   - **`seedOnInstall`**: optional boolean (default `false`). Only meaningful on
     a *template* (a published/first-party snapshot someone installs). Set `true`
     to pre-fill this collection with the template's starter rows when the
@@ -986,6 +1074,63 @@ Fields, exactly:
   It does **not** widen what the page can `fetch()`; that's `externalHosts`
   only, kept separate on purpose so a page can load, say, a charting library
   from a CDN without also being able to exfiltrate data to arbitrary hosts.
+- **`x-homespun-manifest.routes`**: optional array (at most 8) declaring a
+  real, indexable URL for every row of one collection: a product page, a
+  listing, an article. Before this key, every path under your app served the
+  identical HTML; a route is the one way the manifest asks the relay to serve
+  DIFFERENT content (title, description, canonical URL, a server-rendered
+  summary block, and optionally JSON-LD) at different paths. Each entry:
+  ```json
+  {
+    "path": "/p/:code",
+    "collection": "products",
+    "matchOn": "code",
+    "title": "{name} | {app.name}",
+    "description": "{name}, {colour}, NPR {sellPrice}",
+    "summary": ["name", "colour", "sellPrice"],
+    "schemaType": "Product",
+    "indexable": true
+  }
+  ```
+  - **`path`**: literal segments plus EXACTLY one `:param` segment. No
+    wildcards, no regex, no nested params, and no two routes may share a
+    shape (same literal segments, `:param` in the same position) or reuse a
+    reserved path (`/_hs/*`, `/b/*`, `/robots.txt`, `/favicon.ico`,
+    `/.well-known/security.txt`, `/sitemap.xml`).
+  - **`collection`**: required. **The collection's `read` list MUST
+    explicitly include `"anyone"`.** A route server-renders row content into
+    HTML on the open web, so this is refused at deploy otherwise: the
+    relay will not guess that you meant to publish something, even where an
+    absent `read` would otherwise default to readable.
+  - **`matchOn`**: the literal string `"key"` (the row's own key) or a field
+    named in that collection's own `unique` list. Either way resolution is
+    an indexed lookup, never a scan.
+  - **`title`**: required, ≤200 chars. `description`: optional, ≤400 chars.
+    Both may interpolate `{field}` (a top-level scalar field of the matched
+    row) or the fixed `{app.name}` / `{app.slug}` tokens.
+  - **`summary`**: up to 12 top-level scalar field names, rendered as a
+    bounded, escaped block in the page body: real markup present before any
+    script runs, which is what makes the page genuinely crawlable rather
+    than only the meta tags.
+  - **`schemaType`**: one of `Product`, `Article`, `Event`, `Offer`, or omit
+    for no JSON-LD.
+  - **`indexable`**: boolean, default `false`. Independent of the app-level
+    `app.indexable` above: you can keep your app shell out of search while
+    still wanting every product page found, or the reverse. An indexable
+    route is listed in a per-app `/sitemap.xml` (on the app's own host, not
+    the shared platform one), and that app's `robots.txt` points at it.
+  - A request that matches no live row returns the app shell with a `404`
+    status (scoped strictly to declared route patterns; every other path on
+    your app keeps returning `200` exactly as before). A row edit is
+    reflected the next time its page is fetched, at the same up-to-60-second
+    edge staleness every served document already has (fine for a
+    catalogue), so don't treat the server-rendered summary as authoritative
+    for stock or price at the moment of purchase; the hydrated client view
+    is the live one.
+  - **Declaring or widening `routes` breaks the redeploy compat check** the
+    same way a widened `externalHosts` does: it is publishing data to the
+    open web, so it needs `--force` and a person reading the consent
+    sentence, not a silent redeploy.
 - **`x-homespun-manifest.capabilities`**: optional array from a STRICT
   allowlist of 21 names. Each granted name flips its `Permissions-Policy`
   directive from denied to `self` on the served app document; everything you
