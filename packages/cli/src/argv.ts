@@ -23,6 +23,15 @@ export interface ParsedArgs {
    * it — assertKnownFlags treats undefined as empty.
    */
   danglingValueFlags?: Set<string>;
+  /**
+   * Values for a flag declared in REPEATABLE_FLAGS, in the order given
+   * (`--asset a=b --asset c=d` becomes `["a=b", "c=d"]`). A flag NOT in
+   * REPEATABLE_FLAGS still throws ArgvError on a second occurrence via
+   * `flags`; this map exists only so a flag that opts into repetition
+   * doesn't. Optional for the same reason `danglingValueFlags` is: handwritten
+   * ParsedArgs literals in tests don't need to set it.
+   */
+  repeated?: Map<string, string[]>;
 }
 
 /**
@@ -100,13 +109,28 @@ export const BOOLEAN_FLAGS = new Set([
 ]);
 
 /**
+ * Flags that may be repeated, accumulating one value per occurrence instead
+ * of throwing ArgvError on the second one. Everything not listed here keeps
+ * the default last-flag-wins-is-a-bug behavior (see the "throws on a
+ * repeated value-flag" tests): repetition is opt-in per flag, not a global
+ * relaxation, so a typo'd repeat of an ordinary flag still fails loudly.
+ *
+ * `asset`: `homespun deploy --asset <local>=<app-path>`, once per file
+ * (issue #1028).
+ */
+export const REPEATABLE_FLAGS = new Set(["asset"]);
+
+/**
  * Parse argv tokens. `booleanFlags` lists flags that never consume a value
  * (e.g. --json, --once, --help); everything else with a `--name` form
- * consumes the next token unless written as `--name=value`.
+ * consumes the next token unless written as `--name=value`. `repeatableFlags`
+ * (default: none) lists flags that accumulate into `repeated` instead of
+ * throwing on a second occurrence.
  *
  * Bails with ArgvError on the first duplicate (`--foo x --foo y` or
  * `--once --once`) so a typo'd repeat doesn't silently overwrite the first
- * value the way a plain `Map.set` would.
+ * value the way a plain `Map.set` would, UNLESS the flag is in
+ * `repeatableFlags`, in which case every occurrence is kept, in order.
  *
  * Does NOT throw on a value-flag with no following value. Instead it
  * records the name in `danglingValueFlags` so `assertKnownFlags` can
@@ -119,11 +143,22 @@ export const BOOLEAN_FLAGS = new Set([
 export function parseArgs(
   tokens: string[],
   booleanFlags: Set<string>,
+  repeatableFlags: Set<string> = new Set(),
 ): ParsedArgs {
   const positionals: string[] = [];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const danglingValueFlags = new Set<string>();
+  const repeated = new Map<string, string[]>();
+
+  const pushRepeated = (key: string, value: string): void => {
+    const arr = repeated.get(key);
+    if (arr) {
+      arr.push(value);
+    } else {
+      repeated.set(key, [value]);
+    }
+  };
 
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i]!;
@@ -136,10 +171,15 @@ export function parseArgs(
       const eq = body.indexOf("=");
       if (eq !== -1) {
         const key = body.slice(0, eq);
+        const value = body.slice(eq + 1);
+        if (repeatableFlags.has(key)) {
+          pushRepeated(key, value);
+          continue;
+        }
         if (flags.has(key)) {
           throw new ArgvError(`duplicate flag: --${key}`);
         }
-        flags.set(key, body.slice(eq + 1));
+        flags.set(key, value);
         continue;
       }
       if (booleanFlags.has(body)) {
@@ -158,6 +198,11 @@ export function parseArgs(
         danglingValueFlags.add(body);
         continue;
       }
+      if (repeatableFlags.has(body)) {
+        pushRepeated(body, next);
+        i++;
+        continue;
+      }
       if (flags.has(body)) {
         throw new ArgvError(`duplicate flag: --${body}`);
       }
@@ -168,7 +213,7 @@ export function parseArgs(
     positionals.push(tok);
   }
 
-  return { positionals, flags, bools, danglingValueFlags };
+  return { positionals, flags, bools, danglingValueFlags, repeated };
 }
 
 /**
@@ -223,6 +268,9 @@ export function assertKnownFlags(
     if (!boolSet.has(k) && !flagSet.has(k)) unknown.push(`--${k}`);
   }
   for (const k of dangling) {
+    if (!flagSet.has(k) && !boolSet.has(k)) unknown.push(`--${k}`);
+  }
+  for (const k of args.repeated?.keys() ?? []) {
     if (!flagSet.has(k) && !boolSet.has(k)) unknown.push(`--${k}`);
   }
   if (unknown.length > 0) {

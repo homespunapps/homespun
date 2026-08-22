@@ -1,6 +1,6 @@
 // Tests for `homespun connections` (#1363): drives real command dispatch
-// (create/list/delete/authorize-url) against a fake client stubbed via
-// vi.mock on ../config.js, mirroring grant.test.ts.
+// (create/list/delete/authorize-url/deliveries/replay) against a fake client
+// stubbed via vi.mock on ../config.js, mirroring grant.test.ts.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Readable } from "node:stream";
@@ -13,6 +13,8 @@ const fakeClient = {
   listConnections: vi.fn(),
   deleteConnection: vi.fn(),
   connectionAuthorizeUrl: vi.fn(),
+  listWebhookDeliveries: vi.fn(),
+  replayWebhookDelivery: vi.fn(),
 };
 
 vi.mock("../config.js", () => ({
@@ -567,6 +569,102 @@ describe("runConnection dispatch", () => {
   });
 
   // ----- verb guards -------------------------------------------------------
+
+  // ----- deliveries (#1720) ------------------------------------------------
+
+  it("deliveries resolves a slug then prints the deliveries envelope", async () => {
+    fakeClient.listApps.mockResolvedValue({ items: [{ id: "app_resolved" }] });
+    fakeClient.listWebhookDeliveries.mockResolvedValue({
+      deliveries: [{ id: "del_1", payload: '{"order":"A-1"}' }],
+    });
+
+    await run(["deliveries", "--app", "my-app"]);
+
+    expect(fakeClient.listWebhookDeliveries).toHaveBeenCalledWith(
+      "app_resolved",
+      {},
+    );
+    expect(JSON.parse(stdout).deliveries[0].payload).toBe('{"order":"A-1"}');
+  });
+
+  it("deliveries forwards status, collection and a numeric limit", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.listWebhookDeliveries.mockResolvedValue({ deliveries: [] });
+
+    await run([
+      "deliveries",
+      "--app",
+      CUID,
+      "--status",
+      "failed",
+      "--collection",
+      "orders",
+      "--limit",
+      "50",
+    ]);
+
+    expect(fakeClient.listWebhookDeliveries).toHaveBeenCalledWith(CUID, {
+      status: "failed",
+      collection: "orders",
+      limit: 50,
+    });
+  });
+
+  // A typo'd --limit must be an argument error, not a silent fall-through to
+  // the server default: "I asked for 100 and got 25" is the confusing outcome.
+  it("deliveries rejects a non-numeric --limit before calling the relay", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+
+    await run(["deliveries", "--app", CUID, "--limit", "lots"]);
+
+    expect(exitCode).toBe(1);
+    expect(fakeClient.listWebhookDeliveries).not.toHaveBeenCalled();
+  });
+
+  it("deliveries requires --app", async () => {
+    await run(["deliveries"]);
+    expect(exitCode).toBe(1);
+    expect(fakeClient.listWebhookDeliveries).not.toHaveBeenCalled();
+  });
+
+  // ----- replay (#1720) ----------------------------------------------------
+
+  it("replay calls replayWebhookDelivery and prints the new delivery", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.replayWebhookDelivery.mockResolvedValue({
+      delivery: { id: "del_2", replayOfId: "del_1", status: "pending" },
+    });
+
+    await run(["replay", "--app", CUID, "--delivery", "del_1"]);
+
+    expect(fakeClient.replayWebhookDelivery).toHaveBeenCalledWith(
+      CUID,
+      "del_1",
+    );
+    expect(JSON.parse(stdout).delivery.replayOfId).toBe("del_1");
+  });
+
+  it("replay requires --delivery", async () => {
+    await run(["replay", "--app", CUID]);
+    expect(exitCode).toBe(1);
+    expect(fakeClient.replayWebhookDelivery).not.toHaveBeenCalled();
+  });
+
+  it("replay surfaces a relay error via failFromError", async () => {
+    fakeClient.getApp.mockResolvedValue({ id: CUID });
+    fakeClient.replayWebhookDelivery.mockRejectedValue(
+      new HomespunApiError(
+        410,
+        "gone",
+        "the rule is no longer in the manifest",
+      ),
+    );
+
+    await run(["replay", "--app", CUID, "--delivery", "del_1"]);
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("the rule is no longer in the manifest");
+  });
 
   it("rejects an unknown verb", async () => {
     await run(["frobnicate", "--app", CUID]);

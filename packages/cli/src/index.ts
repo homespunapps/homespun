@@ -10,7 +10,12 @@
 // $XDG_CONFIG_HOME/homespun/config.json; pick one with --profile or HOMESPUN_PROFILE.
 // Output is JSON by default. Every noun self-documents via --help.
 
-import { parseArgs, ArgvError, BOOLEAN_FLAGS } from "./argv.js";
+import {
+  parseArgs,
+  ArgvError,
+  BOOLEAN_FLAGS,
+  REPEATABLE_FLAGS,
+} from "./argv.js";
 import {
   helpTextFor,
   nounSpec,
@@ -83,7 +88,7 @@ async function main(): Promise<void> {
 
   let args;
   try {
-    args = parseArgs(rest, BOOLEAN_FLAGS);
+    args = parseArgs(rest, BOOLEAN_FLAGS, REPEATABLE_FLAGS);
   } catch (e) {
     if (e instanceof ArgvError) {
       failArgvError(e);

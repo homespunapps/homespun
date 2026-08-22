@@ -6,6 +6,7 @@ import {
   ArgvError,
   assertKnownFlags,
   BOOLEAN_FLAGS,
+  REPEATABLE_FLAGS,
 } from "./argv.js";
 
 const BOOLS = new Set(["json", "once", "help", "version"]);
@@ -91,6 +92,53 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--once", "--once"], BOOLS)).toThrow(
       "duplicate flag: --once",
     );
+  });
+
+  describe("repeatable flags (issue #1028)", () => {
+    const REPEATABLE = new Set(["asset"]);
+
+    it("accumulates every occurrence, in order, instead of throwing (space form)", () => {
+      const r = parseArgs(
+        ["--asset", "a=b", "--asset", "c=d"],
+        BOOLS,
+        REPEATABLE,
+      );
+      expect(r.repeated!.get("asset")).toEqual(["a=b", "c=d"]);
+      expect(r.flags.has("asset")).toBe(false);
+    });
+
+    it("accumulates every occurrence in the = form, and mixed with the space form", () => {
+      const r = parseArgs(["--asset=a=b", "--asset", "c=d"], BOOLS, REPEATABLE);
+      expect(r.repeated!.get("asset")).toEqual(["a=b", "c=d"]);
+    });
+
+    it("a single occurrence still lands in repeated, not flags", () => {
+      const r = parseArgs(["--asset", "a=b"], BOOLS, REPEATABLE);
+      expect(r.repeated!.get("asset")).toEqual(["a=b"]);
+      expect(r.flags.has("asset")).toBe(false);
+    });
+
+    it("does not repeated-accumulate a flag not opted in, and still throws on its repeat", () => {
+      expect(() =>
+        parseArgs(["--url", "a", "--url", "b"], BOOLS, REPEATABLE),
+      ).toThrow("duplicate flag: --url");
+    });
+
+    it("defaults to no repeatable flags when the third argument is omitted", () => {
+      expect(() =>
+        parseArgs(["--asset", "a=b", "--asset", "c=d"], BOOLS),
+      ).toThrow("duplicate flag: --asset");
+    });
+
+    it("a trailing repeatable flag with no value is still dangling, not silently accepted", () => {
+      const r = parseArgs(["--asset"], BOOLS, REPEATABLE);
+      expect(r.danglingValueFlags!.has("asset")).toBe(true);
+      expect(r.repeated!.has("asset")).toBe(false);
+    });
+
+    it("REPEATABLE_FLAGS (the real production set) declares asset", () => {
+      expect(REPEATABLE_FLAGS.has("asset")).toBe(true);
+    });
   });
 
   describe("the real BOOLEAN_FLAGS set (regression #827)", () => {
@@ -179,6 +227,28 @@ describe("assertKnownFlags", () => {
     expect(caught!.hint).toBe(
       "run `homespun attachment upload --help` for the supported flags",
     );
+  });
+
+  it("rejects an unknown repeated flag, and accepts a declared one", () => {
+    const unknownArgs = {
+      positionals: [],
+      flags: new Map<string, string>(),
+      bools: new Set<string>(),
+      repeated: new Map([["asstet", ["a=b"]]]),
+    };
+    expect(() => assertKnownFlags(unknownArgs, [], [], "app example")).toThrow(
+      "unknown flag(s): --asstet",
+    );
+
+    const knownArgs = {
+      positionals: [],
+      flags: new Map<string, string>(),
+      bools: new Set<string>(),
+      repeated: new Map([["asset", ["a=b", "c=d"]]]),
+    };
+    expect(() =>
+      assertKnownFlags(knownArgs, ["asset"], [], "homespun deploy"),
+    ).not.toThrow();
   });
 
   it("rejects an unknown boolean flag", () => {

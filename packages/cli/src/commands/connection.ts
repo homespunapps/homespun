@@ -1,7 +1,9 @@
 // `homespun connections` (#1363) webhook-connection management for a v2 app:
 // create a static or oauth2 connection, list an app's connections (metadata
-// plus a fingerprint, never a secret), delete one, and print the browser URL
-// that completes an oauth2 connection's owner consent. Every verb targets an
+// plus a fingerprint, never a secret), delete one, print the browser URL
+// that completes an oauth2 connection's owner consent, and read or replay the
+// outbound delivery journal (#1720) so an agent can debug its own webhooks
+// without hand-rolling HTTP. Every verb targets an
 // app via a required `--app <idOrSlug>` flag, resolved the same way
 // `homespun grants`/`homespun members`/`homespun data` do (resolveAppId).
 //
@@ -30,7 +32,7 @@ export async function runConnection(args: ParsedArgs): Promise<void> {
   }
   if (verb === undefined) {
     fail(
-      "missing verb: homespun connections <create|list|delete|authorize-url>",
+      "missing verb: homespun connections <create|list|delete|authorize-url|deliveries|replay>",
       "invalid_args",
     );
   }
@@ -53,9 +55,13 @@ export async function runConnection(args: ParsedArgs): Promise<void> {
       return runDelete(sub);
     case "authorize-url":
       return runAuthorizeUrl(sub);
+    case "deliveries":
+      return runDeliveries(sub);
+    case "replay":
+      return runReplay(sub);
     default:
       fail(
-        `unknown verb '${verb}' (homespun connections <create|list|delete|authorize-url>)`,
+        `unknown verb '${verb}' (homespun connections <create|list|delete|authorize-url|deliveries|replay>)`,
         "invalid_args",
       );
   }
@@ -229,6 +235,65 @@ async function runDelete(args: ParsedArgs): Promise<void> {
   try {
     await client.deleteConnection(appId, name!);
     printJson({ deleted: true, app_id: appId, name: name! });
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// deliveries
+// ---------------------------------------------------------------------------
+
+async function runDeliveries(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("connections", "deliveries"));
+  const appArg = args.flags.get("app");
+  if (!appArg) {
+    fail(
+      "usage: homespun connections deliveries --app <idOrSlug> [--status <pending|delivered|failed>] [--collection <name>] [--limit <n>]",
+      "invalid_args",
+    );
+  }
+  const limitRaw = args.flags.get("limit");
+  // Rejected here rather than passed through, so a typo'd --limit is an
+  // argument error instead of a silent fallback to the server's default.
+  if (limitRaw !== undefined && !/^[0-9]+$/.test(limitRaw)) {
+    fail("--limit must be a whole number", "invalid_args");
+  }
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg!);
+  const status = args.flags.get("status");
+  const collection = args.flags.get("collection");
+  try {
+    printJson(
+      await client.listWebhookDeliveries(appId, {
+        ...(status !== undefined ? { status } : {}),
+        ...(collection !== undefined ? { collection } : {}),
+        ...(limitRaw !== undefined ? { limit: Number(limitRaw) } : {}),
+      }),
+    );
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// replay
+// ---------------------------------------------------------------------------
+
+async function runReplay(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("connections", "replay"));
+  const appArg = args.flags.get("app");
+  const deliveryId = args.flags.get("delivery");
+  if (!appArg || !deliveryId) {
+    fail(
+      "usage: homespun connections replay --app <idOrSlug> --delivery <deliveryId>",
+      "invalid_args",
+    );
+  }
+  const client = makeClient(args);
+  const appId = await resolveAppId(client, appArg!);
+  try {
+    printJson(await client.replayWebhookDelivery(appId, deliveryId!));
   } catch (e) {
     failFromError(e);
   }

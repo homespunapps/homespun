@@ -1496,6 +1496,53 @@ export class HomespunClient {
   }
 
   /**
+   * GET /v1/apps/:id/webhooks/deliveries: the outbound delivery journal, newest
+   * first. This is a ROLLING window (the retention sweeper prunes terminal rows
+   * past WEBHOOKS_DELIVERY_RETENTION_DAYS), not the app's whole history.
+   *
+   * `payload` is the request body as it was rendered and sent, truncated
+   * server-side; `payloadTruncated` says whether it was cut. Together with
+   * `responseStatus`/`responseBody` that is what answers "why did the target
+   * reject this", which is the reason to reach for this call at all.
+   */
+  async listWebhookDeliveries(
+    appId: string,
+    opts: { status?: string; collection?: string; limit?: number } = {},
+  ): Promise<{ deliveries: Record<string, unknown>[] }> {
+    const q = new URLSearchParams();
+    if (opts.status !== undefined) q.set("status", opts.status);
+    if (opts.collection !== undefined) q.set("collection", opts.collection);
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/webhooks/deliveries${qs ? `?${qs}` : ""}`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ deliveries: Record<string, unknown>[] }>(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/webhooks/deliveries/:deliveryId/replay: re-send a stored
+   * delivery's own rule/url/payload as a fresh row, now, without waiting out
+   * its remaining backoff. Nothing caller-supplied enters the new row.
+   *
+   * NOT idempotent in effect: the target receives the same request again, so a
+   * target without its own dedupe ends up with a duplicate record.
+   */
+  async replayWebhookDelivery(
+    appId: string,
+    deliveryId: string,
+  ): Promise<{ delivery: Record<string, unknown> }> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/webhooks/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ delivery: Record<string, unknown> }>(r);
+  }
+
+  /**
    * The browser URL that completes an oauth2 connection's consent. Build
    * only, never fetch this yourself: it 302s the caller to the third-party
    * provider, and the relay refuses an agent-key caller here (consent is
@@ -1519,8 +1566,10 @@ export class HomespunClient {
    * conditions) and/or `sort` (`{field, dir}` list) to filter/order DB-side. The
    * relay applies read permission + author scoping FIRST, then the filter, so a
    * filtered read is always a subset of what the caller could already read. The
-   * query is serialized into the `q` param as URL-encoded JSON. Note: a custom
-   * `sort` cannot be combined with cursor pagination (`since`) in this version.
+   * query is serialized into the `q` param as URL-encoded JSON. Cursor
+   * pagination (`since`) works with a custom `sort` too (issue #1057): pass
+   * back the same `sort` a page's `next_cursor` came from, since a cursor is
+   * only valid for the exact sort it was issued under.
    */
   async listAppRows(
     appId: string,
@@ -2122,6 +2171,52 @@ export class HomespunClient {
     );
     if (!r.ok) this.fail(r);
     return this.asObject<CommunityReview>(r);
+  }
+}
+
+/**
+ * PUT raw bytes to a presigned upload URL returned by `presignBlob()`.
+ * Deliberately a bare function, not a `HomespunClient` method: the URL is
+ * ALREADY pre-authorized (a SAS query string on Azure, scoped to this one
+ * key), so sending `Authorization: Bearer <apiKey>` alongside it would hand
+ * the agent's relay credential to a storage host that never asked for it and
+ * has no use for it. Routing this through `this.call` / `this.fetchImpl`
+ * would attach that header unconditionally, so this stays outside the
+ * authenticated client machinery on purpose.
+ *
+ * Azure Blob's single-shot PUT additionally requires the
+ * `x-ms-blob-type: BlockBlob` header; every presign backend today is Azure
+ * SAS, and a PUT without it 400s with `MissingRequiredHeader`, so it is
+ * always sent. There is no relay error envelope to parse on failure here:
+ * this response is storage's own, so a non-2xx throws a plain `Error`
+ * carrying the status and whatever body storage returned.
+ */
+export async function putPresigned(
+  uploadUrl: string,
+  bytes: Uint8Array | Buffer,
+  mime: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const body = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let res: Response;
+  try {
+    res = await fetchImpl(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "content-type": mime,
+        "x-ms-blob-type": "BlockBlob",
+      },
+      body,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`presigned upload failed: ${msg}`, { cause: e });
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `presigned upload failed: HTTP ${res.status}${text ? ` (${text.slice(0, 500)})` : ""}`,
+    );
   }
 }
 

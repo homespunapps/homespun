@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.64 -->
+<!-- homespun skill v1.6.67 -->
 
 # homespun
 
@@ -1201,6 +1201,88 @@ Fields, exactly:
   not play. Ordinary public videos play once `embeds` is declared. Use the same
   pattern for other providers (a map, a form, a calendar): declare the origin in
   `embeds`, then iframe it.
+- **`x-homespun-manifest.embedAncestors`**: optional array of origins that
+  will be allowed to frame THIS app in someone else's `<iframe>`. It is the
+  opposite direction from `embeds`, which says what the app may frame, not
+  who may frame the app.
+
+  The origin grammar is stricter than `embeds`: **exact origins only, no
+  wildcard, ever.** `https://your-form-partner.example` is accepted;
+  `https://*.example.com` is refused with a clear error, unlike `embeds`
+  which does allow a single leftmost `*.`. The one exception is local
+  development: `http://localhost:PORT` and `http://127.0.0.1:PORT` are
+  accepted over plain `http`, and no other host may use `http`.
+  `"embedAncestors": ["https://www.example-partner-site.com"]` is the whole
+  declaration; no path, query, or userinfo is allowed.
+
+  **Declaring this field does nothing by itself, on most apps, and that is
+  not a bug to work around.** The origins only take effect when, at the
+  moment of the request, the app's visibility is `public` **and** its
+  manifest needs no visitor identity, meaning no collection both admits
+  anonymous create (`write: ["anyone"]`) and scopes `update`/`delete` to a
+  row subject such as `creator` or `own`. An app that needs visitor identity
+  relies on a cookie that a cross-site frame cannot carry, so framing it
+  would not work anyway; the field is left declared but inert rather than
+  rejected, so check the app's own collections before assuming an embed will
+  actually render. A plain public form, `write: ["anyone"]` with no
+  row-scoped `update`/`delete`, is the shape that qualifies.
+
+  A manifest that declares a non-empty `embedAncestors` **cannot be published
+  as a community template.** A published template's origins would let its
+  author decide who may frame every installed copy of the app, not just
+  their own, which none of this app's other grants (`embeds`,
+  `externalHosts`) create. Remove `embedAncestors` before publishing.
+
+  **The embed automatically resizes to fit its content, with nothing to
+  write.** Every app already loads the SDK, and the SDK already posts the
+  document's rendered height to its parent whenever the app is framed, so a
+  fixed-height iframe on the embedder's page grows and shrinks to match the
+  app instead of scrolling internally or leaving dead space below a short
+  form. There is no manifest key for this and nothing to opt into: it is
+  gated purely on being framed at all, which only happens for an origin the
+  manifest already listed.
+
+  **Handing the embed to the person who is embedding it.** They need two
+  things: an origin to declare in `embedAncestors` (their own site's origin,
+  exact, no path) and a way to actually put the app on their page. Two
+  options, and the first is the one to reach for:
+
+  - **The inline snippet (the default).** A self-contained `<iframe>` plus a
+    small `<script>` that listens for the resize message and grows the
+    iframe to match. No homespun-hosted script involved, so it keeps working
+    even if homespun is briefly unreachable after the page has loaded. The
+    app's owner shell shows a ready-to-copy version of this on the app's
+    Settings tab, filled in with the app's real URL, once the app has at
+    least one origin declared. Hand them that rather than retyping it by
+    hand, since it carries origin and window-source checks on the
+    `message` listener that must not be simplified away: a listener that
+    resizes on any message, from any window, is a defect, not a
+    convenience.
+  - **The hosted convenience script**, `https://<main-domain>/embed.js`. A
+    single `<script>` tag that creates the iframe itself:
+
+    ```html
+    <script src="https://<main-domain>/embed.js"
+            data-app="https://your-app.<usercontent-domain>/"
+            data-height="600"
+            data-title="Your form"></script>
+    ```
+
+    Simpler to paste, at the cost of one more script fetched from homespun on
+    every page load. The inline snippet is the one to lead with; this is the
+    convenience for someone who would rather not hand-maintain the markup.
+
+  **A public, anonymous-write form is a spam target, embedded or not, and
+  embedding makes it easier to find.** Any collection this app admits
+  anonymous writes to (`write: ["anyone"]`) should also declare
+  `antiAbuse: "turnstile"` and `anonWriteBudget` on that same collection (see
+  both above) once the app is meant to be embedded. Turnstile only works when
+  the relay operator has configured it; if a deploy is refused naming
+  `antiAbuse`, the relay is not configured for it and either drop the key or
+  ask the operator to enable it. `anonWriteBudget` has no such prerequisite
+  and is the backstop that still holds even during a Turnstile outage
+  (Turnstile fails open), so declare it regardless of whether Turnstile is
+  available.
 
 ### Who may change a row: `update`, `creator`, `editor`
 

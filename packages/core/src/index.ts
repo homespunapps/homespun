@@ -1,7 +1,7 @@
 // @homespunapps/core — typed client for the Homespun relay HTTP + WebSocket API.
 // Pure and framework-free: no argv, no MCP, no server deps.
 
-export { HomespunClient, HomespunApiError } from "./client.js";
+export { HomespunClient, HomespunApiError, putPresigned } from "./client.js";
 export type {
   ClientOptions,
   RelayResponse,

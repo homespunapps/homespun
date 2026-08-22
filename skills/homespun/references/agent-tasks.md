@@ -97,6 +97,19 @@ If you want author-kind filtering on a self-writing rule, exclude the machine ki
 { "when": { "authorKindNotIn": ["system", "service", "hook"] } }
 ```
 
+`machineAuthorKinds` is the other way to accept machine writes, and it composes with any `when`
+(an author-kind condition cannot, since it must be the only key in `when`):
+
+```json
+{ "on": "create", "collection": "leads", "when": { "field": "status", "equals": "new" },
+  "machineAuthorKinds": ["hook"], "taskType": "enrich", "prompt": "…", "reads": [], "writes": ["enrichment"] }
+```
+
+It is subject to the SAME deploy rejection: a rule that admits machine writes and writes into a
+collection any rule fires on is refused, whichever of the two ways it opted in. Being a list is what
+usually lets you satisfy that check without giving up the rule, by admitting the source you need and
+leaving out the one that closes the loop.
+
 There is a second, independent bound: a per-app cap on tasks created per hour. It exists precisely
 because the reasoning above could turn out to be wrong somewhere, and a rate limit does not need to
 understand why a loop happened in order to stop it.

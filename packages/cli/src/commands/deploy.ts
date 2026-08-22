@@ -4,7 +4,13 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { AppAsset } from "@homespunapps/core";
+import { createHash } from "node:crypto";
+import {
+  HomespunApiError,
+  putPresigned,
+  type AppAsset,
+  type HomespunClient,
+} from "@homespunapps/core";
 import { makeClient } from "../config.js";
 import type { ParsedArgs } from "../argv.js";
 import { assertKnownFlags } from "../argv.js";
@@ -101,6 +107,31 @@ function extensionOf(path: string): string {
 }
 
 /**
+ * Path-shape checks shared by every source of a relay asset path: the
+ * relay's charset (ASSET_PATH_CHARSET) and the non-servable-extension
+ * refusal. `readAssets` calls this for a directory-convention path; the
+ * explicit `--asset` flag below calls the SAME function on its app-path half,
+ * so `--asset` cannot smuggle a path shape the directory-convention bundle
+ * would already reject (issue #1028). One definition rather than two that
+ * could quietly drift apart.
+ */
+function checkAssetPathShape(path: string): void {
+  if (!ASSET_PATH_CHARSET.test(path)) {
+    fail(
+      `cannot ship ${path} as an asset: an asset path may only contain A-Za-z0-9._/- , so rename the file (spaces and accented characters are the usual cause)`,
+      "invalid_args",
+    );
+  }
+  const ext = extensionOf(path);
+  if (NON_SERVABLE_EXTENSIONS.has(ext)) {
+    fail(
+      `cannot ship ${path} as an asset: the relay serves ${ext} files as an inert download (Content-Disposition: attachment, X-Content-Type-Options: nosniff), so a browser would refuse to execute or apply it. Inline scripts and styles in index.html instead: the app CSP allows them.`,
+      "invalid_args",
+    );
+  }
+}
+
+/**
  * Every file under `<dir>/assets/`, as paths relative to that directory,
  * depth-first and sorted so a deploy is byte-identical across machines.
  *
@@ -156,19 +187,8 @@ function readAssets(source: string): AppAsset[] | undefined {
     // a filename is the common case here, and both are ordinary on disk, so
     // catching it locally turns a server round-trip into an immediate message
     // naming the file. The relay re-validates and stays authoritative.
-    if (!ASSET_PATH_CHARSET.test(`${ASSET_DIR}/${rel}`)) {
-      fail(
-        `cannot ship ${ASSET_DIR}/${rel} as an asset: an asset path may only contain A-Za-z0-9._/- , so rename the file (spaces and accented characters are the usual cause)`,
-        "invalid_args",
-      );
-    }
+    checkAssetPathShape(`${ASSET_DIR}/${rel}`);
     const ext = extensionOf(rel);
-    if (NON_SERVABLE_EXTENSIONS.has(ext)) {
-      fail(
-        `cannot ship ${ASSET_DIR}/${rel} as an asset: the relay serves ${ext} files as an inert download (Content-Disposition: attachment, X-Content-Type-Options: nosniff), so a browser would refuse to execute or apply it. Inline scripts and styles in index.html instead: the app CSP allows them.`,
-        "invalid_args",
-      );
-    }
     const bytes = readFileSync(join(assetRoot, rel));
     if (bytes.byteLength > MAX_ASSET_BYTES) {
       fail(
@@ -183,6 +203,255 @@ function readAssets(source: string): AppAsset[] | undefined {
       ...(mime !== undefined ? { mime } : {}),
     };
   });
+}
+
+// -----------------------------------------------------------------------
+// The explicit `--asset <local>=<app-path>` flag (issue #1028): for a file
+// that does not live under `assets/`, or that is too big to inline.
+//
+//   - small (under ASSET_PRESIGN_THRESHOLD_BYTES): inlined exactly like a
+//     directory-convention asset, base64 in the deploy body.
+//   - large (at or over ASSET_PRESIGN_THRESHOLD_BYTES): shipped by
+//     reference, via presignBlob, a PUT of the bytes straight to storage,
+//     then confirmBlob, so the deploy body never carries them. Falls back to
+//     inlining when the relay's presign route answers not_implemented (the
+//     filesystem backend doesn't ship it), as long as the bytes still fit
+//     the MAX_ASSET_BYTES inline cap; a file over that cap with no working
+//     presign route simply cannot ship, and fails naming it rather than
+//     silently doing nothing.
+//
+// 1 MB is HomespunClient.uploadBlob's own documented cutoff for reaching for
+// presignBlob() + confirmBlob() over the multipart fallback (see the doc
+// comment above uploadBlob in packages/core/src/client.ts). Reusing that
+// number here keeps the CLI's two "when is presign worth it" answers in
+// sync, rather than inventing a second threshold that could drift from it.
+const ASSET_PRESIGN_THRESHOLD_BYTES = 1_000_000;
+
+interface ExplicitAsset {
+  /** The relay-side path this asset is served at (leading '/' stripped). */
+  path: string;
+  /** The local disk path the caller gave, kept for error messages only. */
+  localPath: string;
+  bytes: Buffer;
+}
+
+/**
+ * Split one `--asset` value into its local and app-path halves. The expected
+ * shape is `<local>=<app-path>`; anything else (no '=', or an empty half)
+ * fails with a message showing the expected form, not a generic parse error.
+ */
+function parseAssetFlagValue(raw: string): { local: string; appPath: string } {
+  const eq = raw.indexOf("=");
+  if (eq <= 0 || eq === raw.length - 1) {
+    fail(
+      `malformed --asset value ${JSON.stringify(raw)}: expected the form <local>=<app-path>, for example --asset ./logo.png=logo.png`,
+      "invalid_args",
+    );
+  }
+  return { local: raw.slice(0, eq), appPath: raw.slice(eq + 1) };
+}
+
+/**
+ * Read one `--asset`'s local file. Every failure names the path: the relay
+ * cannot help diagnose this half of a deploy, since it never sees the local
+ * filesystem, so a missing or unreadable file must not surface as an opaque
+ * stack trace or a wasted round trip.
+ */
+function readExplicitAssetBytes(localPath: string): Buffer {
+  if (!existsSync(localPath)) {
+    fail(`--asset local file not found: ${localPath}`, "invalid_args");
+  }
+  let isFile: boolean;
+  try {
+    isFile = statSync(localPath).isFile();
+  } catch (e) {
+    fail(
+      `--asset local file is not readable: ${localPath} (${(e as Error).message})`,
+      "invalid_args",
+    );
+  }
+  if (!isFile) {
+    fail(
+      `--asset local path is not a regular file: ${localPath}`,
+      "invalid_args",
+    );
+  }
+  try {
+    return readFileSync(localPath);
+  } catch (e) {
+    fail(
+      `--asset local file is not readable: ${localPath} (${(e as Error).message})`,
+      "invalid_args",
+    );
+  }
+}
+
+/**
+ * Parse and validate every `--asset` flag into its final relay path plus
+ * bytes.
+ *
+ * A leading '/' on the app-path half is stripped: `--asset ./logo.png=/logo.png`
+ * and `--asset ./logo.png=logo.png` mean the same app-root file. Every
+ * relay-side asset path is relative (core/app-assets.ts's validateAssetPath
+ * rejects a leading '/' outright), so stripping it here is the only way the
+ * form a caller reaches for first (a URL-shaped root path) doesn't round-trip
+ * to a relay error. What remains is checked with checkAssetPathShape, the
+ * SAME function readAssets uses, so `--asset` cannot smuggle a path shape the
+ * directory-convention bundle would already reject.
+ *
+ * A repeated app-path keeps the LAST occurrence, matching how the merge into
+ * directory assets below treats an explicit path as authoritative.
+ */
+function collectExplicitAssets(rawValues: string[]): ExplicitAsset[] {
+  const byPath = new Map<string, ExplicitAsset>();
+  for (const raw of rawValues) {
+    const { local, appPath } = parseAssetFlagValue(raw);
+    const path = appPath.startsWith("/") ? appPath.slice(1) : appPath;
+    checkAssetPathShape(path);
+    const bytes = readExplicitAssetBytes(local);
+    byPath.set(path, { path, localPath: local, bytes });
+  }
+  return [...byPath.values()];
+}
+
+/** The relay's declared mime for a path's extension, or undefined to let the relay sniff it. */
+function declaredMimeFor(path: string): string | undefined {
+  return DECLARED_MIME_BY_EXTENSION.get(extensionOf(path));
+}
+
+/**
+ * Inline an explicit asset exactly like a directory-convention one: base64
+ * in the deploy body. Enforces the same MAX_ASSET_BYTES cap readAssets does,
+ * naming the LOCAL path (what the caller typed) in the error rather than the
+ * relay path.
+ */
+function inlineExplicitAsset(asset: ExplicitAsset): AppAsset {
+  if (asset.bytes.byteLength > MAX_ASSET_BYTES) {
+    fail(
+      `--asset ${asset.localPath} is ${asset.bytes.byteLength} bytes, over the ${MAX_ASSET_BYTES}-byte inline limit, and this relay has no working presign route to ship it by reference instead`,
+      "invalid_args",
+    );
+  }
+  const mime = declaredMimeFor(asset.path);
+  return {
+    path: asset.path,
+    content_base64: asset.bytes.toString("base64"),
+    ...(mime !== undefined ? { mime } : {}),
+  };
+}
+
+/** Split explicit assets by the presign threshold. A pure size check, no I/O. */
+function partitionExplicitAssets(assets: ExplicitAsset[]): {
+  small: ExplicitAsset[];
+  large: ExplicitAsset[];
+} {
+  const small: ExplicitAsset[] = [];
+  const large: ExplicitAsset[] = [];
+  for (const asset of assets) {
+    (asset.bytes.byteLength < ASSET_PRESIGN_THRESHOLD_BYTES
+      ? small
+      : large
+    ).push(asset);
+  }
+  return { small, large };
+}
+
+/**
+ * Resolve one "large" explicit asset to a by-reference AppAssetRef: presign
+ * against `appId`, PUT the bytes straight to storage, then confirm. `appId`
+ * must already be real; see the two-round-trip note on runDeploy for why a
+ * brand-new app cannot presign on its FIRST deploy call, since the id does
+ * not exist yet.
+ *
+ * Falls back to inlining the asset when the relay answers not_implemented
+ * (the filesystem backend has no presign route), provided the bytes still
+ * fit the inline cap; a genuinely large file with no working presign route
+ * fails naming it, rather than silently shrinking the deploy's asset set.
+ * Any other failure (a network error, a rejected PUT, a failed confirm) is
+ * rethrown for the caller's own error handling.
+ */
+async function resolveLargeAsset(
+  client: HomespunClient,
+  appId: string,
+  asset: ExplicitAsset,
+): Promise<AppAsset> {
+  const mime = declaredMimeFor(asset.path) ?? "application/octet-stream";
+  const sha256 = createHash("sha256").update(asset.bytes).digest("hex");
+  try {
+    const presign = await client.presignBlob({
+      mime,
+      size: asset.bytes.byteLength,
+      sha256,
+      scope: "app",
+      appId,
+      filename: asset.path.split("/").pop(),
+    });
+    await putPresigned(presign.upload_url, asset.bytes, mime);
+    await client.confirmBlob(presign.attachment_id);
+    return { path: asset.path, attachment_id: presign.attachment_id };
+  } catch (e) {
+    if (e instanceof HomespunApiError && e.code === "not_implemented") {
+      if (asset.bytes.byteLength > MAX_ASSET_BYTES) {
+        fail(
+          `cannot ship --asset ${asset.localPath} (${asset.bytes.byteLength} bytes): it is over the ${MAX_ASSET_BYTES}-byte inline cap, and this relay's presign route is not implemented (${e.message})`,
+          "invalid_args",
+        );
+      }
+      warn(
+        `presigned upload is not available on this relay; shipping --asset ${asset.localPath} (${asset.bytes.byteLength} bytes) inline instead`,
+      );
+      return inlineExplicitAsset(asset);
+    }
+    throw e;
+  }
+}
+
+/** Resolve every "large" explicit asset against `appId`, in order. */
+async function resolveLargeAssets(
+  client: HomespunClient,
+  appId: string,
+  assets: ExplicitAsset[],
+): Promise<AppAsset[]> {
+  const resolved: AppAsset[] = [];
+  for (const asset of assets) {
+    resolved.push(await resolveLargeAsset(client, appId, asset));
+  }
+  return resolved;
+}
+
+/**
+ * Merge an explicit `--asset` list into a base asset array, the explicit
+ * list winning on a path collision. A colliding path keeps its ORIGINAL
+ * position in the merged array, so a directory-convention asset overridden
+ * by `--asset` does not jump to the end; a new path is appended in
+ * `--asset` order.
+ */
+function mergeAssets(base: AppAsset[], overrides: AppAsset[]): AppAsset[] {
+  const merged = [...base];
+  const indexByPath = new Map(merged.map((a, i) => [a.path, i]));
+  for (const asset of overrides) {
+    const idx = indexByPath.get(asset.path);
+    if (idx !== undefined) {
+      merged[idx] = asset;
+    } else {
+      indexByPath.set(asset.path, merged.length);
+      merged.push(asset);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Merge, but preserve "no assets/ directory and no --asset flags" as
+ * `undefined`, the redeploy "keep the live set" signal (issue #1272),
+ * rather than turning it into an empty array.
+ */
+function mergeAssetsMaybe(
+  base: AppAsset[] | undefined,
+  overrides: AppAsset[],
+): AppAsset[] | undefined {
+  if (overrides.length === 0) return base;
+  return mergeAssets(base ?? [], overrides);
 }
 
 /**
@@ -302,10 +571,25 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
   );
   const client = makeClient(args);
 
+  const explicitAssets = collectExplicitAssets(
+    args.repeated?.get("asset") ?? [],
+  );
+
   // Dry run (--check): validate + report what a real deploy would do, persist
   // NOTHING. Runs for both create (no --app) and redeploy (--app), the latter
   // reporting the compat gate. slug/visibility are not part of a dry run.
+  //
+  // Every explicit asset is inlined here regardless of size: presigning is a
+  // real upload (presignBlob reserves storage, PUT writes bytes, confirmBlob
+  // finalises it), and --check's contract is to persist nothing. A file too
+  // big to inline fails the same way inlineExplicitAsset always fails one,
+  // naming it, rather than pretending a dry run validated a transport it
+  // never exercised.
   if (check) {
+    const checkAssets = mergeAssetsMaybe(
+      bundle.assets,
+      explicitAssets.map(inlineExplicitAsset),
+    );
     try {
       const id =
         appId !== undefined ? await resolveAppId(client, appId) : undefined;
@@ -313,7 +597,7 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
         ...(id !== undefined ? { app_id: id } : {}),
         ...(bundle.html !== undefined ? { html: bundle.html } : {}),
         ...(bundle.manifest !== undefined ? { manifest: bundle.manifest } : {}),
-        ...(bundle.assets !== undefined ? { assets: bundle.assets } : {}),
+        ...(checkAssets !== undefined ? { assets: checkAssets } : {}),
         ...(force ? { force } : {}),
       });
       printJson(result);
@@ -322,6 +606,8 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
     }
     return;
   }
+
+  const { small, large } = partitionExplicitAssets(explicitAssets);
 
   if (appId === undefined) {
     // Create. Client-side mirror of the relay's slug_not_allowed_for_link —
@@ -332,6 +618,19 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
         "invalid_args",
       );
     }
+    // Any "large" explicit asset needs an app id to presign against (scope:
+    // "app" is bound to a specific app at presign time, and there is no
+    // rescope endpoint), and a brand-new app has no id until the FIRST
+    // deploy call returns one. So a create carrying a large asset is a
+    // two-round-trip: deploy without it, presign + PUT + confirm against the
+    // real id the relay just minted, then redeploy carrying the reference.
+    // An existing app (--app given, below) already has an id, so it stays a
+    // single pass. Adding a rescope endpoint to collapse this to one round
+    // trip was considered and rejected as disproportionate to the problem.
+    const firstPassAssets = mergeAssetsMaybe(
+      bundle.assets,
+      small.map(inlineExplicitAsset),
+    );
     try {
       // readBundle guarantees both halves on the create path (a create can
       // inherit nothing), so the non-null assertions are the type system
@@ -341,9 +640,31 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
         manifest: bundle.manifest,
         visibility,
         slug,
-        ...(bundle.assets !== undefined ? { assets: bundle.assets } : {}),
+        ...(firstPassAssets !== undefined ? { assets: firstPassAssets } : {}),
       });
-      printJson(out);
+      if (large.length === 0) {
+        printJson(out);
+        return;
+      }
+      const largeRefs = await resolveLargeAssets(client, out.app_id, large);
+      const finalAssets = mergeAssets(firstPassAssets ?? [], largeRefs);
+      const redeployed = await client.redeployApp(out.app_id, {
+        assets: finalAssets,
+        force: false,
+      });
+      const app = await client.getApp(out.app_id);
+      printJson({
+        app_id: out.app_id,
+        slug: app.slug,
+        url: app.url,
+        version: redeployed.version,
+        visibility: app.visibility,
+        created: true,
+        ...(out.share_url !== undefined ? { share_url: out.share_url } : {}),
+        compat: redeployed.compat,
+        ...(redeployed.breaks ? { breaks: redeployed.breaks } : {}),
+        ...(redeployed.warnings ? { warnings: redeployed.warnings } : {}),
+      });
     } catch (e) {
       failFromError(e);
     }
@@ -365,17 +686,27 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
   }
   const id = await resolveAppId(client, appId);
   try {
+    // The app id already exists, so presigning any "large" explicit asset is
+    // a single pass: resolve every explicit asset up front, merge into the
+    // directory-convention bundle, then redeploy once.
+    const smallInline = small.map(inlineExplicitAsset);
+    const largeRefs =
+      large.length > 0 ? await resolveLargeAssets(client, id, large) : [];
+    const explicitResolved = [...smallInline, ...largeRefs];
+
     // Only what this invocation actually read is sent: an omitted html,
     // manifest or asset set keeps what is live, so
     // `homespun deploy ./index.html --app <id>` ships the document alone and
     // `--manifest` with no file ships the manifest alone. A directory WITH an
     // `assets/` folder always sends the full computed set, so deleting a file
-    // on disk removes it from the app; a directory WITHOUT one sends nothing,
-    // leaving assets uploaded by another path (MCP `deploy_app`) untouched.
+    // on disk removes it from the app; a directory WITHOUT one, and no
+    // `--asset` flags, sends nothing, leaving assets uploaded by another
+    // path (MCP `deploy_app`) untouched.
+    const finalAssets = mergeAssetsMaybe(bundle.assets, explicitResolved);
     const redeployed = await client.redeployApp(id, {
       ...(bundle.html !== undefined ? { html: bundle.html } : {}),
       ...(bundle.manifest !== undefined ? { manifest: bundle.manifest } : {}),
-      ...(bundle.assets !== undefined ? { assets: bundle.assets } : {}),
+      ...(finalAssets !== undefined ? { assets: finalAssets } : {}),
       force,
     });
     const app = await client.getApp(id);

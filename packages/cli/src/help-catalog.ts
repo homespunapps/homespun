@@ -407,7 +407,7 @@ const DATA: NounSpec = {
   ],
   notes: [
     "<app> accepts either the app_id or its slug. upsert is the ONLY create-shaped verb: omit --key to add a new row (the server generates the key); pass --key to ensure a row exists at that key (returns the existing row with deduped:true on a collision). A collision on a row the collection's read list does not reach for you is row_not_found (404) instead of the row, the same answer a get on that key gives, so upsert cannot read past read. Pass --on <field> to upsert on a manifest-declared UNIQUE field instead of the key: the row whose <field> value matches is updated in place (idempotent re-import), else created.",
-    "list --where takes a JSON array of {field, op, value} conditions (ANDed), op one of eq, neq, in, notIn, gt, lt, gte, lte (in and notIn take an array value). --sort takes a JSON array of {field, dir} (dir asc or desc). Filtering is applied AFTER the read permission and author scoping, so a filtered list is always a subset of what you could already read. Comparisons are same-type only (no coercion); dates compare as ISO-8601 strings. A custom --sort cannot be combined with --since.",
+    "list --where takes a JSON array of {field, op, value} conditions (ANDed), op one of eq, neq, in, notIn, gt, lt, gte, lte (in and notIn take an array value). --sort takes a JSON array of {field, dir} (dir asc or desc). Filtering is applied AFTER the read permission and author scoping, so a filtered list is always a subset of what you could already read. Comparisons are same-type only (no coercion); dates compare as ISO-8601 strings. --since paginates a custom --sort too: pass back the same --sort with the next_cursor a page returned, since a cursor is only valid for the exact sort it came from.",
     "delete is RECOVERABLE: it tombstones the row, `deleted` lists what can still be brought back, and `restore` brings one back for 30 days. purge is the permanent one: it removes ONE row by --key even in an append-only collection, scrubs its contents immediately, and cannot be restored. Both are owner and agent only (never members or anyone); purge bypasses append-only and the collection delete list on purpose, and both write an audited delete feed entry.",
     "import reads NDJSON (one JSON object per line) OR a JSON array from --file and bulk-writes it in chunks via the batch API, in ONE process. Each object is a row's data. Pass --key-field to derive the row key from a field: an existing row at that key is LEFT UNCHANGED, so this is create-or-skip-by-id, not overwrite, and re-importing changed data for a known key does not update it. A skipped row is reported as a per-row row_not_found rather than an ok when the collection's read list does not reach that row for you (the row is still left unchanged); list 'agent' in read if you want the skip reported as a success. Import DEFAULTS TO SILENT (it suppresses notify and webhooks, since a bulk import is a migration); pass --emit-effects to fire them. A per-row failure is listed in the summary WITHOUT aborting the import.",
     "retention is an OWNER control: the author declares default retention in the manifest, and this tightens or loosens it per collection at runtime WITHOUT a redeploy. Effective retention is per-axis override-or-author-default: --max-rows/--max-age-days set an axis override, --clear-rows/--clear-age revert an axis to the author default, and with no flag (or --show) it just reads. The response reports the effective bounds, the author default, the override, and wouldPrune (how many live rows the effective bound would prune on the next sweep). The override survives redeploys and effective maxRows is capped at MAX_ROWS_PER_APP.",
@@ -870,7 +870,7 @@ const CONNECTIONS: NounSpec = {
   tagline: "webhook connection management",
   group: "app",
   rootSummary:
-    "App webhook-connection management: create, list, delete, authorize-url. Store the credential a webhook rule authenticates its target with.",
+    "App webhook-connection management: create, list, delete, authorize-url, deliveries, replay. Store the credential a webhook rule authenticates its target with, and inspect or re-send what went out.",
   verbs: [
     {
       verb: "create",
@@ -1001,6 +1001,51 @@ const CONNECTIONS: NounSpec = {
       ],
     },
     {
+      verb: "deliveries",
+      summary:
+        "Lists the app's outbound webhook deliveries, newest first, with the request body that was sent and the target's response.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App to read the delivery journal of (required)",
+        },
+        {
+          name: "status",
+          value: "<status>",
+          description:
+            "Only deliveries in this state: pending, delivered or failed",
+        },
+        {
+          name: "collection",
+          value: "<name>",
+          description: "Only deliveries triggered by rows in this collection",
+        },
+        {
+          name: "limit",
+          value: "<n>",
+          description: "How many to return (default 25, capped at 100)",
+        },
+      ],
+    },
+    {
+      verb: "replay",
+      summary:
+        "Re-sends one stored delivery's own rule, url and body as a fresh delivery, now, without waiting out its backoff.",
+      flags: [
+        {
+          name: "app",
+          value: "<idOrSlug>",
+          description: "App the delivery belongs to (required)",
+        },
+        {
+          name: "delivery",
+          value: "<deliveryId>",
+          description: "Delivery to re-send, from `deliveries` (required)",
+        },
+      ],
+    },
+    {
       verb: "authorize-url",
       summary:
         "Prints the browser URL that completes an oauth2 connection's owner consent. Never fetched by this command.",
@@ -1024,6 +1069,9 @@ const CONNECTIONS: NounSpec = {
     "Every stored secret (a static header value, or an oauth2 client secret and its tokens) is encrypted at rest and never returned by any call; list returns metadata plus a non-reversible fingerprint only.",
     "OAuth2 consent is inherently a human-in-a-browser step: the relay refuses an agent-key caller at the authorize endpoint. authorize-url never makes a network call, it builds the URL locally so you can hand it to the signed-in app owner to open. A newly created oauth2 connection starts in pending_auth until the owner completes it.",
     "--header-value and --client-secret on create take the value straight from argv where it is visible in shell history and to other local users via ps for the life of the process. Prefer '--header-value -' / '--client-secret -' to read the value from stdin, or set HOMESPUN_CONNECTION_HEADER_VALUE / HOMESPUN_CONNECTION_CLIENT_SECRET, both of which never touch argv.",
+    "deliveries returns { deliveries: [{ id, collection, rowKey, op, url, status, attempts, responseStatus, responseBody, payload, payloadTruncated, error, replayOfId, createdAt, deliveredAt, lastAttemptAt }] }. payload is the request body as it was rendered and sent, truncated by the relay; payloadTruncated says whether you are looking at all of it. url is host and path only, never the query string, which can carry a token. The same rows are on the app detail page in the console.",
+    "The journal is a ROLLING window, not the app's whole history: the relay hard-deletes delivered and failed rows past its retention window, and caps how many one app may keep. A delivery you cannot find is more likely aged out than never sent.",
+    "replay re-sends a stored delivery's own rule, url and body verbatim, as a fresh row the normal worker picks up (signing and connection auth apply exactly as they would to any other delivery). Nothing you pass enters the new row. It is NOT idempotent in effect: the target receives the same request a second time, so a target without its own dedupe ends up with a duplicate record. It is refused when the rule that produced the original is no longer in the app's current manifest.",
   ],
 };
 
@@ -1286,6 +1334,12 @@ const DEPLOY: NounSpec = {
           value: "<private|link|public>",
           description: "Who can open the new app, on create only",
         },
+        {
+          name: "asset",
+          value: "<local>=<app-path>",
+          description:
+            "Ship a file that is not under assets/, repeatable, wins over a directory-convention asset at the same app-path",
+        },
       ],
       bools: [
         { name: "force", description: "Override the redeploy compat gate" },
@@ -1303,6 +1357,7 @@ const DEPLOY: NounSpec = {
     "Create versus redeploy is decided by the presence of --app, not by two verbs. With no --app this creates an app (POST /v1/apps); new apps default to private (owner plus invited members, sign-in gated), --slug is accepted with private or public visibility including the default, and an explicit --visibility link always gets a server-generated slug and rejects --slug. With --app <id> this redeploys (POST /v1/apps/:id/versions), where --slug and --visibility are rejected because the slug is immutable and visibility changes go through 'homespun apps update'.",
     "On redeploy, what you do not send is kept. 'homespun deploy ./index.html --app <id>' ships the document alone and keeps the live manifest; 'homespun deploy --app <id> --manifest ./manifest.json' ships the manifest alone and keeps the live document, with no file argument at all; a directory deploy still ships both. Assets follow the same rule, decided by whether the directory has an assets/ folder: with one, the full set on disk is sent, so deleting a file there removes it from the app; with none, nothing is sent and the live asset set is carried forward untouched. A create can inherit nothing, so it still needs both halves.",
     "--check is a dry run. It runs the full manifest and asset validation (shape and MIME), the redeploy compat gate (with --app), and the schedule-timezone advisory, then prints { ok, warnings, compat, breaks } without creating a version or mutating anything. An invalid manifest fails the same way a real deploy would, and a redeploy the compat gate would refuse reports the break instead of applying it. It resolves omitted fields exactly as a real redeploy would, so it reports on the deploy that would actually run.",
+    "--asset <local>=<app-path> ships one file that is not under assets/, or that assets/ cannot hold because it is too big to inline. Repeatable; the app-path side is validated the same way a directory-convention path is (charset, no .js/.css/.svg/.html), and a leading '/' on it is stripped since every relay-side path is relative. Files under 1 MB are inlined exactly like a directory asset; at or above 1 MB the CLI presigns instead (presignBlob, PUT the bytes straight to storage, confirmBlob), so the deploy body never carries them, up to the 50 MB media ceiling. On a brand-new app (no --app) that needs presigning, this is two round trips: the app does not exist yet to presign against, and scope is fixed at presign time with no rescope endpoint, so the CLI deploys first, presigns against the id the relay just minted, then redeploys carrying the reference. With --app <id> the id already exists, so it is one pass. If the relay's presign route is not implemented (some backends), a file under the 5 MB inline cap is shipped inline instead with a warning on stderr; a file over that cap fails naming it, since there is then no way to ship it. An --asset wins over a directory-convention asset at the same app-path.",
   ],
   outputNote:
     'Output is JSON: { app_id, slug, url, version, visibility, created, share_url, compat, breaks, warnings }. share_url is present only when creating a link-visibility app: it carries the app share token in its #k= fragment and is shown ONCE, it is not recoverable later, and it can be rotated with \'homespun apps share-link rotate <app>\'. warnings flags non-fatal issues, for example an app that declares schedules with no timezone set (reminders fire at 08:00 UTC until one is set). Errors go to stderr as {"error":{"code","message"}} with a non-zero exit.',

@@ -5,6 +5,7 @@ import {
   HomespunClient,
   HomespunApiError,
   communityTemplatePath,
+  putPresigned,
 } from "./client.js";
 
 /** Build a client with a stubbed fetch. */
@@ -707,5 +708,72 @@ describe("unpublishCommunityTemplate (#1299)", () => {
     ]);
     expect(seen[0]!.method).toBe("POST");
     expect(seen[0]!.body).toBeUndefined();
+  });
+});
+
+describe("putPresigned (issue #1028)", () => {
+  it("PUTs the bytes with the mime and the Azure blob-type header, and carries no auth", async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      seen.push({ url: String(input), init });
+      return { ok: true, status: 201, text: async () => "" } as Response;
+    }) as typeof fetch;
+
+    await putPresigned(
+      "https://storage.test/blob?sig=abc",
+      Buffer.from("hello"),
+      "image/png",
+      fetchImpl,
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe("https://storage.test/blob?sig=abc");
+    expect(seen[0]!.init?.method).toBe("PUT");
+    const headers = seen[0]!.init?.headers as Record<string, string>;
+    expect(headers["content-type"]).toBe("image/png");
+    expect(headers["x-ms-blob-type"]).toBe("BlockBlob");
+    expect(headers["authorization"]).toBeUndefined();
+    expect(seen[0]!.init?.body).toBeInstanceOf(Uint8Array);
+  });
+
+  it("throws naming the status on a non-2xx response", async () => {
+    const fetchImpl = (async () =>
+      ({
+        ok: false,
+        status: 403,
+        text: async () => "SignatureDoesNotMatch",
+      }) as Response) as typeof fetch;
+
+    await expect(
+      putPresigned(
+        "https://storage.test/blob?sig=bad",
+        Buffer.from("x"),
+        "image/png",
+        fetchImpl,
+      ),
+    ).rejects.toThrow(/403/);
+    await expect(
+      putPresigned(
+        "https://storage.test/blob?sig=bad",
+        Buffer.from("x"),
+        "image/png",
+        fetchImpl,
+      ),
+    ).rejects.toThrow(/SignatureDoesNotMatch/);
+  });
+
+  it("throws on a network failure rather than leaving it unhandled", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("ECONNRESET");
+    }) as typeof fetch;
+
+    await expect(
+      putPresigned(
+        "https://storage.test/blob?sig=x",
+        Buffer.from("x"),
+        "image/png",
+        fetchImpl,
+      ),
+    ).rejects.toThrow(/ECONNRESET/);
   });
 });

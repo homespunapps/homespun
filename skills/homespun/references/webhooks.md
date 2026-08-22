@@ -40,6 +40,38 @@ Rules of the road:
   target that resolves to a loopback / private / link-local / CGNAT / cloud-
   metadata address, and it never follows a redirect (a 3xx is a failed attempt) -
   so a webhook cannot be turned into a request against your internal network.
+- **`machineAuthorKinds`** decides whether writes that did NOT come from a person
+  fire this rule. **By default they do not.** A row written by an `ingest[]`
+  catch-hook lands with author kind `hook`, and one written by a backend holding
+  a scoped service credential lands as `service`; both are suppressed, so a
+  backend that writes its result back cannot re-trigger the very rule that called
+  it. That default is what stops a two-node loop by construction.
+
+  If your app genuinely receives data from one system and must forward it to
+  another, name the kinds you accept:
+
+  ```json
+  {
+    "on": "create",
+    "collection": "leads",
+    "when": { "field": "status", "equals": "new" },
+    "machineAuthorKinds": ["hook", "service"],
+    "url": "https://api.example.com/hooks/leads"
+  }
+  ```
+
+  It is a **list, not a flag**, so you can accept one machine source while still
+  refusing another. `["service"]` forwards your backend's write-backs while a
+  write from your own ingest hook stays suppressed, which is usually how you
+  break a loop without giving up the integration. Only the machine kinds (`hook`,
+  `service`) are accepted; naming `human` is a deploy error, because a human
+  write already fires the rule and listing it would restrict nothing while
+  reading as though it did.
+
+  This composes with any `when`. The older way to opt in, a `when` of
+  `authorKindIn` / `authorKindNotIn`, still works, but an author-kind condition
+  must be the ONLY key in `when`, so it cannot also filter on a data field.
+  `machineAuthorKinds` exists for exactly that case.
 - The feature is **gated** on `WEBHOOKS_ENABLED`. It is **enabled on the hosted relay**, and off on
   a self-hosted one until its operator flips it. Once on, delivery is **immediate** (no digest
   window), retried with exponential backoff, and bounded by a per-app hourly cap.

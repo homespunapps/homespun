@@ -61,20 +61,66 @@ const fakeClient = {
     calls.push({ method: "checkDeploy", args: [body] });
     return Promise.resolve({ ok: true, warnings: [] });
   }),
+  // Backs the by-reference asset path (issue #1028): presignBlob -> PUT
+  // (mocked separately below, via @homespunapps/core's putPresigned) ->
+  // confirmBlob. Defaults to a working presign; individual tests override
+  // with mockRejectedValueOnce / mockImplementationOnce for the
+  // not_implemented-fallback and real-failure cases.
+  presignBlob: vi.fn((opts: unknown) => {
+    calls.push({ method: "presignBlob", args: [opts] });
+    return Promise.resolve({
+      attachment_id: "att_presigned_1",
+      upload_url: "https://storage.test/blob/att_presigned_1?sig=abc",
+      expires_at: "2026-01-01T00:10:00.000Z",
+    });
+  }),
+  confirmBlob: vi.fn((attachmentId: unknown) => {
+    calls.push({ method: "confirmBlob", args: [attachmentId] });
+    return Promise.resolve({
+      attachment_id: attachmentId,
+      scope: "app",
+      mime: "application/octet-stream",
+      size: 0,
+      sha256: "0".repeat(64),
+      status: "ready",
+    });
+  }),
 };
 
 vi.mock("../config.js", () => ({
   makeClient: () => fakeClient,
 }));
 
-import { runDeploy } from "./deploy.js";
-import { parseArgs, BOOLEAN_FLAGS } from "../argv.js";
+// putPresigned is the raw fetch-to-storage PUT (packages/core/src/client.ts).
+// Mocked at the module boundary rather than by stubbing global fetch: deploy.ts
+// imports it by name, so this intercepts exactly the call it makes without
+// touching unrelated fetch usage elsewhere. HomespunApiError is re-exported
+// from the REAL module so `e instanceof HomespunApiError` inside deploy.ts
+// matches instances the tests construct below (the not_implemented case).
+//
+// vi.hoisted (not a plain const): the vi.mock factory below reads
+// putPresignedMock at MODULE-LOAD time (import hoisting runs "./deploy.js"'s
+// import graph, which pulls in this mock, before this file's own plain
+// `const` statements execute), so a plain `const` here is still in its
+// temporal dead zone when the factory first runs. vi.hoisted runs its
+// initializer before that import graph loads.
+const putPresignedMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@homespunapps/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@homespunapps/core")>();
+  return { ...actual, putPresigned: putPresignedMock };
+});
 
-// Parse with the REAL production boolean-flag set. A test-local copy is what
-// masked #827: it listed "check" while the real set did not, so every --check
-// test here passed while the shipped CLI ran a real deploy.
+import { runDeploy } from "./deploy.js";
+import { parseArgs, BOOLEAN_FLAGS, REPEATABLE_FLAGS } from "../argv.js";
+import { HomespunApiError } from "@homespunapps/core";
+
+// Parse with the REAL production flag sets (boolean AND repeatable). A
+// test-local copy is what masked #827: it listed "check" while the real set
+// did not, so every --check test here passed while the shipped CLI ran a
+// real deploy. Omitting REPEATABLE_FLAGS here would make a second --asset
+// throw "duplicate flag" before runDeploy ever saw it.
 function argv(tokens: string[]) {
-  return parseArgs(tokens, BOOLEAN_FLAGS);
+  return parseArgs(tokens, BOOLEAN_FLAGS, REPEATABLE_FLAGS);
 }
 
 let stdout: string;
@@ -84,6 +130,10 @@ let dir: string;
 
 beforeEach(() => {
   calls.length = 0;
+  putPresignedMock.mockClear();
+  putPresignedMock.mockResolvedValue(undefined);
+  fakeClient.presignBlob.mockClear();
+  fakeClient.confirmBlob.mockClear();
   stdout = "";
   stderr = "";
   exitCode = undefined;
@@ -516,6 +566,323 @@ describe("asset bundle", () => {
     expect((call.args[0] as { assets?: unknown }).assets).toEqual([
       { path: "assets/logo.png", content_base64: "eA==" },
     ]);
+  });
+});
+
+// Issue #1028: the explicit --asset <local>=<app-path> flag, for a file that
+// does not live under assets/, or that is too big to inline. Small files
+// (< 1 MB) inline exactly like a directory-convention asset; large ones
+// (>= 1 MB) go by reference: presignBlob -> a raw PUT to storage (mocked via
+// @homespunapps/core's putPresigned, see the top-of-file vi.mock) ->
+// confirmBlob. A brand-new app cannot presign on its first deploy call (the
+// app id does not exist yet, and scope is fixed at presign time with no
+// rescope endpoint), so a create carrying a large asset is two round trips;
+// an existing app (--app given) is one.
+describe("--asset flag (issue #1028)", () => {
+  /** Write a file anywhere under the deploy dir, NOT necessarily under assets/. */
+  function writeLocal(rel: string, contents: Buffer | string): string {
+    const full = join(dir, rel);
+    mkdirSync(full.slice(0, full.lastIndexOf("/")), { recursive: true });
+    writeFileSync(full, contents);
+    return full;
+  }
+
+  function writeAsset(rel: string, contents: Buffer | string): void {
+    const full = join(dir, "assets", rel);
+    mkdirSync(full.slice(0, full.lastIndexOf("/")), { recursive: true });
+    writeFileSync(full, contents);
+  }
+
+  /** The `assets` array sent on the FIRST call to `method`, or undefined. */
+  function assetsSentBy(
+    method: "deployApp" | "redeployApp" | "checkDeploy",
+  ): unknown {
+    const call = calls.find((c) => c.method === method);
+    const body = method === "redeployApp" ? call?.args[1] : call?.args[0];
+    return (body as { assets?: unknown } | undefined)?.assets;
+  }
+
+  describe("flag parsing", () => {
+    it("ships a single small file inline, at the given app-path, with no presign round trip", async () => {
+      const local = writeLocal("logo.png", "x");
+      await runDeploy(argv([dir, "--asset", `${local}=brand/logo.png`]));
+      expect(assetsSentBy("deployApp")).toEqual([
+        { path: "brand/logo.png", content_base64: "eA==" },
+      ]);
+      expect(fakeClient.presignBlob).not.toHaveBeenCalled();
+    });
+
+    it("accepts multiple --asset flags, each shipped", async () => {
+      const a = writeLocal("a.txt", "a");
+      const b = writeLocal("b.txt", "b");
+      await runDeploy(
+        argv([dir, "--asset", `${a}=x/a.txt`, "--asset", `${b}=y/b.txt`]),
+      );
+      expect(assetsSentBy("deployApp")).toEqual([
+        { path: "x/a.txt", content_base64: "YQ==", mime: "text/plain" },
+        { path: "y/b.txt", content_base64: "Yg==", mime: "text/plain" },
+      ]);
+    });
+
+    it("strips a leading '/' on the app-path, since every relay-side path is relative", async () => {
+      const local = writeLocal("logo.png", "x");
+      await runDeploy(argv([dir, "--asset", `${local}=/logo.png`]));
+      expect(assetsSentBy("deployApp")).toEqual([
+        { path: "logo.png", content_base64: "eA==" },
+      ]);
+    });
+
+    it("rejects a value with no '=', showing the expected form", async () => {
+      const local = writeLocal("logo.png", "x");
+      await expect(runDeploy(argv([dir, "--asset", local]))).rejects.toThrow(
+        "__exit_1__",
+      );
+      expectExit(1);
+      expect(stderr).toContain("<local>=<app-path>");
+      expect(calls).toEqual([]);
+    });
+
+    it("rejects a value with an empty local half", async () => {
+      await expect(
+        runDeploy(argv([dir, "--asset", "=logo.png"])),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(stderr).toContain("<local>=<app-path>");
+      expect(calls).toEqual([]);
+    });
+
+    it("rejects a value with an empty app-path half", async () => {
+      const local = writeLocal("logo.png", "x");
+      await expect(
+        runDeploy(argv([dir, "--asset", `${local}=`])),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(stderr).toContain("<local>=<app-path>");
+      expect(calls).toEqual([]);
+    });
+
+    it("fails naming the path when the local file does not exist", async () => {
+      const missing = join(dir, "nope.png");
+      await expect(
+        runDeploy(argv([dir, "--asset", `${missing}=logo.png`])),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(stderr).toContain(missing);
+      expect(stderr).toContain("not found");
+      expect(calls).toEqual([]);
+    });
+
+    it("fails naming the path when the local path is a directory, not a file", async () => {
+      const sub = join(dir, "adir");
+      mkdirSync(sub);
+      await expect(
+        runDeploy(argv([dir, "--asset", `${sub}=logo.png`])),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(stderr).toContain(sub);
+      expect(calls).toEqual([]);
+    });
+
+    it("validates the app-path with the same charset readAssets uses", async () => {
+      const local = writeLocal("logo.png", "x");
+      await expect(
+        runDeploy(argv([dir, "--asset", `${local}=my logo.png`])),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(stderr).toContain("A-Za-z0-9._/-");
+      expect(calls).toEqual([]);
+    });
+
+    it("refuses a non-servable extension (.js) the same way readAssets does", async () => {
+      const local = writeLocal("script.js", "console.log(1)");
+      await expect(
+        runDeploy(argv([dir, "--asset", `${local}=app.js`])),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(stderr).toContain("nosniff");
+      expect(calls).toEqual([]);
+    });
+  });
+
+  describe("merge with directory-convention assets", () => {
+    it("adds an --asset alongside directory assets", async () => {
+      writeAsset("logo.png", "d");
+      const local = writeLocal("extra.txt", "e");
+      await runDeploy(argv([dir, "--asset", `${local}=extra.txt`]));
+      expect(assetsSentBy("deployApp")).toEqual([
+        { path: "assets/logo.png", content_base64: "ZA==" },
+        { path: "extra.txt", content_base64: "ZQ==", mime: "text/plain" },
+      ]);
+    });
+
+    it("an --asset at the same app-path overrides the directory asset, keeping its position", async () => {
+      writeAsset("logo.png", "old");
+      const local = writeLocal("new-logo.png", "new");
+      await runDeploy(argv([dir, "--asset", `${local}=assets/logo.png`]));
+      expect(assetsSentBy("deployApp")).toEqual([
+        {
+          path: "assets/logo.png",
+          content_base64: Buffer.from("new").toString("base64"),
+        },
+      ]);
+    });
+  });
+
+  describe("by-reference upload via presign (existing app, single pass)", () => {
+    it("presigns, PUTs the raw bytes, confirms, and ships an attachment_id, all in ONE redeploy call", async () => {
+      const bytes = Buffer.alloc(1_200_000, 7); // >= 1 MB presign threshold
+      const local = writeLocal("video.mp4", bytes);
+      await runDeploy(
+        argv([dir, "--app", CUID_APP, "--asset", `${local}=media/video.mp4`]),
+      );
+      expect(calls.map((c) => c.method)).toEqual([
+        "getApp", // resolveAppId verifying the cuid-shaped --app value
+        "presignBlob",
+        "confirmBlob",
+        "redeployApp",
+        "getApp", // enriching the printed output
+      ]);
+      const presignCall = calls.find((c) => c.method === "presignBlob")!;
+      expect(presignCall.args[0]).toMatchObject({
+        scope: "app",
+        appId: CUID_APP,
+        size: 1_200_000,
+        filename: "video.mp4",
+      });
+      expect(putPresignedMock).toHaveBeenCalledWith(
+        "https://storage.test/blob/att_presigned_1?sig=abc",
+        bytes,
+        expect.any(String),
+      );
+      expect(fakeClient.confirmBlob).toHaveBeenCalledWith("att_presigned_1");
+      expect(assetsSentBy("redeployApp")).toEqual([
+        { path: "media/video.mp4", attachment_id: "att_presigned_1" },
+      ]);
+    });
+  });
+
+  describe("by-reference upload on a new app (two round trips)", () => {
+    it("deploys without the large asset, presigns against the id the relay just minted, then redeploys carrying the reference", async () => {
+      const bytes = Buffer.alloc(2_000_000, 3);
+      const local = writeLocal("hero.mp4", bytes);
+      await runDeploy(argv([dir, "--asset", `${local}=media/hero.mp4`]));
+      expect(calls.map((c) => c.method)).toEqual([
+        "deployApp",
+        "presignBlob",
+        "confirmBlob",
+        "redeployApp",
+        "getApp",
+      ]);
+      // The large asset must NOT be part of the FIRST deploy call: the app
+      // id it needs to presign against does not exist until this call returns.
+      expect(assetsSentBy("deployApp")).toBeUndefined();
+
+      const presignCall = calls.find((c) => c.method === "presignBlob")!;
+      expect(presignCall.args[0]).toMatchObject({ appId: CUID_APP });
+
+      const redeployCall = calls.find((c) => c.method === "redeployApp")!;
+      expect(redeployCall.args[0]).toBe(CUID_APP);
+      expect(assetsSentBy("redeployApp")).toEqual([
+        { path: "media/hero.mp4", attachment_id: "att_presigned_1" },
+      ]);
+
+      const out = JSON.parse(stdout);
+      expect(out).toMatchObject({
+        app_id: CUID_APP,
+        created: true,
+        version: 2, // from the redeployApp mock, not the create's version: 1
+      });
+    });
+
+    it("still ships small directory + explicit assets on the FIRST deploy, and re-sends them on the redeploy so they are not wiped", async () => {
+      writeAsset("logo.png", "d");
+      const smallLocal = writeLocal("small.txt", "s");
+      const bigLocal = writeLocal("hero.mp4", Buffer.alloc(1_500_000, 1));
+      await runDeploy(
+        argv([
+          dir,
+          "--asset",
+          `${smallLocal}=small.txt`,
+          "--asset",
+          `${bigLocal}=media/hero.mp4`,
+        ]),
+      );
+      expect(
+        (assetsSentBy("deployApp") as { path: string }[]).map((a) => a.path),
+      ).toEqual(["assets/logo.png", "small.txt"]);
+      expect(
+        (assetsSentBy("redeployApp") as { path: string }[]).map((a) => a.path),
+      ).toEqual(["assets/logo.png", "small.txt", "media/hero.mp4"]);
+    });
+  });
+
+  describe("fallback to inline when presign is unavailable", () => {
+    it("ships the asset inline with a stderr warning when presign answers not_implemented and the file still fits the inline cap", async () => {
+      fakeClient.presignBlob.mockImplementationOnce((opts: unknown) => {
+        calls.push({ method: "presignBlob", args: [opts] });
+        return Promise.reject(
+          new HomespunApiError(
+            501,
+            "not_implemented",
+            "filesystem backend has no presign route",
+          ),
+        );
+      });
+      const bytes = Buffer.alloc(2_000_000, 5); // >= 1 MB threshold, <= 5 MB inline cap
+      const local = writeLocal("clip.mp4", bytes);
+      await runDeploy(
+        argv([dir, "--app", CUID_APP, "--asset", `${local}=media/clip.mp4`]),
+      );
+      expect(fakeClient.confirmBlob).not.toHaveBeenCalled();
+      expect(putPresignedMock).not.toHaveBeenCalled();
+      expect(stderr).toContain("presigned upload is not available");
+      const assets = assetsSentBy("redeployApp") as {
+        path: string;
+        content_base64?: string;
+      }[];
+      const entry = assets.find((a) => a.path === "media/clip.mp4")!;
+      expect(entry.content_base64).toBe(bytes.toString("base64"));
+    });
+
+    it("fails naming the file when presign is not_implemented and the file is over the inline cap", async () => {
+      fakeClient.presignBlob.mockImplementationOnce((opts: unknown) => {
+        calls.push({ method: "presignBlob", args: [opts] });
+        return Promise.reject(
+          new HomespunApiError(
+            501,
+            "not_implemented",
+            "filesystem backend has no presign route",
+          ),
+        );
+      });
+      const local = writeLocal("huge.mp4", Buffer.alloc(6_000_000, 9)); // over the 5 MB inline cap
+      await expect(
+        runDeploy(
+          argv([dir, "--app", CUID_APP, "--asset", `${local}=media/huge.mp4`]),
+        ),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(stderr).toContain(local);
+      expect(calls.some((c) => c.method === "redeployApp")).toBe(false);
+    });
+
+    it("propagates a real presign failure (not not_implemented) rather than silently falling back to inline", async () => {
+      fakeClient.presignBlob.mockImplementationOnce((opts: unknown) => {
+        calls.push({ method: "presignBlob", args: [opts] });
+        return Promise.reject(
+          new HomespunApiError(403, "forbidden", "quota exceeded"),
+        );
+      });
+      const local = writeLocal("clip.mp4", Buffer.alloc(1_200_000, 2));
+      await expect(
+        runDeploy(
+          argv([dir, "--app", CUID_APP, "--asset", `${local}=media/clip.mp4`]),
+        ),
+      ).rejects.toThrow("__exit_1__");
+      expectExit(1);
+      expect(calls.some((c) => c.method === "redeployApp")).toBe(false);
+      expect(putPresignedMock).not.toHaveBeenCalled();
+    });
   });
 });
 

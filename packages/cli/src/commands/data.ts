@@ -104,12 +104,6 @@ async function runList(
   const limit = parseIntFlag(args, "limit", undefined, { min: 1, max: 1000 });
   const where = parseJsonArrayFlag<ListWhereCondition>(args, "where");
   const sort = parseJsonArrayFlag<ListSortSpec>(args, "sort");
-  if (since !== undefined && sort !== undefined) {
-    fail(
-      "--since (cursor pagination) cannot be combined with --sort",
-      "invalid_args",
-    );
-  }
   const client = makeClient(args);
   const appId = await resolveAppId(client, appArg);
   try {
