@@ -1,6 +1,6 @@
 {
   "name": "@homespunapps/core",
-  "version": "1.6.67",
+  "version": "1.6.68",
   "description": "Homespun relay client: typed HTTP + WebSocket operations against a Homespun relay. Framework-free.",
   "license": "MIT",
   "type": "module",
@@ -41,14 +41,14 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "ws": "^8.21.1",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@types/ws": "^8.18.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "repository": {
     "type": "git",
