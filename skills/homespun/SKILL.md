@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.68 -->
+<!-- homespun skill v1.6.69 -->
 
 # homespun
 
@@ -2598,8 +2598,18 @@ homespun apps list --status dormant     # filter by lifecycle status
 homespun apps show grocery-list         # full detail: manifest, current_version, row_count, storage_bytes
 homespun apps update grocery-list --visibility private
 homespun apps wake grocery-list         # wake a dormant app
-homespun apps delete grocery-list --yes # destructive, permanently removes the app and its data
+homespun apps delete grocery-list --yes # take it offline; the data is kept and it can be restored
+homespun apps deleted                   # what is in the trash, with each purge deadline
+homespun apps restore grocery-list      # bring a deleted app back, with all its data
+homespun apps purge grocery-list --yes  # destroy a deleted app and its data for good, now
 ```
+
+`delete` is a SOFT delete. The app stops serving at once but keeps every
+version, collection, row, attachment, member and grant, and `restore` brings
+all of it back until the retention window elapses (`deleted` shows each app's
+`purges_at`, which is `null` for an account whose apps are never purged).
+`purge` is the irreversible one, and it requires the app to already be
+deleted, so no single command takes a serving app to unrecoverable.
 
 Other identity/config commands still work exactly as you'd expect and are
 unrelated to any of the above: `homespun config show` (inspect the resolved

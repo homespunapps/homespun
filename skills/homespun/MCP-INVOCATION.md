@@ -1,4 +1,4 @@
-<!-- homespun skill v1.6.68 -->
+<!-- homespun skill v1.6.69 -->
 
 # homespun (MCP)
 
@@ -45,6 +45,7 @@ it. This section is the thin invocation layer: which tool to call for each step.
 |----------------------------------------------------|---------------|
 | Deploy an app, or redeploy one in place             | `deploy_app` (omit `app_id` to create, pass it to redeploy) |
 | List / show / update / delete apps, wake a dormant one, manage a custom domain | `apps` (action: `list`/`show`/`update`/`share_link_rotate`/`delete`/`wake`/`domain_set`/`domain_status`/`domain_remove`) |
+| See deleted apps, restore one, or destroy one for good | `apps` (action: `list_deleted`/`restore`/`purge`). `delete` is a soft delete and `restore` undoes it with all the app's data; only `purge` is irreversible |
 | List rows in a collection, or poll it for changes   | `list_rows` |
 | Read one row by key                                 | `get_row` |
 | Create a row (or get back the existing one)         | `upsert_row` |

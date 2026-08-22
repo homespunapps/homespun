@@ -62,6 +62,12 @@ export async function runApps(args: ParsedArgs): Promise<void> {
       return runShareLink(sub);
     case "delete":
       return runDelete(sub);
+    case "deleted":
+      return runDeleted(sub);
+    case "restore":
+      return runRestore(sub);
+    case "purge":
+      return runPurge(sub);
     case "wake":
       return runWake(sub);
     case "watch":
@@ -70,7 +76,7 @@ export async function runApps(args: ParsedArgs): Promise<void> {
       return runDomain(sub);
     default:
       fail(
-        `unknown verb '${verb}': homespun apps <list|show|audit|update|share-link|delete|wake|watch|domain>`,
+        `unknown verb '${verb}': homespun apps <list|show|audit|update|share-link|delete|deleted|restore|purge|wake|watch|domain>`,
         "invalid_args",
       );
   }
@@ -83,13 +89,21 @@ export async function runApps(args: ParsedArgs): Promise<void> {
 async function runList(args: ParsedArgs): Promise<void> {
   assertKnownFlags(args, ...specFor("apps", "list"));
   const status = args.flags.get("status") as
-    "active" | "dormant" | "archived" | "suspended" | "all" | undefined;
+    | "active"
+    | "dormant"
+    | "archived"
+    | "suspended"
+    | "deleted"
+    | "all"
+    | undefined;
   if (
     status !== undefined &&
-    !["active", "dormant", "archived", "suspended", "all"].includes(status)
+    !["active", "dormant", "archived", "suspended", "deleted", "all"].includes(
+      status,
+    )
   ) {
     fail(
-      "--status must be active|dormant|archived|suspended|all",
+      "--status must be active|dormant|archived|suspended|deleted|all",
       "invalid_args",
     );
   }
@@ -280,7 +294,7 @@ async function runDelete(args: ParsedArgs): Promise<void> {
     fail("usage: homespun apps delete <app> [--yes]", "invalid_args");
   if (!args.bools.has("yes")) {
     fail(
-      "'homespun apps delete' permanently removes the app and all its data — it is destructive. Pass --yes to confirm.",
+      "'homespun apps delete' takes the app offline immediately. Its data is kept and it can be brought back with 'homespun apps restore' until the retention window elapses ('homespun apps deleted' shows the deadline); 'homespun apps purge' destroys it for good. Pass --yes to confirm.",
       "invalid_args",
     );
   }
@@ -288,7 +302,73 @@ async function runDelete(args: ParsedArgs): Promise<void> {
   const id = await resolveAppId(client, appArg!);
   try {
     await client.deleteApp(id);
-    printJson({ deleted: true, app_id: id });
+    printJson({ deleted: true, app_id: id, restorable: true });
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// deleted / restore / purge
+//
+// Named after the row-level `data deleted|restore|purge` verbs that already do
+// exactly this one level down, so the same word means the same thing whichever
+// noun it is typed against.
+// ---------------------------------------------------------------------------
+
+async function runDeleted(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("apps", "deleted"));
+  const limitRaw = args.flags.get("limit");
+  const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+  if (limit !== undefined && !Number.isInteger(limit)) {
+    fail("--limit must be an integer", "invalid_args");
+  }
+  const client = makeClient(args);
+  try {
+    printJson(
+      await client.listApps({
+        status: "deleted",
+        limit,
+        cursor: args.flags.get("cursor"),
+      }),
+    );
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+async function runRestore(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("apps", "restore"));
+  const appArg = args.positionals[0];
+  if (!appArg) fail("usage: homespun apps restore <app>", "invalid_args");
+  const client = makeClient(args);
+  // includeDeleted, because the whole point is that this app is in trash: the
+  // default resolution path hides it and would fail with app_not_found.
+  const id = await resolveAppId(client, appArg!, { includeDeleted: true });
+  try {
+    printJson(await client.restoreApp(id));
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+async function runPurge(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("apps", "purge"));
+  const appArg = args.positionals[0];
+  if (!appArg) {
+    fail("usage: homespun apps purge <app> [--yes]", "invalid_args");
+  }
+  if (!args.bools.has("yes")) {
+    fail(
+      "'homespun apps purge' destroys the app and all its data immediately and forever — there is no restore afterwards. Pass --yes to confirm.",
+      "invalid_args",
+    );
+  }
+  const client = makeClient(args);
+  const id = await resolveAppId(client, appArg!, { includeDeleted: true });
+  try {
+    await client.purgeApp(id);
+    printJson({ purged: true, app_id: id });
   } catch (e) {
     failFromError(e);
   }

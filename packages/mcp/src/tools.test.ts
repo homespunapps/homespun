@@ -1444,7 +1444,54 @@ describe("apps tool actions", () => {
     });
   });
 
-  it("delete returns { app_id, deleted: true }", async () => {
+  it("list_deleted asks for the trash listing", async () => {
+    const listApps = vi
+      .fn()
+      .mockResolvedValue({ items: [], next_cursor: null });
+    await tool("apps").handler(fakeClient({ listApps }), {
+      action: "list_deleted",
+    });
+    expect(listApps).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "deleted" }),
+    );
+  });
+
+  it("restore returns the restored app and requires app_id", async () => {
+    const restoreApp = vi.fn().mockResolvedValue({ id: "app_1" });
+    const client = fakeClient({ restoreApp });
+
+    const missing = await tool("apps").handler(client, { action: "restore" });
+    expect(missing.content[0]!.text).toContain("app_id");
+    expect(restoreApp).not.toHaveBeenCalled();
+
+    const res = await tool("apps").handler(client, {
+      action: "restore",
+      app_id: "app_1",
+    });
+    expect(restoreApp).toHaveBeenCalledWith("app_1");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({ id: "app_1" });
+  });
+
+  it("purge returns { app_id, purged: true } and requires app_id", async () => {
+    const purgeApp = vi.fn().mockResolvedValue(undefined);
+    const client = fakeClient({ purgeApp });
+
+    const missing = await tool("apps").handler(client, { action: "purge" });
+    expect(missing.content[0]!.text).toContain("app_id");
+    expect(purgeApp).not.toHaveBeenCalled();
+
+    const res = await tool("apps").handler(client, {
+      action: "purge",
+      app_id: "app_1",
+    });
+    expect(purgeApp).toHaveBeenCalledWith("app_1");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      app_id: "app_1",
+      purged: true,
+    });
+  });
+
+  it("delete returns { app_id, deleted: true, restorable: true }", async () => {
     const deleteApp = vi.fn().mockResolvedValue(undefined);
     const res = await tool("apps").handler(fakeClient({ deleteApp }), {
       action: "delete",
@@ -1454,6 +1501,9 @@ describe("apps tool actions", () => {
     expect(JSON.parse(res.content[0]!.text)).toEqual({
       app_id: "app_1",
       deleted: true,
+      // The app is soft-deleted, so the result says so: an agent reading only
+      // this should not conclude the data is gone.
+      restorable: true,
     });
   });
 

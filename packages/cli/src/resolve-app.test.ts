@@ -52,7 +52,9 @@ describe("resolveAppId", () => {
     const id = await resolveAppId(client, "cabcdefghijklmnopqrstuv");
 
     expect(id).toBe("cabcdefghijklmnopqrstuv");
-    expect(getApp).toHaveBeenCalledWith("cabcdefghijklmnopqrstuv");
+    expect(getApp).toHaveBeenCalledWith("cabcdefghijklmnopqrstuv", {
+      includeDeleted: false,
+    });
     expect(listApps).not.toHaveBeenCalled();
   });
 
@@ -91,7 +93,9 @@ describe("resolveAppId", () => {
     const id = await resolveAppId(client, ownerChosenSlug);
 
     expect(id).toBe("app_slug_1");
-    expect(getApp).toHaveBeenCalledWith(ownerChosenSlug);
+    expect(getApp).toHaveBeenCalledWith(ownerChosenSlug, {
+      includeDeleted: false,
+    });
     expect(listApps).toHaveBeenCalledWith({
       status: "all",
       slug: ownerChosenSlug,

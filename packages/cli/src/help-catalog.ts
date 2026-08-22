@@ -87,7 +87,7 @@ const APPS: NounSpec = {
   tagline: "app lifecycle management",
   group: "app",
   rootSummary:
-    "App lifecycle: list, show, audit (security review of your apps' collection permissions), update, delete, wake, domain (custom domains), watch (stream the app's change feed as JSON-lines).",
+    "App lifecycle: list, show, audit (security review of your apps' collection permissions), update, delete, deleted (what is in the trash), restore, purge (destroy a deleted app for good), wake, domain (custom domains), watch (stream the app's change feed as JSON-lines).",
   verbs: [
     {
       verb: "list",
@@ -95,7 +95,7 @@ const APPS: NounSpec = {
       flags: [
         {
           name: "status",
-          value: "<active|dormant|archived|all>",
+          value: "<active|dormant|archived|deleted|all>",
           description: "Filter by lifecycle status",
         },
         { name: "limit", value: "<n>", description: "Page size" },
@@ -150,7 +150,30 @@ const APPS: NounSpec = {
     {
       verb: "delete",
       positionals: "<app>",
-      summary: "Soft-deletes an app.",
+      summary:
+        "Takes an app offline. Its data is kept and `apps restore` brings it back until the retention window elapses.",
+      bools: [{ name: "yes", description: "Skip the confirmation prompt" }],
+    },
+    {
+      verb: "deleted",
+      summary:
+        "Lists your deleted apps, each with when it was deleted and when it is purged for good.",
+      flags: [
+        { name: "limit", value: "<n>", description: "Page size" },
+        { name: "cursor", value: "<cursor>", description: "Page cursor" },
+      ],
+    },
+    {
+      verb: "restore",
+      positionals: "<app>",
+      summary:
+        "Brings a deleted app back, with all of its data. Fails if your account is at its app limit.",
+    },
+    {
+      verb: "purge",
+      positionals: "<app>",
+      summary:
+        "Destroys a deleted app and all its data now, instead of waiting out the retention window. Irreversible.",
       bools: [{ name: "yes", description: "Skip the confirmation prompt" }],
     },
     {

@@ -24,6 +24,8 @@ const watchFakeClient = {
   getApp: vi.fn(),
   getAppFeed: vi.fn(),
   deleteApp: vi.fn(),
+  restoreApp: vi.fn(),
+  purgeApp: vi.fn(),
   getAppDomain: vi.fn(),
   setAppDomain: vi.fn(),
   deleteAppDomain: vi.fn(),
@@ -213,7 +215,67 @@ describe("runApps dispatch — 'apps delete' requires --yes (regression)", () =>
 
     expect(exitCode).toBeUndefined();
     expect(watchFakeClient.deleteApp).toHaveBeenCalledWith("app_1");
-    expect(JSON.parse(stdout)).toEqual({ deleted: true, app_id: "app_1" });
+    // `restorable` is what tells a caller reading only this JSON that the app
+    // can be brought back, rather than that it is gone.
+    expect(JSON.parse(stdout)).toEqual({
+      deleted: true,
+      app_id: "app_1",
+      restorable: true,
+    });
+  });
+
+  it("tells the user how to get the app back instead of calling it permanent", async () => {
+    // The old copy said 'permanently removes the app and all its data', which
+    // was never true: the delete is a soft delete with a retention window.
+    await run(["delete", "my-app"]);
+    expect(stderr).toContain("apps restore");
+    expect(stderr).not.toContain("permanently removes");
+  });
+
+  it("'apps deleted' asks the relay for the trash listing", async () => {
+    watchFakeClient.listApps.mockResolvedValue({
+      items: [],
+      next_cursor: null,
+    });
+    await run(["deleted"]);
+    expect(exitCode).toBeUndefined();
+    expect(watchFakeClient.listApps).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "deleted" }),
+    );
+  });
+
+  it("'apps restore' resolves the slug inside the trash, where it actually is", async () => {
+    // Without includeDeleted the resolution hides the very app being restored
+    // and the command would fail with app_not_found on its own target.
+    watchFakeClient.listApps.mockResolvedValue({ items: [{ id: "app_1" }] });
+    watchFakeClient.restoreApp.mockResolvedValue({ id: "app_1" });
+
+    await run(["restore", "my-app"]);
+
+    expect(exitCode).toBeUndefined();
+    expect(watchFakeClient.listApps).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "deleted", slug: "my-app" }),
+    );
+    expect(watchFakeClient.restoreApp).toHaveBeenCalledWith("app_1");
+  });
+
+  it("refuses to purge without --yes, and resolves nothing first", async () => {
+    await run(["purge", "my-app"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("--yes");
+    expect(watchFakeClient.listApps).not.toHaveBeenCalled();
+    expect(watchFakeClient.purgeApp).not.toHaveBeenCalled();
+  });
+
+  it("purges when --yes is given", async () => {
+    watchFakeClient.listApps.mockResolvedValue({ items: [{ id: "app_1" }] });
+    watchFakeClient.purgeApp.mockResolvedValue(undefined);
+
+    await run(["purge", "my-app", "--yes"]);
+
+    expect(exitCode).toBeUndefined();
+    expect(watchFakeClient.purgeApp).toHaveBeenCalledWith("app_1");
+    expect(JSON.parse(stdout)).toEqual({ purged: true, app_id: "app_1" });
   });
 });
 

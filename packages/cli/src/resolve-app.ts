@@ -36,10 +36,18 @@ function looksLikeId(value: string): boolean {
 export async function resolveAppId(
   client: HomespunClient,
   value: string,
+  opts: { includeDeleted?: boolean } = {},
 ): Promise<string> {
+  // Both lookups hide soft-deleted apps by default, which is right for every
+  // verb that operates on a live app and wrong for the three that operate on
+  // trash (`apps deleted|restore|purge`). Those pass includeDeleted, which
+  // swaps BOTH lookups for their trash-aware forms: `?include_deleted=true` on
+  // the detail read, and `?status=deleted` on the slug lookup, since
+  // `?status=all` means "every live status" and would never match.
+  const { includeDeleted = false } = opts;
   if (looksLikeId(value)) {
     try {
-      await client.getApp(value);
+      await client.getApp(value, { includeDeleted });
       return value;
     } catch (e) {
       if (!(e instanceof HomespunApiError && e.code === "app_not_found")) {
@@ -48,10 +56,19 @@ export async function resolveAppId(
       // Fall through: treat it as a slug instead.
     }
   }
-  const page = await client.listApps({ status: "all", slug: value, limit: 1 });
+  const page = await client.listApps({
+    status: includeDeleted ? "deleted" : "all",
+    slug: value,
+    limit: 1,
+  });
   const match = page.items[0];
   if (!match) {
-    fail(`no app found with slug '${value}'`, "app_not_found");
+    fail(
+      includeDeleted
+        ? `no deleted app found with slug '${value}'`
+        : `no app found with slug '${value}'`,
+      "app_not_found",
+    );
   }
   return match!.id;
 }

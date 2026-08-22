@@ -757,7 +757,12 @@ export class HomespunClient {
    */
   async listApps(
     opts: {
-      status?: "active" | "dormant" | "archived" | "suspended" | "all";
+      /**
+       * `deleted` is the trash listing and the only value that returns
+       * soft-deleted apps; `all` means every LIVE status, as it always has.
+       */
+      status?:
+        "active" | "dormant" | "archived" | "suspended" | "deleted" | "all";
       limit?: number;
       cursor?: string;
       slug?: string;
@@ -801,8 +806,18 @@ export class HomespunClient {
   }
 
   /** GET /v1/apps/:id — full app detail (manifest, current_version, quota). */
-  async getApp(appId: string): Promise<AppDetail> {
-    const r = await this.call("GET", `/v1/apps/${encodeURIComponent(appId)}`);
+  async getApp(
+    appId: string,
+    opts: { includeDeleted?: boolean } = {},
+  ): Promise<AppDetail> {
+    // Opt-in, matching the route: without it a soft-deleted app reads as
+    // app_not_found, so an unaware caller never gets a live-looking record for
+    // something that serves nothing.
+    const qs = opts.includeDeleted ? "?include_deleted=true" : "";
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}${qs}`,
+    );
     if (!r.ok) this.fail(r);
     return this.asObject<AppDetail>(r);
   }
@@ -880,11 +895,51 @@ export class HomespunClient {
     return this.asObject<{ share_url: string }>(r);
   }
 
-  /** DELETE /v1/apps/:id — soft-delete (idempotent). */
+  /**
+   * DELETE /v1/apps/:id — soft-delete (idempotent).
+   *
+   * Recoverable, not destructive: the app stops serving immediately but keeps
+   * every version, collection, row, attachment, member and grant it had, and
+   * `restoreApp` brings all of it back until the retention window elapses.
+   * `purgeApp` is the irreversible one.
+   */
   async deleteApp(appId: string): Promise<void> {
     const r = await this.call(
       "DELETE",
       `/v1/apps/${encodeURIComponent(appId)}`,
+    );
+    if (!r.ok) this.fail(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/restore — undo a soft delete, with all the app's data.
+   *
+   * Idempotent on a live app. Fails with 409 when the account is at its app
+   * cap (the delete released the slot, so the restore has to re-take it), when
+   * the app was an expired trial, or when the owning account is itself
+   * deleted. An app suspended by an operator comes back SUSPENDED, not active.
+   */
+  async restoreApp(appId: string): Promise<AppDetail> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/restore`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<AppDetail>(r);
+  }
+
+  /**
+   * POST /v1/apps/:id/purge — destroy a deleted app and all its data NOW,
+   * without waiting out the retention window. Irreversible.
+   *
+   * The app must already be soft-deleted; purging a live one fails with 409.
+   * That two-step is deliberate, so no single call takes a serving app to
+   * unrecoverable.
+   */
+  async purgeApp(appId: string): Promise<void> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/purge`,
     );
     if (!r.ok) this.fail(r);
   }
@@ -2404,6 +2459,22 @@ export interface AppSummary {
   has_share_token: boolean;
   created_at: string;
   last_activity_at: string;
+  /**
+   * When the app was soft-deleted. PRESENT ONLY on a deleted app, so its
+   * absence is a reliable "this app is live" test. A deleted app keeps all of
+   * its data and is restorable with `restoreApp` until `purges_at`.
+   */
+  deleted_at?: string;
+  /**
+   * When the app becomes eligible to be purged forever, or `null` meaning
+   * never. Present alongside `deleted_at`, so a null here is unambiguously
+   * "never purged" rather than "not deleted".
+   *
+   * An eligibility boundary, not an exact moment: the relay's sweeper runs on
+   * an interval, so the real purge lands at or after this. Word it as "purges
+   * after", never "purges at".
+   */
+  purges_at?: string | null;
 }
 
 /** Full app detail — the shape `getApp` returns. */
