@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.69 -->
+<!-- homespun skill v1.6.70 -->
 
 # homespun
 
@@ -1271,6 +1271,19 @@ Fields, exactly:
     Simpler to paste, at the cost of one more script fetched from homespun on
     every page load. The inline snippet is the one to lead with; this is the
     convenience for someone who would rather not hand-maintain the markup.
+
+  > **Read `references/embedding.md` before building an app that declares
+  > `embedAncestors`.** It documents the `homespun.embed` SDK namespace: how to
+  > read the framing page's visitor context (campaign parameters, referrer,
+  > page URL), which the framed document cannot otherwise see, and how to tell
+  > that page a submission completed so its analytics can record the
+  > conversion. An embedded lead form that skips both gives the site owner
+  > leads they cannot attribute, which is usually the entire reason they
+  > embedded it.
+  >
+  > If this skill reached you over HTTP rather than as files on disk, fetch it
+  > with `homespun skill show --section embedding`, or
+  > `GET <relay>/skills/homespun/references/embedding.md`.
 
   **A public, anonymous-write form is a spam target, embedded or not, and
   embedding makes it easier to find.** Any collection this app admits
