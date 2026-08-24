@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Homespun: your AI deploys a real multi-user app, and keeps a login to it.",
-    "version": "1.6.74"
+    "version": "1.6.75"
   },
   "plugins": [
     {
