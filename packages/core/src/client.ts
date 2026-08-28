@@ -2326,6 +2326,22 @@ export interface DeployAppRequest {
   assets?: AppAsset[];
 }
 
+/**
+ * One connection a manifest references that has no row on the app.
+ *
+ * `suggested_host` is the host every rule using that connection agrees on,
+ * taken from the manifest, and is a SUGGESTION for a human to approve, never a
+ * binding the tooling may apply on its own: a connection's allowed host is the
+ * exfiltration defence, and a redeploy is not gated on fetcher urls, so
+ * deriving the binding from the same input it defends against would defeat it.
+ * Null when the rules disagree on a host, or resolve their target from a
+ * setting at delivery time.
+ */
+export interface MissingConnection {
+  name: string;
+  suggested_host: string | null;
+}
+
 export interface DeployAppResponse {
   app_id: string;
   slug: string;
@@ -2347,6 +2363,16 @@ export interface DeployAppResponse {
    * to the human.
    */
   warnings?: string[];
+  /**
+   * Connections this manifest references that do not exist on the app, so
+   * every call through them fails at runtime with `connection_not_found`.
+   * Present only when there is at least one. On a CREATE that is every
+   * connection the manifest declares, since a brand-new app has none.
+   *
+   * Machine-readable ON PURPOSE, and separate from the sentence in
+   * `warnings`: a caller gating on this must never have to match prose.
+   */
+  missing_connections?: MissingConnection[];
 }
 
 /**
@@ -2384,6 +2410,17 @@ export interface RedeployAppResponse {
    * warning fires only when the app STILL has no timezone set.
    */
   warnings?: string[];
+  /**
+   * Connections this manifest references that do not exist on the app, so
+   * every call through them fails at runtime with `connection_not_found`.
+   * Present only when there is at least one.
+   *
+   * Machine-readable ON PURPOSE, and separate from the sentence in
+   * `warnings`: a caller gating on this must never have to match prose, which
+   * is free to be reworded and would fail OPEN if grepped. Optional, so a
+   * client talking to an older relay simply sees it absent.
+   */
+  missing_connections?: MissingConnection[];
 }
 
 /**
@@ -2411,6 +2448,17 @@ export interface DeployCheckResult {
   warnings: string[];
   compat?: "clean" | "forced" | "incompatible";
   breaks?: Array<{ path: string; message: string }>;
+  /**
+   * Connections this manifest references that do not exist on the app, so
+   * every call through them fails at runtime with `connection_not_found`.
+   * Present only when there is at least one.
+   *
+   * Machine-readable ON PURPOSE, and separate from the sentence in
+   * `warnings`: a caller gating on this must never have to match prose, which
+   * is free to be reworded and would fail OPEN if grepped. Optional, so a
+   * client talking to an older relay simply sees it absent.
+   */
+  missing_connections?: MissingConnection[];
 }
 
 /**

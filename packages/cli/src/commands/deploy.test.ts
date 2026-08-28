@@ -59,7 +59,15 @@ const fakeClient = {
   }),
   checkDeploy: vi.fn((body: unknown) => {
     calls.push({ method: "checkDeploy", args: [body] });
-    return Promise.resolve({ ok: true, warnings: [] });
+    // Typed explicitly rather than inferred: a bare `warnings: []` infers as
+    // `never[]`, which makes every mockImplementationOnce that supplies real
+    // warnings a type error.
+    const result: {
+      ok: boolean;
+      warnings: string[];
+      missing_connections?: { name: string; suggested_host: string | null }[];
+    } = { ok: true, warnings: [] };
+    return Promise.resolve(result);
   }),
   // Backs the by-reference asset path (issue #1028): presignBlob -> PUT
   // (mocked separately below, via @homespunapps/core's putPresigned) ->
@@ -404,6 +412,70 @@ describe("--check (dry run)", () => {
       },
     ]);
     expect(JSON.parse(stdout)).toEqual({ ok: true, warnings: [] });
+  });
+
+  it("FAILS the check when a declared connection does not exist (#1824)", async () => {
+    // A check is a gate, so it must not exit 0 on a manifest whose connections
+    // do not exist: every call through them fails at runtime. Gated on the
+    // STRUCTURED field, never the warning prose, because a grep that stops
+    // matching fails open.
+    const previous = process.exitCode;
+    process.exitCode = undefined;
+    fakeClient.checkDeploy.mockImplementationOnce((body: unknown) => {
+      calls.push({ method: "checkDeploy", args: [body] });
+      return Promise.resolve({
+        ok: true,
+        warnings: ["Connection 'creds' is referenced by ..."],
+        missing_connections: [
+          { name: "creds", suggested_host: "api.example.com" },
+        ],
+      });
+    });
+
+    await runDeploy(argv([dir, "--check"]));
+
+    expect(process.exitCode).toBe(1);
+    // The remedy must be actionable and carry its provenance, so the reader
+    // checks the host rather than pasting blind.
+    expect(stderr).toContain("connection 'creds' is declared in the manifest");
+    expect(stderr).toContain("the manifest points it at api.example.com");
+    expect(stderr).toContain("--allowed-host api.example.com");
+    expect(stderr).toContain("--header-value -");
+    // stdout stays parseable JSON: the guidance went to stderr.
+    expect(JSON.parse(stdout).missing_connections).toHaveLength(1);
+    process.exitCode = previous;
+  });
+
+  it("says nothing and exits clean when every connection exists (#1824)", async () => {
+    const previous = process.exitCode;
+    process.exitCode = undefined;
+    await runDeploy(argv([dir, "--check"]));
+    expect(process.exitCode).toBeUndefined();
+    expect(stderr).toBe("");
+    process.exitCode = previous;
+  });
+
+  it("names the host as unknown when the manifest rules disagree (#1824)", async () => {
+    const previous = process.exitCode;
+    process.exitCode = undefined;
+    fakeClient.checkDeploy.mockImplementationOnce((body: unknown) => {
+      calls.push({ method: "checkDeploy", args: [body] });
+      return Promise.resolve({
+        ok: true,
+        warnings: [],
+        missing_connections: [{ name: "creds", suggested_host: null }],
+      });
+    });
+
+    await runDeploy(argv([dir, "--check"]));
+
+    expect(process.exitCode).toBe(1);
+    // Printing one of several hosts would suggest a binding that silently
+    // fails for the others.
+    expect(stderr).toContain("do not agree on a single host");
+    expect(stderr).toContain("--allowed-host <host>");
+    expect(stderr).not.toContain("--allowed-host api.example.com");
+    process.exitCode = previous;
   });
 
   it("a redeploy --check resolves the app id, forwards --force, and redeploys nothing", async () => {

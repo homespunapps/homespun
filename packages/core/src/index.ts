@@ -20,6 +20,7 @@ export type {
   RedeployAppResponse,
   DeployCheckRequest,
   DeployCheckResult,
+  MissingConnection,
   KeyMintResult,
   AppSummary,
   AppDetail,

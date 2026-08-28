@@ -10,6 +10,7 @@ import {
   putPresigned,
   type AppAsset,
   type HomespunClient,
+  type MissingConnection,
 } from "@homespunapps/core";
 import { makeClient } from "../config.js";
 import type { ParsedArgs } from "../argv.js";
@@ -340,6 +341,52 @@ function inlineExplicitAsset(asset: ExplicitAsset): AppAsset {
   };
 }
 
+/**
+ * Report connections the manifest references that the app does not have.
+ *
+ * Deploying a manifest DECLARES a connection name; it never creates the
+ * connection, because its allowed host is the exfiltration defence and only an
+ * owner may bind one. Without this the gap is invisible until someone uses the
+ * feature and gets "no connection named X on this app", which reads like a bug
+ * in the app rather than setup that was never done.
+ *
+ * STDERR, never stdout: stdout carries the JSON a caller pipes into `jq`.
+ *
+ * The printed command is a SUGGESTION built from the host the relay read out
+ * of the manifest. It is shown with its provenance so the reader checks it
+ * rather than pasting blind, and `--header-value -` makes the CLI prompt for
+ * the credential instead of putting it in shell history.
+ */
+function reportMissingConnections(
+  missing: readonly MissingConnection[] | undefined,
+  appRef: string,
+): void {
+  if (!missing || missing.length === 0) return;
+  for (const m of missing) {
+    warn(
+      `connection '${m.name}' is declared in the manifest but does not exist on this app; every call through it will fail`,
+    );
+    if (m.suggested_host) {
+      process.stderr.write(
+        `  the manifest points it at ${m.suggested_host}. If that is right:\n` +
+          `    homespun connections create --app ${appRef} --name ${m.name} \\\n` +
+          `      --allowed-host ${m.suggested_host} \\\n` +
+          `      --kind static --header-name Authorization --header-value -\n`,
+      );
+    } else {
+      // Rules disagreeing on a host, or resolving it from a setting at
+      // delivery time. Printing one of several hosts would suggest a binding
+      // that silently fails for the others, so name the host yourself.
+      process.stderr.write(
+        `  its rules do not agree on a single host, so choose the destination yourself:\n` +
+          `    homespun connections create --app ${appRef} --name ${m.name} \\\n` +
+          `      --allowed-host <host> \\\n` +
+          `      --kind static --header-name Authorization --header-value -\n`,
+      );
+    }
+  }
+}
+
 /** Split explicit assets by the presign threshold. A pure size check, no I/O. */
 function partitionExplicitAssets(assets: ExplicitAsset[]): {
   small: ExplicitAsset[];
@@ -601,6 +648,15 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
         ...(force ? { force } : {}),
       });
       printJson(result);
+      reportMissingConnections(result.missing_connections, appId ?? "<app>");
+      // A check exists to be a gate, so it must not report success on a
+      // manifest whose connections do not exist: every call through them
+      // fails at runtime. Gated on the STRUCTURED field, never on the warning
+      // prose, because a grep that stops matching fails open and a gate that
+      // fails open is worse than no gate.
+      if ((result.missing_connections?.length ?? 0) > 0) {
+        process.exitCode = 1;
+      }
     } catch (e) {
       failFromError(e);
     }
@@ -665,6 +721,9 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
         ...(redeployed.breaks ? { breaks: redeployed.breaks } : {}),
         ...(redeployed.warnings ? { warnings: redeployed.warnings } : {}),
       });
+      // A brand-new app has no connections at all, so this names every one the
+      // manifest declares. That is the moment the advice is most useful.
+      reportMissingConnections(redeployed.missing_connections, app.slug);
     } catch (e) {
       failFromError(e);
     }
@@ -721,6 +780,7 @@ export async function runDeploy(args: ParsedArgs): Promise<void> {
       ...(redeployed.breaks ? { breaks: redeployed.breaks } : {}),
       ...(redeployed.warnings ? { warnings: redeployed.warnings } : {}),
     });
+    reportMissingConnections(redeployed.missing_connections, app.slug);
   } catch (e) {
     failFromError(e);
   }
