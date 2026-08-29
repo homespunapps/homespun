@@ -1,4 +1,4 @@
-<!-- homespun skill v1.6.77 -->
+<!-- homespun skill v1.6.78 -->
 
 # homespun (MCP)
 
