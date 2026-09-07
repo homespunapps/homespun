@@ -87,7 +87,7 @@ const APPS: NounSpec = {
   tagline: "app lifecycle management",
   group: "app",
   rootSummary:
-    "App lifecycle: list, show, audit (security review of your apps' collection permissions), update, delete, deleted (what is in the trash), restore, purge (destroy a deleted app for good), wake, domain (custom domains), watch (stream the app's change feed as JSON-lines).",
+    "App lifecycle: list, show, audit (security review of your apps' collection permissions), update, delete, deleted (what is in the trash), restore, purge (destroy a deleted app for good), wake, domain (custom domains), watch (stream the app's change feed as JSON-lines), transfer (hand ownership to another human).",
   verbs: [
     {
       verb: "list",
@@ -215,13 +215,46 @@ const APPS: NounSpec = {
         },
       ],
     },
+    {
+      verb: "transfer",
+      positionals: "<app>",
+      summary:
+        "Hands app ownership to another human. Nothing moves until they accept the invite by email; e.g. `homespun apps transfer shop --to new-owner@example.com`, then check it with `homespun apps transfer shop --show` or pull it back with `homespun apps transfer shop --cancel`.",
+      flags: [
+        {
+          name: "to",
+          value: "<email>",
+          description: "Invite this email to take ownership",
+        },
+      ],
+      bools: [
+        {
+          name: "keep-as-member",
+          description:
+            "Stay on as a member once accepted (default when neither this nor --remove-me is given)",
+        },
+        {
+          name: "remove-me",
+          description: "Be removed from the app once accepted",
+        },
+        {
+          name: "show",
+          description: "Show the pending transfer instead of starting one",
+        },
+        {
+          name: "cancel",
+          description: "Withdraw the pending transfer",
+        },
+      ],
+    },
   ],
   notes: [
     "<app> accepts either the app_id or its slug (resolved via GET /v1/apps?slug= when it does not look like a cuid).",
     'watch streams the app\'s change feed as JSON-lines on stdout, one compact SerializedFeedEntry object per line, identical whether served over the live WebSocket (primary) or the long-poll fallback (used automatically when the WS upgrade fails, for example a locked-down network blocks outbound WS). A dormancy transition mid-watch emits a single {"type":"_dormant"} line and exits 0.',
+    "transfer prints a plain-language explanation by default (what will happen, that the recipient must accept by email, and that ownership has not moved yet), not just a JSON object; pass --json for the raw { transfer } record instead. audit does the same: a human report by default, --json for the machine one.",
   ],
   outputNote:
-    'Output is JSON, and JSON-lines for watch. Errors go to stderr as {"error":{"code","message"}} with a non-zero exit.',
+    'Output is JSON, JSON-lines for watch, and a human-readable report by default for audit and transfer (pass --json for the raw object on those two). Errors go to stderr as {"error":{"code","message"}} with a non-zero exit.',
 };
 
 const DATA: NounSpec = {

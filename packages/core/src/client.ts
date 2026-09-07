@@ -1117,6 +1117,63 @@ export class HomespunClient {
   }
 
   // -------------------------------------------------------------------------
+  // App ownership transfer (issue #1847). Moving an app to another human is a
+  // two-party job, same shape as custom domains above: this side mints a
+  // pending transfer and emails the recipient, and ownership only actually
+  // moves once THEY accept it from that email, by verified address. An app
+  // holds at most one pending transfer at a time.
+  // -------------------------------------------------------------------------
+
+  /**
+   * POST /v1/apps/:id/transfer: invite `opts.email` to take ownership of the
+   * app. Nothing moves yet: the relay mints a pending transfer and emails the
+   * recipient an accept link, and ownership only changes hands once they
+   * accept it. `keepAsMember` (default true) decides whether the current
+   * owner stays on as a plain member afterward, or is removed the moment the
+   * transfer is accepted. 409s when a transfer is already pending for this
+   * app, or when the target is already the owner.
+   */
+  async createAppTransfer(
+    appId: string,
+    opts: { email: string; keepAsMember?: boolean },
+  ): Promise<{ transfer: AppTransfer }> {
+    const r = await this.call(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/transfer`,
+      { email: opts.email, keepAsMember: opts.keepAsMember },
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ transfer: AppTransfer }>(r);
+  }
+
+  /**
+   * GET /v1/apps/:id/transfer: the app's pending transfer, or `null` when
+   * none is pending.
+   */
+  async getAppTransfer(
+    appId: string,
+  ): Promise<{ transfer: AppTransfer | null }> {
+    const r = await this.call(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/transfer`,
+    );
+    if (!r.ok) this.fail(r);
+    return this.asObject<{ transfer: AppTransfer | null }>(r);
+  }
+
+  /**
+   * DELETE /v1/apps/:id/transfer: withdraw the app's pending transfer.
+   * Idempotent: a 204 comes back even when nothing was pending.
+   */
+  async cancelAppTransfer(appId: string): Promise<void> {
+    const r = await this.call(
+      "DELETE",
+      `/v1/apps/${encodeURIComponent(appId)}/transfer`,
+    );
+    if (!r.ok) this.fail(r);
+  }
+
+  // -------------------------------------------------------------------------
   // Collection retention override (issue #956). The author declares default
   // retention in the manifest; this lets the OWNER tighten or loosen it per
   // collection at runtime, without a redeploy. Effective retention is per-axis
@@ -2640,6 +2697,20 @@ export interface AppMember {
    * reported before a member could hold several; read `customRoles`.
    */
   customRole?: string | null;
+  createdAt: string;
+}
+
+/**
+ * A pending app ownership transfer (issue #1847): the shape `createAppTransfer`
+ * and `getAppTransfer` return. Fields are camelCase on the wire, matching the
+ * app-membership shapes above rather than the usual snake_case convention.
+ */
+export interface AppTransfer {
+  id: string;
+  appId: string;
+  toEmail: string;
+  keepAsMember: boolean;
+  expiresAt: string;
   createdAt: string;
 }
 

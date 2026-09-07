@@ -32,6 +32,7 @@ import type {
   CommunitySetupStep,
   HomespunClient,
   ListWhereCondition,
+  RelayResponse,
   ServiceCredentialGrant,
 } from "@homespunapps/core";
 import {
@@ -318,6 +319,53 @@ function invalidArgs(message: string): ToolResult {
       isError: true,
     },
     "invalid_args",
+  );
+}
+
+/**
+ * The `transfer` tool talks to /v1/apps/:id/transfer through
+ * HomespunClient.call(), the one low-level primitive it exposes publicly,
+ * because that route has no typed wrapper yet. asRelayObject()/failRelay()
+ * mirror the private asObject()/fail() pair every typed wrapper method uses
+ * internally, so a raw call() still produces the same HomespunApiError shape
+ * errorResult() already knows how to report.
+ */
+function asRelayObject<T>(r: RelayResponse): T {
+  if (r.data === null || typeof r.data !== "object" || Array.isArray(r.data)) {
+    throw new HomespunApiError(
+      r.status,
+      "invalid_response",
+      `relay returned a ${r.status} with a non-object body`,
+      { body: r.data },
+    );
+  }
+  return r.data as T;
+}
+
+/** Throw a HomespunApiError from a failed RelayResponse (see asRelayObject). */
+function failRelay(r: RelayResponse): never {
+  const err = (
+    r.data as {
+      error?: {
+        code?: string;
+        message?: string;
+        details?: unknown;
+        hint?: string;
+        retryable?: boolean;
+        docs_url?: string;
+      };
+    } | null
+  )?.error;
+  throw new HomespunApiError(
+    r.status,
+    err?.code ?? "relay_error",
+    err?.message ?? `relay returned ${r.status}`,
+    err?.details,
+    {
+      hint: err?.hint,
+      retryable: err?.retryable,
+      docsUrl: err?.docs_url,
+    },
   );
 }
 
@@ -808,6 +856,27 @@ const grantsShape = {
     .string()
     .optional()
     .describe("revoke only. The grant link id (see list's `id` field)."),
+};
+
+const transferShape = {
+  action: z
+    .enum(["start", "status", "cancel"])
+    .describe(
+      "A v2 app's ownership transfer (issue #1847). start does not move ownership: it only mints a pending offer and emails the named person an accept link, and the app stays owned here until they open it and accept (app_id+email; optional keep_as_member). status: the app's pending transfer, or null if none is pending (app_id). cancel: withdraw a pending transfer; idempotent, so cancelling with none pending is still a success (app_id).",
+    ),
+  app_id: z.string().min(1).describe("The app id."),
+  email: z
+    .string()
+    .optional()
+    .describe(
+      "start only. The email to offer ownership to. The relay sends that address an accept link; ownership moves only when they open it and accept, never at start itself. 409s if a transfer is already pending for this app, or if the email already owns it.",
+    ),
+  keep_as_member: z
+    .boolean()
+    .optional()
+    .describe(
+      "start only. Whether the current owner stays on as an ordinary member once the transfer is accepted, losing owner powers but keeping app access. Defaults to true. Has no effect unless and until the transfer is actually accepted.",
+    ),
 };
 
 const credentialsShape = {
@@ -2161,6 +2230,74 @@ export const TOOLS: ToolDef[] = [
           }
           default:
             return invalidArgs(`unknown grants action '${action}'`);
+        }
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  },
+  {
+    name: "transfer",
+    description:
+      "A v2 app's ownership transfer (issue #1847): handing the app, and the quota and billing responsibility that come with it, to a different human. This is two steps, and `start` completing is only the first one. start mints a pending offer and emails the named person an accept link; the app is still owned here when the call returns, stays owned here while the offer is pending, and only moves once that person opens the link and accepts it. Reporting the transfer as done after `start` would be wrong: check `status` to see whether it is still pending or has dropped to null (accepted, expired, or withdrawn), and the caller's own agent key stops being able to deploy this app only at the moment it actually moves. Actions: start offers the app to an email address, 409ing if a transfer is already pending or the email already owns the app; status returns the pending transfer, or null if none; cancel withdraws a pending transfer and is idempotent, so cancelling with nothing pending is still a success.",
+    inputSchema: transferShape,
+    // Consolidated tool: read action (status) + mutating ones (start/cancel).
+    // Hint reflects start, the most-privileged action: it hands the app to
+    // someone else once accepted.
+    annotations: {
+      title: "Manage App Ownership Transfer",
+      readOnlyHint: false,
+      // Destructive in effect once accepted: `start` sets an app on a path to
+      // a different owner, and `cancel` withdraws that path.
+      destructiveHint: true,
+      // NOT idempotent: `start` mints a fresh pending offer, and a retry
+      // while one is already pending 409s rather than silently having no
+      // further effect. Matches the `grants` tool, which is the same shape.
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    handler: async (client, args) => {
+      const action = String(args["action"]);
+      if (str(args, "app_id") === undefined) {
+        return invalidArgs(`${action} requires \`app_id\``);
+      }
+      const appId = String(args["app_id"]);
+      const path = `/v1/apps/${encodeURIComponent(appId)}/transfer`;
+      try {
+        switch (action) {
+          case "start": {
+            if (str(args, "email") === undefined) {
+              return invalidArgs("start requires `email`");
+            }
+            const keepAsMember = bool(args, "keep_as_member");
+            const r = await client.call("POST", path, {
+              email: String(args["email"]),
+              ...(keepAsMember !== undefined ? { keepAsMember } : {}),
+            });
+            if (!r.ok) failRelay(r);
+            const started = asRelayObject<{ transfer: unknown }>(r);
+            return jsonResult({
+              ...started,
+              // See the tool description: `start` succeeding only means the
+              // offer was sent, not that ownership moved. Stated again here,
+              // in the result itself, so a caller reading just this response
+              // cannot mistake it for a completed transfer.
+              ownership_moved: false,
+              note: "Ownership has not moved. It only moves once the recipient opens the emailed link and accepts; poll `status` to see when that happens.",
+            });
+          }
+          case "status": {
+            const r = await client.call("GET", path);
+            if (!r.ok) failRelay(r);
+            return jsonResult(asRelayObject<{ transfer: unknown | null }>(r));
+          }
+          case "cancel": {
+            const r = await client.call("DELETE", path);
+            if (!r.ok) failRelay(r);
+            return jsonResult({ app_id: appId, cancelled: true });
+          }
+          default:
+            return invalidArgs(`unknown transfer action '${action}'`);
         }
       } catch (e) {
         return errorResult(e);

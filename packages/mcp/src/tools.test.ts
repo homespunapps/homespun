@@ -64,6 +64,7 @@ const EXPECTED_TOOLS = [
   "apps",
   "members",
   "grants",
+  "transfer",
   "credentials",
   "connections",
   "ingest",
@@ -101,6 +102,7 @@ describe("tool listing", () => {
       "apps",
       "members",
       "grants",
+      "transfer",
       "credentials",
       "connections",
       "ingest",
@@ -121,7 +123,7 @@ describe("tool listing", () => {
     }
   });
 
-  it("registers exactly 25 tools", () => {
+  it("registers exactly 26 tools", () => {
     // Pinned so the directory-readiness annotation sweep can't silently lose or
     // duplicate a tool. DELIBERATELY a literal, not TOOLS.length: this IS the
     // registry, so comparing it to its own length would always pass and the
@@ -129,7 +131,7 @@ describe("tool listing", () => {
     // assert the SAME number at the wire layer, and there it is correct to
     // derive from TOOLS.length, because those are checking transport fidelity
     // (does the wire expose every registered tool), not the registry's size.
-    expect(TOOLS).toHaveLength(25);
+    expect(TOOLS).toHaveLength(26);
   });
 
   it("every tool carries a Title-Case title and behavioural hints", () => {
@@ -200,6 +202,7 @@ describe("tool listing", () => {
     "apps", // delete
     "members", // remove
     "grants", // revoke (kills a live capability URL)
+    "transfer", // start (sets the app on a path to a different owner)
     "credentials", // revoke (permanent) / rotate (invalidates the old token)
     "connections", // delete (stops a webhook authenticating)
     "ingest", // rotate / clear_signing_secret
@@ -1694,6 +1697,131 @@ describe("members tool actions", () => {
   });
 });
 
+describe("transfer tool actions", () => {
+  // No typed HomespunClient wrapper exists for /v1/apps/:id/transfer yet, so
+  // the tool talks to client.call() directly; these mocks return the same
+  // RelayResponse shape call() itself returns rather than a typed result.
+  it("start forwards email and reports ownership as not yet moved", async () => {
+    const call = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      data: {
+        transfer: {
+          id: "trf_1",
+          appId: "app_1",
+          toEmail: "new@b.test",
+          keepAsMember: true,
+          expiresAt: "2026-01-08T00:00:00.000Z",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    });
+    const res = await tool("transfer").handler(fakeClient({ call }), {
+      action: "start",
+      app_id: "app_1",
+      email: "new@b.test",
+    });
+    expect(call).toHaveBeenCalledWith("POST", "/v1/apps/app_1/transfer", {
+      email: "new@b.test",
+    });
+    const parsed = JSON.parse(res.content[0]!.text);
+    expect(parsed.transfer.toEmail).toBe("new@b.test");
+    expect(parsed.ownership_moved).toBe(false);
+  });
+
+  it("start forwards keep_as_member", async () => {
+    const call = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      data: { transfer: { id: "trf_2" } },
+    });
+    await tool("transfer").handler(fakeClient({ call }), {
+      action: "start",
+      app_id: "app_1",
+      email: "new@b.test",
+      keep_as_member: false,
+    });
+    expect(call).toHaveBeenCalledWith("POST", "/v1/apps/app_1/transfer", {
+      email: "new@b.test",
+      keepAsMember: false,
+    });
+  });
+
+  it("start requires email", async () => {
+    const call = vi.fn();
+    const res = await tool("transfer").handler(fakeClient({ call }), {
+      action: "start",
+      app_id: "app_1",
+    });
+    expect(res.isError).toBe(true);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the already-pending 409 as an error result", async () => {
+    const call = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      data: {
+        error: {
+          code: "conflict",
+          message: "a transfer is already pending for this app",
+        },
+      },
+    });
+    const res = await tool("transfer").handler(fakeClient({ call }), {
+      action: "start",
+      app_id: "app_1",
+      email: "new@b.test",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("already pending");
+  });
+
+  it("status forwards app_id and returns null when nothing is pending", async () => {
+    const call = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { transfer: null },
+    });
+    const res = await tool("transfer").handler(fakeClient({ call }), {
+      action: "status",
+      app_id: "app_1",
+    });
+    expect(call).toHaveBeenCalledWith("GET", "/v1/apps/app_1/transfer");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({ transfer: null });
+  });
+
+  it("cancel returns a receipt and is idempotent", async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 204, data: null });
+    const res = await tool("transfer").handler(fakeClient({ call }), {
+      action: "cancel",
+      app_id: "app_1",
+    });
+    expect(call).toHaveBeenCalledWith("DELETE", "/v1/apps/app_1/transfer");
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      app_id: "app_1",
+      cancelled: true,
+    });
+  });
+
+  it("requires app_id for every action", async () => {
+    const res = await tool("transfer").handler(fakeClient({}), {
+      action: "status",
+    });
+    expect(res.isError).toBe(true);
+  });
+
+  it("rejects an unknown action", async () => {
+    const res = await tool("transfer").handler(fakeClient({}), {
+      action: "bogus",
+      app_id: "app_1",
+    });
+    expect(res.isError).toBe(true);
+  });
+});
+
 describe("credentials tool actions", () => {
   it("mint forwards mode/grants/members/label/ttl_seconds and returns the token", async () => {
     const mintAppCredential = vi.fn().mockResolvedValue({
@@ -2049,6 +2177,16 @@ describe("v2 tool schema validation", () => {
   it("connections requires a valid action enum value", () => {
     const schema = z.object(tool("connections").inputSchema);
     expect(schema.safeParse({ action: "list", app_id: "a" }).success).toBe(
+      true,
+    );
+    expect(schema.safeParse({ action: "bogus", app_id: "a" }).success).toBe(
+      false,
+    );
+  });
+
+  it("transfer requires a valid action enum value", () => {
+    const schema = z.object(tool("transfer").inputSchema);
+    expect(schema.safeParse({ action: "status", app_id: "a" }).success).toBe(
       true,
     );
     expect(schema.safeParse({ action: "bogus", app_id: "a" }).success).toBe(

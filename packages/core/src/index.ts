@@ -29,6 +29,7 @@ export type {
   AppDomainDnsRecord,
   AppMember,
   AddAppMemberResult,
+  AppTransfer,
   AppRow,
   AppRowsPage,
   ListScalar,

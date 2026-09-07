@@ -106,6 +106,21 @@ export const BOOLEAN_FLAGS = new Set([
   // `homespun credentials mint --members`: opt the credential into the app's
   // member directory in its boot/hello payloads.
   "members",
+  // `homespun apps transfer <app> --show`: print the app's pending ownership
+  // transfer instead of starting or withdrawing one. Named "show" rather than
+  // "status", which "apps list --status <value>" and "connections deliveries
+  // --status <value>" already own as a value flag under the same name.
+  "show",
+  // `homespun apps transfer <app> --cancel`: withdraw the app's pending
+  // ownership transfer.
+  "cancel",
+  // `homespun apps transfer <app> --to <email> --keep-as-member`: the
+  // recipient becomes the owner, the current owner stays on as a plain
+  // member. Default when neither this nor --remove-me is given.
+  "keep-as-member",
+  // `homespun apps transfer <app> --to <email> --remove-me`: the current
+  // owner is removed the moment the recipient accepts the transfer.
+  "remove-me",
 ]);
 
 /**

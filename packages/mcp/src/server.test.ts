@@ -45,6 +45,7 @@ describe("MCP handshake", () => {
     expect(names).toContain("members");
     expect(names).toContain("community");
     expect(names).toContain("grants");
+    expect(names).toContain("transfer");
     expect(names).toContain("credentials");
     expect(names).toContain("connections");
     expect(names).toContain("ingest");

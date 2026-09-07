@@ -19,7 +19,7 @@ import {
   appWsUrlFromAppUrl,
   openAppStream,
 } from "@homespunapps/core";
-import type { AppFeedEntry } from "@homespunapps/core";
+import type { AppFeedEntry, AppTransfer } from "@homespunapps/core";
 import type { ParsedArgs } from "../argv.js";
 import { assertKnownFlags } from "../argv.js";
 import { nounSpec, renderNounHelp, specFor } from "../help-catalog.js";
@@ -35,7 +35,7 @@ export async function runApps(args: ParsedArgs): Promise<void> {
   }
   if (verb === undefined) {
     fail(
-      "missing verb: homespun apps <list|show|audit|update|share-link|delete|wake|watch|domain>",
+      "missing verb: homespun apps <list|show|audit|update|share-link|delete|wake|watch|domain|transfer>",
       "invalid_args",
     );
   }
@@ -74,9 +74,11 @@ export async function runApps(args: ParsedArgs): Promise<void> {
       return runWatch(sub);
     case "domain":
       return runDomain(sub);
+    case "transfer":
+      return runTransfer(sub);
     default:
       fail(
-        `unknown verb '${verb}': homespun apps <list|show|audit|update|share-link|delete|deleted|restore|purge|wake|watch|domain>`,
+        `unknown verb '${verb}': homespun apps <list|show|audit|update|share-link|delete|deleted|restore|purge|wake|watch|domain|transfer>`,
         "invalid_args",
       );
   }
@@ -649,6 +651,115 @@ async function runDomain(args: ParsedArgs): Promise<void> {
     // aliases. Naming one removes just that binding.
     await client.deleteAppDomain(id, domain);
     printJson({ app_id: id, removed: domain ?? "all" });
+  } catch (e) {
+    failFromError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// `homespun apps transfer <app> --to <email> [--keep-as-member|--remove-me]`
+//                          `<app> --show` | `<app> --cancel`  (issue #1847)
+//
+// Transferring an app is a two-party job, same shape as `domain` above: this
+// side only ever mints or withdraws a PENDING transfer. Ownership does not
+// move until the recipient accepts it by email, so the initiating path's
+// output has to say that in plain words: a caller reading only a JSON blob
+// back has no way to tell "the app moved" from "an invite went out".
+//
+// Flag naming note: the inspection mode is `--show`, not `--status`. `apps
+// list --status <value>` and `connections deliveries --status <value>`
+// already own `status` as a VALUE flag, and the argv parser has one global
+// boolean-flags set shared by every noun/verb (see BOOLEAN_FLAGS in
+// argv.ts), so there is no per-command scoping that would let `--status` be
+// a bare boolean here and a value flag there. `--show` says the same thing
+// without the collision.
+// ---------------------------------------------------------------------------
+
+const TRANSFER_USAGE =
+  "usage: homespun apps transfer <app> --to <email> [--keep-as-member|--remove-me] | homespun apps transfer <app> --show | homespun apps transfer <app> --cancel";
+
+/** Render a pending transfer for the human-readable (non `--json`) path. */
+function describeTransfer(transfer: AppTransfer): string {
+  const stay = transfer.keepAsMember
+    ? "you will stay on as a member once they accept"
+    : "you will be removed from the app once they accept";
+  return (
+    `transfer pending to ${transfer.toEmail}, sent ${transfer.createdAt}, ` +
+    `expires ${transfer.expiresAt}: ${stay}. ` +
+    "Nothing has moved yet: the recipient has to accept it by email first."
+  );
+}
+
+async function runTransfer(args: ParsedArgs): Promise<void> {
+  assertKnownFlags(args, ...specFor("apps", "transfer"));
+  const appArg = args.positionals[0];
+  if (!appArg) fail(TRANSFER_USAGE, "invalid_args");
+
+  const to = args.flags.get("to");
+  const show = args.bools.has("show");
+  const cancel = args.bools.has("cancel");
+  const keepAsMember = args.bools.has("keep-as-member");
+  const removeMe = args.bools.has("remove-me");
+
+  const modeCount = [to !== undefined, show, cancel].filter(Boolean).length;
+  if (modeCount === 0) fail(TRANSFER_USAGE, "invalid_args");
+  if (modeCount > 1) {
+    fail("--to, --show and --cancel are mutually exclusive", "invalid_args");
+  }
+  if (keepAsMember && removeMe) {
+    fail(
+      "--keep-as-member and --remove-me are mutually exclusive",
+      "invalid_args",
+    );
+  }
+  if ((keepAsMember || removeMe) && to === undefined) {
+    fail(
+      "--keep-as-member and --remove-me only apply when initiating a transfer with --to",
+      "invalid_args",
+    );
+  }
+
+  const client = makeClient(args);
+  const id = await resolveAppId(client, appArg!);
+  const json = args.bools.has("json");
+
+  try {
+    if (show) {
+      const { transfer } = await client.getAppTransfer(id);
+      if (json) {
+        printJson({ transfer });
+      } else if (!transfer) {
+        process.stdout.write("no ownership transfer is pending for this app\n");
+      } else {
+        process.stdout.write(describeTransfer(transfer) + "\n");
+      }
+      return;
+    }
+    if (cancel) {
+      await client.cancelAppTransfer(id);
+      if (json) {
+        printJson({ cancelled: true, app_id: id });
+      } else {
+        process.stdout.write(
+          "the pending transfer, if any, has been withdrawn\n",
+        );
+      }
+      return;
+    }
+    // initiate: keepAsMember defaults to true (--remove-me is the only way
+    // to opt out), matching the relay's own default.
+    const { transfer } = await client.createAppTransfer(id, {
+      email: to!,
+      keepAsMember: !removeMe,
+    });
+    if (json) {
+      printJson({ transfer });
+    } else {
+      process.stdout.write(describeTransfer(transfer) + "\n");
+      process.stdout.write(
+        `Check its status with 'homespun apps transfer ${appArg} --show', or withdraw it with 'homespun apps transfer ${appArg} --cancel'.\n`,
+      );
+    }
   } catch (e) {
     failFromError(e);
   }

@@ -29,6 +29,9 @@ const watchFakeClient = {
   getAppDomain: vi.fn(),
   setAppDomain: vi.fn(),
   deleteAppDomain: vi.fn(),
+  getAppTransfer: vi.fn(),
+  createAppTransfer: vi.fn(),
+  cancelAppTransfer: vi.fn(),
 };
 
 vi.mock("../config.js", () => ({
@@ -140,7 +143,16 @@ describe("isDormantConflict", () => {
 // runApps dispatch — real command execution against the fake client above.
 // ---------------------------------------------------------------------------
 
-const APPS_TEST_BOOLS = new Set(["yes", "once", "help"]);
+const APPS_TEST_BOOLS = new Set([
+  "yes",
+  "once",
+  "help",
+  "show",
+  "cancel",
+  "keep-as-member",
+  "remove-me",
+  "json",
+]);
 
 /** Parse raw CLI tokens the same way index.ts does, so `--yes`/`--once`
  * land in `bools` (not as literal positionals) exactly like a real
@@ -460,5 +472,166 @@ describe("runApps dispatch — 'apps domain'", () => {
     await expect(
       runApps(makeArgs(["domain", "rotate", "shop"])),
     ).rejects.toThrow("__exit_1__");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `apps transfer`: the CLI half of app ownership transfer (issue #1847).
+// ---------------------------------------------------------------------------
+
+describe("runApps dispatch: 'apps transfer'", () => {
+  let stdout: string;
+  let exitCode: number | undefined;
+
+  const pendingTransfer = {
+    id: "xfer_1",
+    appId: "app_1",
+    toEmail: "new-owner@example.com",
+    keepAsMember: true,
+    expiresAt: "2026-09-09T00:00:00.000Z",
+    createdAt: "2026-09-02T00:00:00.000Z",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stdout = "";
+    exitCode = undefined;
+    watchFakeClient.getApp.mockResolvedValue({ id: "app_1", slug: "shop" });
+    watchFakeClient.listApps.mockResolvedValue({ items: [{ id: "app_1" }] });
+    vi.spyOn(process.stdout, "write").mockImplementation((s) => {
+      stdout += String(s);
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Error(`__exit_${code}__`);
+    }) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function run(tokens: string[]): Promise<void> {
+    try {
+      await runApps(makeArgs(tokens));
+    } catch (e) {
+      if (!(e instanceof Error && e.message.startsWith("__exit_"))) throw e;
+    }
+  }
+
+  it("--to initiates a transfer, defaulting keepAsMember to true", async () => {
+    watchFakeClient.createAppTransfer.mockResolvedValue({
+      transfer: pendingTransfer,
+    });
+
+    await run(["transfer", "shop", "--to", "new-owner@example.com"]);
+
+    expect(exitCode).toBeUndefined();
+    expect(watchFakeClient.createAppTransfer).toHaveBeenCalledWith("app_1", {
+      email: "new-owner@example.com",
+      keepAsMember: true,
+    });
+    // The human path, not a bare JSON dump: it has to say ownership hasn't
+    // moved and that the recipient must accept by email.
+    expect(stdout).toContain("new-owner@example.com");
+    expect(stdout).toContain("Nothing has moved yet");
+    expect(stdout).toContain("accept");
+  });
+
+  it("--to --remove-me sends keepAsMember: false", async () => {
+    watchFakeClient.createAppTransfer.mockResolvedValue({
+      transfer: { ...pendingTransfer, keepAsMember: false },
+    });
+
+    await run([
+      "transfer",
+      "shop",
+      "--to",
+      "new-owner@example.com",
+      "--remove-me",
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(watchFakeClient.createAppTransfer).toHaveBeenCalledWith("app_1", {
+      email: "new-owner@example.com",
+      keepAsMember: false,
+    });
+  });
+
+  it("--json prints the raw transfer object instead of prose", async () => {
+    watchFakeClient.createAppTransfer.mockResolvedValue({
+      transfer: pendingTransfer,
+    });
+
+    await run(["transfer", "shop", "--to", "new-owner@example.com", "--json"]);
+
+    expect(JSON.parse(stdout)).toEqual({ transfer: pendingTransfer });
+  });
+
+  it("rejects --keep-as-member together with --remove-me", async () => {
+    await run([
+      "transfer",
+      "shop",
+      "--to",
+      "new-owner@example.com",
+      "--keep-as-member",
+      "--remove-me",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(watchFakeClient.createAppTransfer).not.toHaveBeenCalled();
+  });
+
+  it("rejects --to together with --show", async () => {
+    await run(["transfer", "shop", "--to", "new-owner@example.com", "--show"]);
+    expect(exitCode).toBe(1);
+    expect(watchFakeClient.createAppTransfer).not.toHaveBeenCalled();
+    expect(watchFakeClient.getAppTransfer).not.toHaveBeenCalled();
+  });
+
+  it("rejects --to together with --cancel", async () => {
+    await run([
+      "transfer",
+      "shop",
+      "--to",
+      "new-owner@example.com",
+      "--cancel",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(watchFakeClient.createAppTransfer).not.toHaveBeenCalled();
+    expect(watchFakeClient.cancelAppTransfer).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bare `transfer <app>` with none of --to/--show/--cancel", async () => {
+    await run(["transfer", "shop"]);
+    expect(exitCode).toBe(1);
+    expect(watchFakeClient.getApp).not.toHaveBeenCalled();
+    expect(watchFakeClient.listApps).not.toHaveBeenCalled();
+  });
+
+  it("--show prints the pending transfer", async () => {
+    watchFakeClient.getAppTransfer.mockResolvedValue({
+      transfer: pendingTransfer,
+    });
+    await run(["transfer", "shop", "--show"]);
+    expect(exitCode).toBeUndefined();
+    expect(watchFakeClient.getAppTransfer).toHaveBeenCalledWith("app_1");
+    expect(stdout).toContain("new-owner@example.com");
+  });
+
+  it("--show says so when nothing is pending", async () => {
+    watchFakeClient.getAppTransfer.mockResolvedValue({ transfer: null });
+    await run(["transfer", "shop", "--show"]);
+    expect(exitCode).toBeUndefined();
+    expect(stdout).toContain("no ownership transfer is pending");
+  });
+
+  it("--cancel withdraws the transfer, idempotently", async () => {
+    watchFakeClient.cancelAppTransfer.mockResolvedValue(undefined);
+    await run(["transfer", "shop", "--cancel"]);
+    expect(exitCode).toBeUndefined();
+    expect(watchFakeClient.cancelAppTransfer).toHaveBeenCalledWith("app_1");
+    expect(stdout).toContain("withdrawn");
   });
 });
