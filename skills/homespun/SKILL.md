@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.82 -->
+<!-- homespun skill v1.6.83 -->
 
 # homespun
 
@@ -2011,7 +2011,25 @@ already owner or member:
 https://<main-domain>/authorize?app=<slug>&return=<absolute URL to come back to>
 ```
 
-It builds that URL itself, from the auth origin the relay sends the page at
+### Signing in as a different account
+
+A viewer is normally handed straight back the account they are already signed in
+with on the main domain, which is what you want almost always. When it is not,
+`homespun.session.login({ switchAccount: true })` asks first: the relay shows a
+one-screen chooser naming the current account, with "use a different account"
+next to it.
+
+**You rarely need to pass it.** `session.logout()` arms the chooser for the very
+next `login()` from that app on its own, so the ordinary "sign out, sign in as
+someone else" gesture already works with the two buttons you have. Pass the flag
+only for an explicit "switch account" control.
+
+A second account chosen this way applies **to this app only**. The viewer stays
+signed in as whoever they were on the main domain, and every other app they are
+signed in to is untouched: app sessions are per app, so one browser can be two
+different people in two different apps.
+
+`login()` builds that URL itself, from the auth origin the relay sends the page at
 connect time and the app's own slug, so **nothing is hardcoded and you should
 prefer it** over hand-writing the URL. An anonymous visitor is bounced through
 the relay's login page; on the way back, an owner or member is handed a one-time
@@ -2130,8 +2148,8 @@ read, so the session and the initial collection snapshots are in place:
 | `homespun.app.{slug,name,description,icon,visibility,collections}` | Manifest-derived, safe-to-expose facts about this app. |
 | `homespun.session.{kind,humanId}` | Who's looking at the page right now: `"owner"` \| `"member"` \| `"anonymous"`, and their human id (`null` if anonymous). |
 | `homespun.session.displayName` | The viewer's own name (`null` when anonymous). Self-facing only: falls back to a name derived from their email when they haven't set one, same rule the dashboard uses for its own greeting. |
-| `homespun.session.login()` | Full-navigation redirect to the identity provider's `/authorize` flow. |
-| `homespun.session.logout()` | Clears the stored session token and reloads as anonymous. |
+| `homespun.session.login(opts?)` | Full-navigation redirect to the identity provider's `/authorize` flow. Pass `{switchAccount: true}` to offer an account chooser instead of reusing the account the viewer is already signed in with on the main domain. |
+| `homespun.session.logout()` | Revokes this app's session server-side, clears the stored token, and reloads as anonymous. The next `login()` from this app offers the account chooser automatically. |
 | `homespun.members.list()` | Every human Member of this app (always including its owner) plus every Agent its owner currently owns, as `{kind:"human"\|"agent", id, displayName, role?}`. Names only: never an email, and never anything derived from one for anyone other than themselves. |
 | `homespun.members.nameFor(author)` | Resolve a row's or feed entry's own `author` (`{kind, id}`) straight to a display name, never throws. Falls back to `"a member"` / `"an agent"` for an id no longer in the directory (a removed member, an unclaimed/reassigned agent), and `"a visitor"` for an anonymous author. |
 | `homespun.uploadBlob(file, opts?)` / `homespun.downloadBlob(id)` / `homespun.saveBlob(id, filename?)` | Binary attachment upload/download. Names kept from v1 for continuity. To DISPLAY an app's own attachment, a bare `<img src=/_hs/attachments/id>` works. The read route is gated on the APP's visibility, not per collection: a public or link app serves its attachments to anyone, including anonymous visitors, and a private app requires a signed-in owner/member session. `downloadBlob(id)` is the JS-bytes read: use it with `URL.createObjectURL` only when you need the raw bytes in JS (canvas, re-upload), not as the display path. |
