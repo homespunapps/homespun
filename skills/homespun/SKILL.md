@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.84 -->
+<!-- homespun skill v1.6.85 -->
 
 # homespun
 

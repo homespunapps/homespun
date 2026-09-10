@@ -112,7 +112,18 @@ vi.mock("../config.js", () => ({
 // `const` statements execute), so a plain `const` here is still in its
 // temporal dead zone when the factory first runs. vi.hoisted runs its
 // initializer before that import graph loads.
-const putPresignedMock = vi.hoisted(() => vi.fn(async () => {}));
+// Typed to match putPresigned's real signature (not just `() => {}`) so
+// `putPresignedMock.mock.calls[0]` destructures as [url, bytes, mime] rather
+// than TS inferring an empty parameter tuple from an untyped no-arg mock.
+const putPresignedMock = vi.hoisted(() =>
+  vi.fn<
+    (
+      uploadUrl: string,
+      bytes: Uint8Array | Buffer,
+      mime: string,
+    ) => Promise<void>
+  >(async () => {}),
+);
 vi.mock("@homespunapps/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@homespunapps/core")>();
   return { ...actual, putPresigned: putPresignedMock };
@@ -821,11 +832,18 @@ describe("--asset flag (issue #1028)", () => {
         size: 1_200_000,
         filename: "video.mp4",
       });
-      expect(putPresignedMock).toHaveBeenCalledWith(
-        "https://storage.test/blob/att_presigned_1?sig=abc",
-        bytes,
-        expect.any(String),
-      );
+      // Not a plain `toHaveBeenCalledWith(url, bytes, expect.any(String))`:
+      // vitest's assertion equality walks a Buffer element-by-element, which
+      // is fine for a handful of bytes but takes seconds over this test's
+      // 1.2 MB payload (#1768): the test's own assertion, not any real I/O,
+      // network hop, or backoff, was what pushed it past the default 5 s
+      // timeout under load. `Buffer.equals` is the same byte-for-byte check
+      // via a native memcmp, so nothing about what is verified changes.
+      expect(putPresignedMock).toHaveBeenCalledTimes(1);
+      const [putUrl, putBytes, putMime] = putPresignedMock.mock.calls[0]!;
+      expect(putUrl).toBe("https://storage.test/blob/att_presigned_1?sig=abc");
+      expect(Buffer.isBuffer(putBytes) && putBytes.equals(bytes)).toBe(true);
+      expect(typeof putMime).toBe("string");
       expect(fakeClient.confirmBlob).toHaveBeenCalledWith("att_presigned_1");
       expect(assetsSentBy("redeployApp")).toEqual([
         { path: "media/video.mp4", attachment_id: "att_presigned_1" },
