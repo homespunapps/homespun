@@ -104,11 +104,11 @@ instead when there is none, so there is only one thing to paste no matter
 which AI you have open.
 
 ```
-Set me up with Homespun. First check whether you can run shell commands. If you can: run `npm i -g @homespunapps/cli`, then `homespun agent register --start --name home`, and show me the approval link it prints. Once I say I have approved it, run `homespun agent register --resume`, read https://homespun.dev/skills/homespun/SKILL.md and ask me what app I want to build. If you did not actually run a command and see its output, say so instead of guessing. If you cannot run commands: tell me to open https://homespun.dev/connect/claude if I use Claude, or to add a custom MCP connector with the URL https://homespun.dev/mcp in any other assistant. When I say it is connected, ask me what app I want to build.
+Set me up with Homespun. First check whether you can run shell commands. If you can run commands and I already gave you a Homespun key (it starts with hs_): run `npm i -g @homespunapps/cli`, then `homespun agent set-key <key>` using that key, read https://homespun.dev/skills/homespun/SKILL.md and ask me what app I want to build. If you can run commands but I have no key yet: run `npm i -g @homespunapps/cli`, then `homespun agent register --start --name home`, and show me the approval link it prints. Once I say I have approved it, run `homespun agent register --resume --print-key`, show me the key it prints, and tell me to save it somewhere private, like a password manager or a secure note, since it works like a password: if a later conversation starts with your shell empty again, I can hand that key straight back to you instead of approving a new one. Then read https://homespun.dev/skills/homespun/SKILL.md and ask me what app I want to build. If you did not actually run a command and see its output, say so instead of guessing. If you cannot run commands: tell me to open https://homespun.dev/connect/claude if I use Claude, or to add a custom MCP connector with the URL https://homespun.dev/mcp in any other assistant. When I say it is connected, ask me what app I want to build.
 ```
 
-Your AI will either show you a link to approve, or tell you to add a
-connector. Both take a minute.
+Your AI will either show you a link to approve, hand you a key to save for
+next time, or tell you to add a connector. All of it takes a minute.
 
 It names the commands rather than only pointing at the skill, so the agent can
 act on the first line instead of reading a 150 KB document to discover that
@@ -121,6 +121,23 @@ Claude guide and connector URL the two chat-app sections below spell out on
 their own (a page, not the claude.ai deep link itself: that link opens the
 Claude app rather than a browser on a phone), so a coding agent that turns out
 to have no shell still lands on the right instructions.
+
+**Why the prompt checks for a key first, but only once it already knows there
+is a shell.** Some coding agents run inside a sandbox shell that resets on
+every new conversation (Claude's mobile code-execution tool works this way,
+and probably other chat apps' code interpreters do too). The local config
+file `agent register` writes to is gone the moment that shell resets, so
+without a way back in, every new conversation would mean re-registering and
+asking you to approve a brand new agent from scratch, and the relay would
+accumulate one unused agent row per conversation. `--resume --print-key`
+prints the key instead of only saving it, so you can hold on to it;
+`homespun agent set-key <key>` writes an already-issued key straight into a
+fresh install with no relay round trip, so handing the same key back to a
+later conversation reconnects it to the SAME agent identity, no new approval
+needed. Both the key check and the registration fallback require "can run
+commands" in their own wording, not just the outer check above them: a stale
+key sitting in an old chat with no shell at all must still fall through to
+the connector instructions below, not attempt a command it cannot run.
 
 By hand, it is three steps. First the skill, which is what teaches the agent
 every command below. `npx skills add` detects the host it is running in (Claude
