@@ -119,7 +119,7 @@ async function runRegisterStart(opts: {
     name: agentName,
     profile: opts.profileName,
     pending_saved_to: savedTo,
-    next: "show the link and code to your human, then run 'homespun agent register --resume --print-key' once they say they approved it",
+    next: "show the link and code to your human, then run 'homespun agent register --resume' once they say they approved it",
   });
 }
 
@@ -183,7 +183,7 @@ async function runRegisterResume(opts: {
     // Not an error in the flow's terms, but a non-zero exit so a script that
     // ignores the payload does not sail on believing it is registered.
     fail(
-      `not approved yet - open ${pending.verification_uri_complete} and confirm the code ${pending.user_code}, then run 'homespun agent register --resume --print-key' again`,
+      `not approved yet - open ${pending.verification_uri_complete} and confirm the code ${pending.user_code}, then run 'homespun agent register --resume' again`,
       "not_approved_yet",
       undefined,
       { retryable: true },

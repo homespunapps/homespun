@@ -51,39 +51,17 @@ It returns immediately with JSON on stdout:
 2. When they say they are done:
 
    ```sh
-   homespun agent register --resume --print-key
+   homespun agent register --resume
    ```
 
    On approval it saves the key to
    `${XDG_CONFIG_HOME:-~/.config}/homespun/config.json` (mode 0600) and prints
    the same `"registered_via": "device"` envelope, and every later command
-   picks the key up from that file automatically. `--print-key` also echoes
-   the raw key in that output: ask your human to save it somewhere private
-   (a password manager, a secure note) since it works like a password. See
-   "If your shell is ephemeral" below for why that matters.
+   picks the key up from that file automatically.
 3. If `--resume` exits with `not_approved_yet`, they have not finished. Show
    the link again, and try once more when they say so. The approval waits on
    the relay for the code's full 15 minutes, so a gap between the two commands
    costs nothing.
-
-**If your shell is ephemeral, save the key instead of re-registering.** Some
-agent environments reset their shell between conversations (Claude's mobile
-code-execution tool works this way, and probably other chat apps' code
-interpreters do too), so `~/.config/homespun/config.json` from step 2 is gone
-before the next conversation starts. Registering again would mint a whole new
-agent and ask your human to approve it from scratch, and the relay would
-accumulate one unused agent row per conversation. If your human hands you back
-a key they saved earlier (it starts with `hs_`), skip registration entirely
-and reattach it into the fresh install instead:
-
-```sh
-homespun agent set-key <key>
-```
-
-This makes **no relay round trip**: it is a local config write that trusts the
-key as given, and the relay rejects it on the next real call if it turns out
-to be wrong. The agent identity is exactly the one that key was issued to, so
-this is not a new registration and needs no new human approval.
 
 **Interactive humans can use the blocking form.** Someone typing into their own
 terminal sees the link appear and approves it without a second command, so
