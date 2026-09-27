@@ -50,6 +50,7 @@ function fakeClient(overrides: Record<string, unknown> = {}) {
 /** The full v2-only tool set. */
 const EXPECTED_TOOLS = [
   // v2 app lifecycle + data (discrete, hot-path)
+  "document_upload",
   "deploy_app",
   "list_rows",
   "count_rows",
@@ -123,7 +124,7 @@ describe("tool listing", () => {
     }
   });
 
-  it("registers exactly 26 tools", () => {
+  it("registers exactly 27 tools", () => {
     // Pinned so the directory-readiness annotation sweep can't silently lose or
     // duplicate a tool. DELIBERATELY a literal, not TOOLS.length: this IS the
     // registry, so comparing it to its own length would always pass and the
@@ -131,7 +132,7 @@ describe("tool listing", () => {
     // assert the SAME number at the wire layer, and there it is correct to
     // derive from TOOLS.length, because those are checking transport fidelity
     // (does the wire expose every registered tool), not the registry's size.
-    expect(TOOLS).toHaveLength(26);
+    expect(TOOLS).toHaveLength(27);
   });
 
   it("every tool carries a Title-Case title and behavioural hints", () => {
@@ -214,6 +215,7 @@ describe("tool listing", () => {
   ];
 
   const ADDITIVE_WRITE = [
+    "document_upload", // creates a short-lived upload session
     "deploy_app", // new version; slug immutable, prior versions retained
     "upsert_row", // create-or-return-existing
     "update_row", // replaces one named row's data; the row survives
@@ -827,6 +829,43 @@ describe("taste / key / feedback / agent tools", () => {
 // v2 app lifecycle + data tools (deploy_app, row CRUD, get_feed_events, apps)
 // ---------------------------------------------------------------------------
 
+describe("document_upload tool", () => {
+  it("creates a scoped upload session using the declared bytes and app id", async () => {
+    const createDocumentUpload = vi.fn().mockResolvedValue({
+      document_id: "doc_1",
+      upload_url: "https://upload.test/doc_1",
+      upload_token: "ticket",
+      expires_at: "2026-09-25T12:15:00Z",
+    });
+    const result = await tool("document_upload").handler(
+      fakeClient({ createDocumentUpload }),
+      { size: 24, sha256: "a".repeat(64), app_id: "app_1" },
+    );
+    expect(createDocumentUpload).toHaveBeenCalledWith({
+      size: 24,
+      sha256: "a".repeat(64),
+      app_id: "app_1",
+    });
+    expect(JSON.parse(result.content[0]!.text).document_id).toBe("doc_1");
+  });
+
+  it("requires a positive integer size and a 64-character hex digest", () => {
+    const schema = z.object(tool("document_upload").inputSchema);
+    expect(schema.safeParse({ size: 1, sha256: "a".repeat(64) }).success).toBe(
+      true,
+    );
+    expect(schema.safeParse({ size: 0, sha256: "a".repeat(64) }).success).toBe(
+      false,
+    );
+    expect(
+      schema.safeParse({ size: 1.5, sha256: "a".repeat(64) }).success,
+    ).toBe(false);
+    expect(schema.safeParse({ size: 1, sha256: "g".repeat(64) }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe("deploy_app tool", () => {
   it("creates when app_id is omitted", async () => {
     const deployApp = vi.fn().mockResolvedValue({
@@ -1055,6 +1094,55 @@ describe("deploy_app tool", () => {
       visibility: undefined,
       slug: undefined,
     });
+  });
+
+  it("creates with document_id and dry-runs using that reference", async () => {
+    const checkDeploy = vi.fn().mockResolvedValue({ ok: true, warnings: [] });
+    const deployApp = vi.fn();
+    const result = await tool("deploy_app").handler(
+      fakeClient({ checkDeploy, deployApp }),
+      { document_id: "doc_1", manifest: {}, dry_run: true },
+    );
+    expect(result.isError).toBeUndefined();
+    expect(checkDeploy).toHaveBeenCalledWith({
+      html: undefined,
+      document_id: "doc_1",
+      manifest: {},
+      assets: undefined,
+    });
+    expect(deployApp).not.toHaveBeenCalled();
+  });
+
+  it("forwards document_id through a redeploy", async () => {
+    const redeployApp = vi.fn().mockResolvedValue({
+      app_id: "app_1",
+      version: 2,
+      compat: "clean",
+    });
+    const result = await tool("deploy_app").handler(
+      fakeClient({ redeployApp }),
+      { app_id: "app_1", document_id: "doc_2" },
+    );
+    expect(result.isError).toBeUndefined();
+    expect(redeployApp).toHaveBeenCalledWith("app_1", {
+      html: undefined,
+      document_id: "doc_2",
+      manifest: undefined,
+      force: undefined,
+      assets: undefined,
+    });
+  });
+
+  it("rejects document_id mixed with either legacy document source", async () => {
+    const deployApp = vi.fn();
+    const result = await tool("deploy_app").handler(fakeClient({ deployApp }), {
+      document_id: "doc_1",
+      html: "<html></html>",
+      manifest: {},
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text).error).toBe("invalid_args");
+    expect(deployApp).not.toHaveBeenCalled();
   });
 
   it("reads html_path from the MCP-server host and deploys its contents inline", async () => {

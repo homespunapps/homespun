@@ -467,6 +467,80 @@ describe("HomespunClient key operations", () => {
   });
 });
 
+describe("HomespunClient document upload and deploy references", () => {
+  it("creates a document upload session with byte metadata and optional app id", async () => {
+    let seen: { method: string; url: string; body: unknown } | undefined;
+    const c = clientWith(async (url, init) => {
+      seen = {
+        method: (init?.method as string) ?? "GET",
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      };
+      return res({
+        status: 200,
+        body: JSON.stringify({
+          document_id: "doc_1",
+          upload_url: "https://upload.test/doc_1",
+          upload_token: "ticket",
+          expires_at: "2026-09-25T12:15:00Z",
+        }),
+      });
+    });
+    const session = await c.createDocumentUpload({
+      size: 42,
+      sha256: "a".repeat(64),
+      app_id: "app_1",
+    });
+    expect(seen).toEqual({
+      method: "POST",
+      url: "https://relay.test/v1/deploy-documents",
+      body: { size: 42, sha256: "a".repeat(64), app_id: "app_1" },
+    });
+    expect(session.document_id).toBe("doc_1");
+    expect(session.upload_token).toBe("ticket");
+  });
+
+  it("forwards document_id to the dry-run request", async () => {
+    let body: unknown;
+    const c = clientWith(async (_url, init) => {
+      body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      return res({
+        status: 200,
+        body: JSON.stringify({ ok: true, warnings: [] }),
+      });
+    });
+    await c.checkDeploy({ document_id: "doc_1", manifest: {} });
+    expect(body).toEqual({
+      document_id: "doc_1",
+      manifest: {},
+      dry_run: true,
+    });
+  });
+
+  it("forwards document_id on create and redeploy requests", async () => {
+    const seen: Array<{ url: string; body: unknown }> = [];
+    const c = clientWith(async (url, init) => {
+      seen.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      return res({ status: 200, body: "{}" });
+    });
+    await c.deployApp({ document_id: "doc_create", manifest: {} });
+    await c.redeployApp("app_1", { document_id: "doc_update" });
+    expect(seen).toEqual([
+      {
+        url: "https://relay.test/v1/apps",
+        body: { document_id: "doc_create", manifest: {} },
+      },
+      {
+        url: "https://relay.test/v1/apps/app_1/versions",
+        body: { document_id: "doc_update" },
+      },
+    ]);
+  });
+});
+
 describe("HomespunClient.checkDeploy (dry run)", () => {
   /** Capture method/url/body of one call and return a canned response. */
   function capturing(opts: { status: number; body?: string }) {

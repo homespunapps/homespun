@@ -685,10 +685,22 @@ export class HomespunClient {
   // first (the CLI's `resolveAppId` helper does this transparently).
   // -------------------------------------------------------------------------
 
+  /** POST /v1/deploy-documents — create a short-lived HTML document upload. */
+  async createDocumentUpload(req: {
+    size: number;
+    sha256: string;
+    app_id?: string;
+  }): Promise<DocumentUploadSession> {
+    const r = await this.call("POST", "/v1/deploy-documents", req);
+    if (!r.ok) this.fail(r);
+    return this.asObject<DocumentUploadSession>(r);
+  }
+
   /** POST /v1/apps — create (deploy) a new App + its first AppVersion. */
   async deployApp(req: DeployAppRequest): Promise<DeployAppResponse> {
     const r = await this.call("POST", "/v1/apps", {
       html: req.html,
+      document_id: req.document_id,
       manifest: req.manifest,
       visibility: req.visibility,
       slug: req.slug,
@@ -714,6 +726,7 @@ export class HomespunClient {
       `/v1/apps/${encodeURIComponent(appId)}/versions`,
       {
         html: req.html,
+        document_id: req.document_id,
         manifest: req.manifest,
         force: req.force,
         assets: req.assets,
@@ -739,6 +752,7 @@ export class HomespunClient {
         : "/v1/apps";
     const body: Record<string, unknown> = {
       html: req.html,
+      document_id: req.document_id,
       manifest: req.manifest,
       dry_run: true,
     };
@@ -2366,9 +2380,21 @@ export interface AppAssetRef {
 /** A multi-file-deploy asset: inline bytes OR a by-reference attachment id. */
 export type AppAsset = AppAssetInline | AppAssetRef;
 
+/** Short-lived capability for uploading an authored HTML document. */
+export interface DocumentUploadSession {
+  document_id: string;
+  upload_url: string;
+  /** Scoped only to PUT the declared document bytes to `upload_url`. */
+  upload_token: string;
+  expires_at: string;
+}
+
 /** Request body for `POST /v1/apps` — create (deploy) a new App. */
 export interface DeployAppRequest {
-  html: string;
+  /** Inline HTML, mutually exclusive with `document_id`. */
+  html?: string;
+  /** Reference to an uploaded HTML document, mutually exclusive with `html`. */
+  document_id?: string;
   manifest: unknown;
   /** Defaults to "private" server-side when omitted. */
   visibility?: "private" | "link" | "public";
@@ -2443,6 +2469,8 @@ export interface DeployAppResponse {
 export interface RedeployAppRequest {
   /** Omit to keep the live document (a manifest-only change needs no HTML). */
   html?: string;
+  /** Uploaded replacement document, mutually exclusive with `html`. */
+  document_id?: string;
   /** Omit to keep the live manifest (an HTML-only change needs no manifest). */
   manifest?: unknown;
   /** Bypass the compat gate; a removed collection is detached, not deleted. */
@@ -2527,6 +2555,8 @@ export interface DeployCheckRequest {
   app_id?: string;
   /** Required to check a create; omit on a redeploy check to inherit the live document. */
   html?: string;
+  /** Uploaded replacement document, mutually exclusive with `html`. */
+  document_id?: string;
   /** Required to check a create; omit on a redeploy check to inherit the live manifest. */
   manifest?: unknown;
   force?: boolean;

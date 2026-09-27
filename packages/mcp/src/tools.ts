@@ -441,6 +441,24 @@ const jsonValueSchema = z.union([
 // v2 app lifecycle + data (discrete, hot-path)
 // ===========================================================================
 
+const documentUploadShape = {
+  size: z
+    .number()
+    .int()
+    .positive()
+    .describe("UTF-8 byte length of the HTML document."),
+  sha256: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .describe("SHA-256 hex digest of the exact UTF-8 HTML bytes to upload."),
+  app_id: z
+    .string()
+    .optional()
+    .describe(
+      "Existing app id when this upload is for a redeploy; omit for a create.",
+    ),
+};
+
 const deployAppShape = {
   app_id: z
     .string()
@@ -448,12 +466,18 @@ const deployAppShape = {
     .describe(
       "Omit to create a new app; pass an existing app's id to redeploy it (a new version, compat-gated unless force:true).",
     ),
+  document_id: z
+    .string()
+    .optional()
+    .describe(
+      "Reference returned by `document_upload` after you PUT the exact UTF-8 HTML bytes to its upload_url with `Authorization: Bearer <upload_token>`. Mutually exclusive with `html` and `html_path`. Use this for sandbox-authored files when the shell can reach the upload URL; the scoped upload token is not a Homespun account key.",
+    ),
   html: z
     .string()
     .min(1)
     .optional()
     .describe(
-      "The app's UI as a complete HTML document (single file, with CSS and JS inline), sent inline. Capped at 2 MB of UTF-8; over that the deploy is refused with 413 document_size_exceeded. A document near the cap is almost always carrying a file inlined as a data: URI; the same file in `assets[]` is served from the app's own origin, cached separately, and does not count toward this cap. The document comes from either this field or `html_path`. Inline is the only form a hosted or remote connector with no filesystem can use, and inline `html` wins if both are given. On a redeploy an omitted `html` keeps the live document, so a manifest-only change (adding a collection, widening externalHosts) costs nothing in HTML.",
+      "The app's UI as a complete HTML document (single file, with CSS and JS inline), sent inline. Capped at 2 MB of UTF-8; over that the deploy is refused with 413 document_size_exceeded. A document near the cap is almost always carrying a file inlined as a data: URI; the same file in `assets[]` is served from the app's own origin, cached separately, and does not count toward this cap. The document comes from this field, `html_path`, or `document_id`. Inline is the only form a hosted or remote connector can use unless it uploads through `document_upload`; when no `document_id` is given and both `html` and `html_path` are present, inline `html` wins. On a redeploy an omitted `html` keeps the live document, so a manifest-only change (adding a collection, widening externalHosts) costs nothing in HTML.",
     ),
   html_path: z
     .string()
@@ -1514,9 +1538,35 @@ const getSkillShape = {
 export const TOOLS: ToolDef[] = [
   // ----- v2 app lifecycle + data (discrete, hot-path) -----------------------
   {
+    name: "document_upload",
+    description:
+      "Create a short-lived, byte-scoped upload session for an HTML document authored in a native editor or shell. The caller supplies the exact UTF-8 byte length and SHA-256 hex digest as { size, sha256, app_id? }. The returned `upload_url` accepts a PUT of those raw UTF-8 bytes with `Authorization: Bearer <upload_token>`; this ticket can upload only the declared bytes and is not an account credential. The returned `document_id` is used by `deploy_app` and is mutually exclusive with `html` and `html_path`. The ticket expires after 15 minutes. A retry with the same ticket and deploy parameters returns the original deployed result for 24 hours; changed content or deploy parameters need a fresh upload session. If the shell cannot reach the upload URL, inline deployment remains available. The PUT works from any network-capable shell and does not require the Homespun CLI.",
+    inputSchema: documentUploadShape,
+    annotations: {
+      title: "Upload App Document",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    handler: async (client, args) => {
+      try {
+        return jsonResult(
+          await client.createDocumentUpload({
+            size: args["size"] as number,
+            sha256: String(args["sha256"]),
+            app_id: str(args, "app_id"),
+          }),
+        );
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  },
+  {
     name: "deploy_app",
     description:
-      "Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL.\n\nA redeploy only needs the content that changed. Every content field is optional when `app_id` is given, and an omitted one keeps what is live: omit `manifest` for an HTML-only change, omit `html` for a manifest-only change, omit `assets` to keep the current files. This is the cheap path and the default, because an omitted field costs no output tokens at all: a one-line colour change does not resend the whole document, and a manifest edit does not resend it either. A field only needs sending when its content differs from what is live. `assets: []` is the explicit way to clear the asset set, and omitting all three is refused, since there would be nothing to change.\n\nThe extension keys used most often: app metadata; collections, with per-collection write, update, read and delete role lists, where write gates creates and also gates updates unless an update list is declared; externalHosts, a fetch allowlist; cdn, to allow CDN scripts and styles; capabilities, for Permissions-Policy opt-ins; embeds, an iframe frame-src allowlist; notify, for email-on-row rules; webhooks, for signed HTTP POST on-row rules; and agentTasks, to queue work for an agent running on the owner's own machine, described as a prompt rather than as code. The manifest grammar is documented in the Homespun guide that get_skill returns.\n\nPass no `app_id` to create, which mints a slug and URL and requires both `html` and `manifest`, or pass `app_id` to redeploy an existing app. Supply the HTML inline as `html`, or as `html_path`, an absolute path read on the MCP-server host, which is the relay for a hosted connector or the CLI host for a locally-run one, and not the remote agent's machine; it avoids retransmitting a large HTML file on every deploy, only a locally-run connector can read it, and inline `html` wins if both are given. `dry_run:true` (alias `check`) validates only: it runs the full manifest and asset validation, the redeploy compat gate and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } without creating a version or mutating anything, and it resolves omitted fields the same way a real deploy would, so it reports on exactly the deploy that would run.\n\nA redeploy is refused with manifest_incompatible_redeploy, unless force:true, when it would strand rows already written (dropping a collection, tightening a schema, flipping appendOnly), or when it would widen what the app's install screen discloses: a collection's read reaching further than the live manifest, a capability added, cdn turned on, or a host added to externalHosts, embeds or a webhook target. The break quotes the sentence a user would now be asked to approve. Taking access away never prompts: dropping a role, dropping a capability, host or webhook, turning cdn off, or adding update:[\\\"creator\\\"] to a write:[\\\"anyone\\\"] collection, all redeploy clean. A removed collection is detached rather than deleted.\n\nImages, fonts, audio, video and data files ship with the app in the same call via `assets[]`. Each is validated and stored app-scoped and served at its `path` on the app's own origin, so the HTML references it by a stable same-origin path such as `<img src=\\\"frames/000.jpg\\\">`; media and font paths support HTTP Range for seeking. A redeploy's assets replace the previous version's set when sent, carry over when omitted, and are cleared by `assets: []`.\n\nReturns { app_id, slug, url, version, visibility, created } on create, or { app_id, version, compat, breaks? } on redeploy.",
+      "Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL. For sandbox-authored files in hosted chat, native file editing and shell tools can create and validate the document. Its UTF-8 byte length and SHA-256 go to `document_upload`; the exact raw bytes are PUT to the returned `upload_url` with `Authorization: Bearer <upload_token>`, and the returned `document_id` is passed here. This works from any network-capable shell and does not require installing the Homespun CLI. Use `dry_run:true` first, then deploy with the same document_id and parameters. The 15-minute ticket accepts only the declared bytes; identical ticket + deploy parameters replay the original result for 24 hours, while changed bytes or deploy parameters require a fresh upload. If the shell cannot reach the upload host, send inline `html`.\n\nA redeploy only needs the content that changed. Every content field is optional when `app_id` is given, and an omitted one keeps what is live: omit `manifest` for an HTML-only change, omit `html` or `document_id` for a manifest-only change, omit `assets` to keep the current files. This is the cheap path and the default, because an omitted field costs no output tokens at all: a one-line colour change does not resend the whole document, and a manifest edit does not resend it either. A field only needs sending when its content differs from what is live. `assets: []` is the explicit way to clear the asset set, and omitting every content field is refused, since there would be nothing to change.\n\nThe extension keys used most often: app metadata; collections, with per-collection write, update, read and delete role lists, where write gates creates and also gates updates unless an update list is declared; externalHosts, a fetch allowlist; cdn, to allow CDN scripts and styles; capabilities, for Permissions-Policy opt-ins; embeds, an iframe frame-src allowlist; notify, for email-on-row rules; webhooks, for signed HTTP POST on-row rules; and agentTasks, to queue work for an agent running on the owner's own machine, described as a prompt rather than as code. The manifest grammar is documented in the Homespun guide that get_skill returns.\n\nPass no `app_id` to create, which mints a slug and URL and requires a document source (`html`, `html_path`, or `document_id`) and `manifest`, or pass `app_id` to redeploy an existing app. `document_id` is mutually exclusive with `html` and `html_path`. Supply the HTML inline as `html`, through `document_id`, or as `html_path`, an absolute path read on the MCP-server host, which is the relay for a hosted connector or the CLI host for a locally-run one, and not the remote agent's machine; it avoids retransmitting a large HTML file on every deploy, only a locally-run connector can read it, and inline `html` wins if both are given. `dry_run:true` (alias `check`) validates only: it runs the full manifest and asset validation, the redeploy compat gate and the schedule-timezone advisory, then returns { ok, warnings, compat?, breaks? } without creating a version or mutating anything, and it resolves omitted fields the same way a real deploy would, so it reports on exactly the deploy that would run.\n\nA redeploy is refused with manifest_incompatible_redeploy, unless force:true, when it would strand rows already written (dropping a collection, tightening a schema, flipping appendOnly), or when it would widen what the app's install screen discloses: a collection's read reaching further than the live manifest, a capability added, cdn turned on, or a host added to externalHosts, embeds or a webhook target. The break quotes the sentence a user would now be asked to approve. Taking access away never prompts: dropping a role, dropping a capability, host or webhook, turning cdn off, or adding update:[\\\"creator\\\"] to a write:[\\\"anyone\\\"] collection, all redeploy clean. A removed collection is detached rather than deleted.\n\nImages, fonts, audio, video and data files ship with the app in the same call via `assets[]`. Each is validated and stored app-scoped and served at its `path` on the app's own origin, so the HTML references it by a stable same-origin path such as `<img src=\\\"frames/000.jpg\\\">`; media and font paths support HTTP Range for seeking. A redeploy's assets replace the previous version's set when sent, carry over when omitted, and are cleared by `assets: []`.\n\nReturns { app_id, slug, url, version, visibility, created } on create, or { app_id, version, compat, breaks? } on redeploy.",
     inputSchema: deployAppShape,
     annotations: {
       title: "Deploy App",
@@ -1543,6 +1593,15 @@ export const TOOLS: ToolDef[] = [
         // is Homespun's infra, so a remote agent's path ENOENTs; say so.
         const inlineHtml = str(args, "html");
         const htmlPath = str(args, "html_path");
+        const documentId = str(args, "document_id");
+        if (
+          documentId !== undefined &&
+          (inlineHtml !== undefined || htmlPath !== undefined)
+        ) {
+          return invalidArgs(
+            "`document_id` is mutually exclusive with `html` and `html_path`",
+          );
+        }
         let html = inlineHtml;
         if (html === undefined && htmlPath !== undefined) {
           if (env?.hostFsReads === false) {
@@ -1568,8 +1627,10 @@ export const TOOLS: ToolDef[] = [
           manifest.value === null ? undefined : manifest.value;
 
         if (appId === undefined) {
-          if (html === undefined) {
-            return invalidArgs("create requires `html` or `html_path`");
+          if (html === undefined && documentId === undefined) {
+            return invalidArgs(
+              "create requires `html`, `html_path` or `document_id`",
+            );
           }
           if (manifestValue === undefined) {
             return invalidArgs(
@@ -1580,6 +1641,9 @@ export const TOOLS: ToolDef[] = [
             return jsonResult(
               await client.checkDeploy({
                 html,
+                ...(documentId === undefined
+                  ? {}
+                  : { document_id: documentId }),
                 manifest: manifestValue,
                 assets,
               }),
@@ -1596,6 +1660,7 @@ export const TOOLS: ToolDef[] = [
           return jsonResult(
             await client.deployApp({
               html,
+              ...(documentId === undefined ? {} : { document_id: documentId }),
               manifest: manifestValue,
               visibility,
               slug,
@@ -1607,9 +1672,14 @@ export const TOOLS: ToolDef[] = [
         // manifest or assets keeps what is live (issue #1272). Only the empty
         // body is refused, and locally, so the caller gets the reason rather
         // than a round trip that says the same thing.
-        if (html === undefined && manifestValue === undefined && !assets) {
+        if (
+          html === undefined &&
+          documentId === undefined &&
+          manifestValue === undefined &&
+          !assets
+        ) {
           return invalidArgs(
-            "a redeploy must change something: send `html`, `manifest` or `assets` (an omitted field keeps what is live; `assets: []` clears the asset set)",
+            "a redeploy must change something: send `html`, `document_id`, `manifest` or `assets` (an omitted field keeps what is live; `assets: []` clears the asset set)",
           );
         }
         if (dryRun) {
@@ -1617,6 +1687,7 @@ export const TOOLS: ToolDef[] = [
             await client.checkDeploy({
               app_id: appId,
               html,
+              ...(documentId === undefined ? {} : { document_id: documentId }),
               manifest: manifestValue,
               force: args["force"] as boolean | undefined,
               assets,
@@ -1630,6 +1701,7 @@ export const TOOLS: ToolDef[] = [
         }
         const redeployed = await client.redeployApp(appId, {
           html,
+          ...(documentId === undefined ? {} : { document_id: documentId }),
           manifest: manifestValue,
           force: args["force"] as boolean | undefined,
           assets,

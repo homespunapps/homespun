@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.89 -->
+<!-- homespun skill v1.6.90 -->
 
 # homespun
 
@@ -40,12 +40,37 @@ There is no separate "form" primitive: a single-collection app with one page is
 how you do the small case, and it is still a real app with a URL, sign-in and
 data you can come back to.
 
+## Choosing how to invoke Homespun
+
+Prefer the available native file editor and shell to create, revise and validate
+app files. Then use the Homespun interface already authenticated in this client
+for account operations. In a persistent coding environment, an already
+installed and authenticated CLI is also a good fit. Check that the CLI, its
+identity and the needed network route are usable before relying on it; shell
+availability alone is not enough.
+
+For hosted MCP, the server cannot read a path in the agent sandbox. `html_path`
+works only when a local stdio MCP server shares the filesystem; hosted MCP
+rejects it. When the shell can reach the upload URL, `document_upload` bridges
+the authored file into MCP deployment: compute the exact UTF-8 byte length and
+SHA-256 hex digest, request a session with `{ size, sha256, app_id? }`, PUT the
+unchanged raw UTF-8 bytes to `upload_url` with
+`Authorization: Bearer <upload_token>`, then pass `document_id` to
+`deploy_app`. The ticket only authorizes upload of those declared bytes, expires
+after 15 minutes, and is not an account key. Identical ticket and deploy
+parameters replay the original result for 24 hours; changed bytes or parameters
+need a fresh session. Any network-capable shell can perform the PUT without the
+Homespun CLI. Keep durable account secrets out of shell commands. If upload
+network access is unavailable, use inline `html`. See `MCP-INVOCATION.md` for
+the complete MCP tool flow.
+
 ## Setup
 
-**This section is first for a reason.** Everything below it assumes a working
-`homespun` command and a key. If you were pointed here to "set up Homespun",
-this is the whole of it: two commands, then `references/registering.md` for
-the sign-in.
+**This section describes the CLI route.** Everything below it assumes a
+working `homespun` command and a key. Use it in a persistent coding environment
+where the CLI is usable; MCP clients should follow `MCP-INVOCATION.md`. If you
+were pointed here to set up the CLI, this is the whole of it: two commands,
+then `references/registering.md` for the sign-in.
 
 If the `homespun` command isn't on your PATH yet, install it first:
 `npm i -g @homespunapps/cli`.

@@ -1,4 +1,4 @@
-<!-- homespun skill v1.6.89 -->
+<!-- homespun skill v1.6.90 -->
 
 # homespun (MCP)
 
@@ -18,18 +18,25 @@ it. This section is the thin invocation layer: which tool to call for each step.
 ## The loop, as tool calls
 
 1. **`deploy_app`** puts the app live and gives you a URL. Pass `manifest` plus
-   either `html` (inline) or `html_path`. Omit `app_id` to create; pass `app_id`
-   to redeploy the same app to the same URL. Add `dry_run: true` to validate the
-   bundle without shipping it.
+   either `html` (inline) or `html_path`. `html_path` is read by the MCP
+   server: it works for a local stdio server that shares the authoring
+   filesystem, but a hosted connector cannot see the agent sandbox path and
+   rejects it. For hosted MCP, use inline `html` unless a supported document
+   upload capability is explicitly advertised and available. Omit `app_id` to
+   create; pass `app_id` to redeploy the same app to the same URL. Add
+   `dry_run: true` to validate the bundle without shipping it. A create needs
+   `manifest` plus exactly one document source: `html`, `html_path`, or
+   `document_id`. On updates, `document_id` replaces the HTML source and is
+   mutually exclusive with `html` and `html_path`.
    **On a redeploy, send only what changed.** Every content field is optional
    once `app_id` is given, and an omitted one keeps what is live: omit
    `manifest` for an HTML-only change, omit `html` for a manifest-only change,
    omit `assets` to keep the current files. That is the whole saving, because an
    omitted field costs no output tokens at all, so a one-line edit should never
    resend the document and a manifest edit should never resend it either.
-   `assets: []` clears the asset set, and omitting all three is refused (there
-   would be nothing to change). A create requires both `html` and `manifest`:
-   there is nothing to inherit yet.
+   `assets: []` clears the asset set, and omitting every content field on a
+   redeploy is refused (there would be nothing to change). A create requires a
+   document source and `manifest`: there is nothing to inherit yet.
 2. **Give the URL to the owner**, and have them invite anyone else with
    **`members`** (`action: add`) or mint a link with **`grants`**.
 3. **Read and write the app's data** with `list_rows`, `get_row`, `upsert_row`,
@@ -43,6 +50,7 @@ it. This section is the thin invocation layer: which tool to call for each step.
 
 | You want to...                                     | MCP tool call |
 |----------------------------------------------------|---------------|
+| Create a short-lived HTML upload session             | `document_upload` (PUT the declared bytes, then pass its `document_id` to `deploy_app`) |
 | Deploy an app, or redeploy one in place             | `deploy_app` (omit `app_id` to create, pass it to redeploy) |
 | List / show / update / delete apps, wake a dormant one, manage a custom domain | `apps` (action: `list`/`show`/`update`/`share_link_rotate`/`delete`/`wake`/`domain_set`/`domain_status`/`domain_remove`) |
 | See deleted apps, restore one, or destroy one for good | `apps` (action: `list_deleted`/`restore`/`purge`). `delete` is a soft delete and `restore` undoes it with all the app's data; only `purge` is irreversible |
@@ -70,6 +78,33 @@ it. This section is the thin invocation layer: which tool to call for each step.
 There is no `create_app`, `get_events`, `send_to_app`, `list_records`,
 `participant`, `share`, `template`, `trash` or `run_query` tool. Those were the
 v1 surface and they are gone. If you remember them, use the table above.
+
+## Authoring and transport policy
+
+Prefer the client's native file editor and available shell tools to create,
+revise and validate the HTML and manifest. Reuse the current authenticated
+Homespun MCP identity for account operations. In a persistent coding
+environment, use an already-installed and authenticated Homespun CLI when it is
+usable. Shell availability alone does not establish that the CLI or an upload
+network route is usable.
+
+For a hosted-MCP hybrid build, use `document_upload` when the shell can reach
+its returned upload URL. Compute the exact HTML file's UTF-8 byte length and
+SHA-256 hex digest, then call `document_upload` with `{ size, sha256, app_id? }`.
+PUT the unchanged raw UTF-8 bytes to `upload_url` with
+`Authorization: Bearer <upload_token>`, then pass the returned `document_id` to
+`deploy_app`. The ticket is scoped to those bytes, expires after 15 minutes,
+and is not a Homespun account key. A retry with the same ticket and deploy
+parameters returns the original deployed result for 24 hours; changed content
+or deploy parameters require a fresh upload session. This PUT works from any
+network-capable shell and does not require installing the Homespun CLI. Keep
+durable account secrets out of the shell.
+
+Use `html_path` only when a local stdio MCP server shares the authoring
+filesystem. Hosted MCP cannot read the sandbox path and rejects it. If the
+shell cannot reach the upload URL, deploy with inline `html`; pure MCP remains
+usable. Validate with `dry_run: true` before deployment, and pass the existing
+`app_id` when updating an app.
 
 ## Before you author: two cheap calls that improve every app
 

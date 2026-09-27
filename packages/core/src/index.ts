@@ -16,6 +16,7 @@ export type {
   AppAsset,
   DeployAppRequest,
   DeployAppResponse,
+  DocumentUploadSession,
   RedeployAppRequest,
   RedeployAppResponse,
   DeployCheckRequest,
