@@ -1720,6 +1720,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "List Rows",
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -1747,6 +1749,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Count Rows",
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -1770,6 +1774,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Get Row",
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -1831,10 +1837,11 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Update Row",
       readOnlyHint: false,
-      // Replaces a row's data in place. A replaceable write on a row the
-      // caller names explicitly, not a removal: the row still exists, and
-      // deletion is a separate tool (`delete_row`).
-      destructiveHint: false,
+      // Destructive: replaces a row's whole data in place, and no tool
+      // restores the earlier contents (`restore_row` only reverses
+      // `delete_row`). The row survives and the caller names it explicitly,
+      // but the previous data is overwritten, which is what the hint covers.
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -1954,6 +1961,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Get App Feed Events",
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -2150,7 +2159,9 @@ export const TOOLS: ToolDef[] = [
       // Destructive: `remove` revokes a member's access.
       destructiveHint: true,
       idempotentHint: true,
-      openWorldHint: false,
+      // Open world: `add` emails an invite to an arbitrary address the caller
+      // names, including one with no account yet.
+      openWorldHint: true,
     },
     handler: async (client, args) => {
       const action = String(args["action"]);
@@ -2326,7 +2337,9 @@ export const TOOLS: ToolDef[] = [
       // while one is already pending 409s rather than silently having no
       // further effect. Matches the `grants` tool, which is the same shape.
       idempotentHint: false,
-      openWorldHint: false,
+      // Open world: `start` emails an accept link to an arbitrary address
+      // the caller names, so the tool reaches outside the caller's own data.
+      openWorldHint: true,
     },
     handler: async (client, args) => {
       const action = String(args["action"]);
@@ -2651,6 +2664,10 @@ export const TOOLS: ToolDef[] = [
       // Destructive: `rotate` and `clear_signing_secret` invalidate a
       // secret an external system is actively signing with.
       destructiveHint: true,
+      // NOT idempotent: `rotate` mints a new hook URL and kills the old one on
+      // every call, so a retried call invalidates a URL an external system
+      // may already have been given.
+      idempotentHint: false,
       openWorldHint: false,
     },
     handler: async (client, args) => {
@@ -3080,9 +3097,12 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Manage Agent Identity",
       readOnlyHint: false,
-      // whoami | claim | logout. `logout` ends the local binding and is
-      // reversible by claiming again; no stored data is removed.
-      destructiveHint: false,
+      // Destructive: `claim` binds this agent to a human with a one-shot code
+      // and is one-way; the tool surface cannot undo it. `whoami` only reads,
+      // and `logout` clears the local saved key without removing stored data,
+      // but the hint is a per-TOOL boolean and has to describe the worst
+      // action reachable through it.
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: false,
     },
@@ -3291,12 +3311,14 @@ export const TOOLS: ToolDef[] = [
     inputSchema: publisherShape,
     // Consolidated tool: a read action (get) plus mutating ones (claim/update).
     // claim is irreversible (the handle is permanent), so the hint reflects the
-    // most-privileged action.
+    // most-privileged action. openWorld:true because the profile is public.
     annotations: {
       title: "Publisher Profile",
       readOnlyHint: false,
-      // claim | get | update on the caller's own profile. No delete action.
-      destructiveHint: false,
+      // Destructive: `claim` sets the publisher handle once and the handle is
+      // permanent, so it cannot be undone. `get` only reads, and `update`
+      // edits the caller's own profile. There is no delete action.
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -3433,6 +3455,8 @@ export const TOOLS: ToolDef[] = [
     annotations: {
       title: "Get Skill Guide",
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
     handler: async (_client, args, env) => {

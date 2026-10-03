@@ -103,6 +103,18 @@ describe("MCP handshake", () => {
       readOnlyHint: false,
       destructiveHint: true,
     });
+    // Reclassified samples: an in-place overwrite is destructive, and a tool
+    // that emails an arbitrary address is open-world. Both must survive the
+    // transport as explicit booleans.
+    expect(byName.get("update_row")!.annotations).toMatchObject({
+      title: "Update Row",
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
+    expect(byName.get("transfer")!.annotations).toMatchObject({
+      readOnlyHint: false,
+      openWorldHint: true,
+    });
     // Additive-write sample: writes, destroys nothing. Must survive the
     // transport as an explicit `false`, not as an absent field.
     expect(byName.get("deploy_app")!.annotations).toMatchObject({

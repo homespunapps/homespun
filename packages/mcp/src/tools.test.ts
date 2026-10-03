@@ -184,13 +184,37 @@ describe("tool listing", () => {
     }
   });
 
+  // The spec only reads destructiveHint when readOnlyHint is false, but a
+  // directory review asks for explicit booleans on every hint. Every
+  // read-only tool therefore states destructiveHint:false and
+  // idempotentHint:true outright rather than leaving them to the defaults.
+  it("every read-only tool states destructiveHint false and idempotentHint true", () => {
+    const readOnly = TOOLS.filter((t) => t.annotations.readOnlyHint === true);
+    expect(readOnly.map((t) => t.name).sort()).toEqual(
+      [
+        "count_rows",
+        "get_feed_events",
+        "get_row",
+        "get_skill",
+        "list_deleted_rows",
+        "list_rows",
+      ].sort(),
+    );
+    for (const t of readOnly) {
+      expect(t.annotations.destructiveHint, t.name).toBe(false);
+      expect(t.annotations.idempotentHint, t.name).toBe(true);
+    }
+  });
+
   // The rule, applied to every non-read tool: destructiveHint is true iff the
-  // tool exposes at least one action that REMOVES or IRREVERSIBLY INVALIDATES
-  // existing state. It is not "the tool writes something", and it is not "the
-  // most-privileged action is a write". Either of those collapses the middle
-  // category and flags almost the whole surface, which is what a connector
-  // review flagged: 16 of 20 tools claiming to be destructive makes the hint
-  // carry no information and trains people to click through the prompt.
+  // tool exposes at least one action that REMOVES, OVERWRITES or IRREVERSIBLY
+  // CHANGES existing state: it deletes something, replaces data in place with
+  // no way back, or makes a one-way binding. It is not "the tool writes
+  // something", and it is not "the most-privileged action is a write". Either
+  // of those collapses the middle category and flags almost the whole surface,
+  // which is what a connector review flagged: 16 of 20 tools claiming to be
+  // destructive makes the hint carry no information and trains people to click
+  // through the prompt. Only additive writers stay in the middle category.
   //
   // These two lists must together cover every non-read-only tool; the
   // exhaustiveness check below enforces that, so a new tool cannot be added
@@ -212,17 +236,19 @@ describe("tool listing", () => {
     "key", // revoke (irreversible, confirm-gated)
     "review", // remove
     "community", // unpublish (takes a live listing out of the gallery)
+    // Overwrites or binds permanently. Nothing is removed, but the previous
+    // state cannot be brought back through the tool surface.
+    "update_row", // replaces a row's data in place; restore_row only undoes delete_row
+    "agent", // claim (binds the agent to a human, one-way)
+    "publisher", // claim (sets the public handle, permanent)
   ];
 
   const ADDITIVE_WRITE = [
     "document_upload", // creates a short-lived upload session
     "deploy_app", // new version; slug immutable, prior versions retained
     "upsert_row", // create-or-return-existing
-    "update_row", // replaces one named row's data; the row survives
     "restore_row", // brings a deleted row back; only ever adds
     "feedback", // create + list only
-    "agent", // whoami | claim | logout, all reversible
-    "publisher", // claim | get | update on the caller's own profile
   ];
 
   it("tools that can remove or invalidate state are destructive", () => {
@@ -231,6 +257,11 @@ describe("tool listing", () => {
       expect(a.destructiveHint, name).toBe(true);
       expect(a.readOnlyHint, name).toBe(false);
     }
+  });
+
+  it("the destructive and additive groups have the expected sizes", () => {
+    expect(DESTRUCTIVE).toHaveLength(16);
+    expect(ADDITIVE_WRITE).toHaveLength(5);
   });
 
   it("tools whose every action is additive are NOT destructive", () => {
@@ -271,7 +302,8 @@ describe("tool listing", () => {
     // behind. grants is the case #1414 reported and needs pinning here: the
     // "idempotent mutators" list above never named it, so nothing else in
     // this file would catch a revert.
-    for (const name of ["upsert_row", "apps", "grants"]) {
+    // ingest exposes rotate, which replaces the hook URL on every call.
+    for (const name of ["upsert_row", "apps", "grants", "ingest"]) {
       expect(tool(name).annotations.idempotentHint, name).toBe(false);
     }
   });
@@ -280,8 +312,30 @@ describe("tool listing", () => {
     for (const name of ["attachments", "deploy_app"]) {
       expect(tool(name).annotations.openWorldHint, name).toBe(true);
     }
+    // `transfer` and `members` email an arbitrary address the caller names.
+    for (const name of ["transfer", "members"]) {
+      expect(tool(name).annotations.openWorldHint, name).toBe(true);
+    }
     // A row-internal CRUD tool is closed-world.
     expect(tool("update_row").annotations.openWorldHint).toBe(false);
+  });
+
+  it("exactly the tools that reach outside the caller's own data are open-world", () => {
+    const openWorld = TOOLS.filter(
+      (t) => t.annotations.openWorldHint === true,
+    ).map((t) => t.name);
+    expect(openWorld.sort()).toEqual(
+      [
+        "attachments",
+        "community",
+        "deploy_app",
+        "document_upload",
+        "members",
+        "publisher",
+        "review",
+        "transfer",
+      ].sort(),
+    );
   });
 
   it("representative annotation sample is exactly correct", () => {
@@ -289,7 +343,25 @@ describe("tool listing", () => {
     expect(tool("list_rows").annotations).toEqual({
       title: "List Rows",
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
+    });
+    // Overwrites in place: destructive and idempotent, closed-world.
+    expect(tool("update_row").annotations).toEqual({
+      title: "Update Row",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    // Emails an accept link to an arbitrary address: open-world.
+    expect(tool("transfer").annotations).toEqual({
+      title: "Manage App Ownership Transfer",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
     });
     // Destructive + idempotent + closed-world.
     expect(tool("delete_row").annotations).toEqual({
