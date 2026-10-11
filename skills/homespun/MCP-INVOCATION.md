@@ -1,4 +1,4 @@
-<!-- homespun skill v1.6.95 -->
+<!-- homespun skill v1.6.96 -->
 
 # homespun (MCP)
 
@@ -39,7 +39,7 @@ it. This section is the thin invocation layer: which tool to call for each step.
    document source and `manifest`: there is nothing to inherit yet.
 2. **Give the URL to the owner**, and have them invite anyone else with
    **`members`** (`action: add`) or mint a link with **`grants`**.
-3. **Read and write the app's data** with `list_rows`, `get_row`, `upsert_row`,
+3. **Read and write the app's data** with `list_rows`, `get_row`, `add_row`,
    `update_row` and `delete_row`. This is the same data the page sees, live.
 4. **`get_feed_events`** tells you what changed, from any writer, human or
    agent.
@@ -56,7 +56,7 @@ it. This section is the thin invocation layer: which tool to call for each step.
 | See deleted apps, restore one, or destroy one for good | `apps` (action: `list_deleted`/`restore`/`purge`). `delete` is a soft delete and `restore` undoes it with all the app's data; only `purge` is irreversible |
 | List rows in a collection, or poll it for changes   | `list_rows` |
 | Read one row by key                                 | `get_row` |
-| Create a row (or get back the existing one)         | `upsert_row` |
+| Create a row (or get back the existing one)         | `add_row` |
 | Replace a row's data                                | `update_row` |
 | Soft-delete a row                                   | `delete_row` |
 | See what changed, across all collections            | `get_feed_events` |

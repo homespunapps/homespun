@@ -36,7 +36,7 @@ describe("MCP handshake", () => {
     expect(names).toContain("deploy_app");
     expect(names).toContain("list_rows");
     expect(names).toContain("count_rows");
-    expect(names).toContain("upsert_row");
+    expect(names).toContain("add_row");
     expect(names).toContain("get_feed_events");
     // Consolidated management tools.
     expect(names).toContain("apps");
@@ -181,9 +181,9 @@ describe("advertised input schema types", () => {
     expect(manifest.manifest?.type).toBe("object");
   });
 
-  it("upsert_row + update_row data advertise an explicit typed anyOf (never a bare no-type schema)", async () => {
+  it("add_row + update_row data advertise an explicit typed anyOf (never a bare no-type schema)", async () => {
     const schemas = await advertisedSchemas();
-    for (const name of ["upsert_row", "update_row"]) {
+    for (const name of ["add_row", "update_row"]) {
       const props = (schemas.get(name) as Record<string, unknown>)
         .properties as Record<string, Record<string, unknown>>;
       const data = props.data!;

@@ -107,7 +107,7 @@ To keep the tool list compact (a flat 50+ tools would bloat client context and d
 | `deploy_app` | Deploy a v2 app: an HTML document plus a capability manifest, hosted at its own URL. Omit `app_id` to create, pass it to redeploy in place (same URL, same data, same members). Takes `html` or `html_path`, optional `assets`, `visibility`, `slug`, `dry_run`, `force`. |
 | `list_rows` | List rows in a collection. Doubles as the poll for a collection's current state: pass the prior `next_cursor` as `since`. |
 | `get_row` | Fetch one row by `key` (a dedicated relay route, not a client-side scan). |
-| `upsert_row` | Create a row, or return the existing one if `key` is already present (`deduped: true`), or `row_not_found` when the collection's `read` list does not reach that row for you. The only create-shaped verb. |
+| `add_row` | Create a row, or return the existing one if `key` is already present (`deduped: true`), or `row_not_found` when the collection's `read` list does not reach that row for you. The only create-shaped verb. |
 | `update_row` | Replace an existing row's `data`. Optional `if_match` optimistic lock. |
 | `delete_row` | Soft-delete a row. Optional `if_match`. |
 | `get_feed_events` | Poll the app's change feed for row creates/updates/deletes from any writer, human or agent. Optional `wait` (0-30s) long-poll. |
@@ -150,7 +150,7 @@ To keep the tool list compact (a flat 50+ tools would bloat client context and d
 1. `deploy_app` with your HTML plus an `x-homespun-manifest` declaring the app's collections and which roles may read, write and delete each. Returns `{ app_id, url, ... }`.
 2. Give the `url` to the owner, and invite anyone else with `members` (`action: add`).
 3. `get_feed_events` with `wait: 25` in a loop, passing the prior `cursor` as `since`, to see what people do.
-4. Read and write the same data with `list_rows` / `upsert_row` / `update_row`, and ship changes with `deploy_app` again, passing `app_id`.
+4. Read and write the same data with `list_rows` / `add_row` / `update_row`, and ship changes with `deploy_app` again, passing `app_id`.
 
 ## MCP registry
 

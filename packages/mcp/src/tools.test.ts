@@ -55,7 +55,7 @@ const EXPECTED_TOOLS = [
   "list_rows",
   "count_rows",
   "get_row",
-  "upsert_row",
+  "add_row",
   "update_row",
   "delete_row",
   "restore_row",
@@ -246,7 +246,7 @@ describe("tool listing", () => {
   const ADDITIVE_WRITE = [
     "document_upload", // creates a short-lived upload session
     "deploy_app", // new version; slug immutable, prior versions retained
-    "upsert_row", // create-or-return-existing
+    "add_row", // create-or-return-existing
     "restore_row", // brings a deleted row back; only ever adds
     "feedback", // create + list only
   ];
@@ -293,7 +293,7 @@ describe("tool listing", () => {
   });
 
   it("mint/rotate-shaped consolidated tools are NOT idempotent", () => {
-    // upsert_row is idempotent only when `key` is supplied (dedup returns
+    // add_row is idempotent only when `key` is supplied (dedup returns
     // the existing row); without it, a retry mints a second row, so the
     // tool-level hint is the conservative false. apps exposes
     // share_link_rotate, which issues a new share token and revokes the old
@@ -303,7 +303,7 @@ describe("tool listing", () => {
     // "idempotent mutators" list above never named it, so nothing else in
     // this file would catch a revert.
     // ingest exposes rotate, which replaces the hook URL on every call.
-    for (const name of ["upsert_row", "apps", "grants", "ingest"]) {
+    for (const name of ["add_row", "apps", "grants", "ingest"]) {
       expect(tool(name).annotations.idempotentHint, name).toBe(false);
     }
   });
@@ -316,6 +316,8 @@ describe("tool listing", () => {
     for (const name of ["transfer", "members"]) {
       expect(tool(name).annotations.openWorldHint, name).toBe(true);
     }
+    // `apps` binds custom domains at external DNS and edge providers.
+    expect(tool("apps").annotations.openWorldHint).toBe(true);
     // A row-internal CRUD tool is closed-world.
     expect(tool("update_row").annotations.openWorldHint).toBe(false);
   });
@@ -326,6 +328,7 @@ describe("tool listing", () => {
     ).map((t) => t.name);
     expect(openWorld.sort()).toEqual(
       [
+        "apps",
         "attachments",
         "community",
         "deploy_app",
@@ -336,6 +339,13 @@ describe("tool listing", () => {
         "transfer",
       ].sort(),
     );
+  });
+
+  it("exposes add_row, not the old upsert_row name", () => {
+    const names = TOOLS.map((t) => t.name);
+    expect(names).toContain("add_row");
+    expect(names).not.toContain("upsert_row");
+    expect(tool("apps").annotations.openWorldHint).toBe(true);
   });
 
   it("representative annotation sample is exactly correct", () => {
@@ -379,7 +389,7 @@ describe("tool listing", () => {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
-      openWorldHint: false,
+      openWorldHint: true,
     });
     // The middle category: writes, but every action is additive. This sample
     // is the regression guard for the over-flagging fix. `deploy_app` is the
@@ -1428,11 +1438,11 @@ describe("row CRUD tools", () => {
     expect(JSON.parse(res.content[0]!.text).row.key).toBe("milk");
   });
 
-  it("upsert_row passes key through and reports deduped", async () => {
+  it("add_row passes key through and reports deduped", async () => {
     const upsertAppRow = vi
       .fn()
       .mockResolvedValue({ row: { key: "milk" }, deduped: true });
-    const res = await tool("upsert_row").handler(fakeClient({ upsertAppRow }), {
+    const res = await tool("add_row").handler(fakeClient({ upsertAppRow }), {
       app_id: "app_1",
       collection: "items",
       key: "milk",
@@ -1462,9 +1472,9 @@ describe("row CRUD tools", () => {
     });
   });
 
-  it("upsert_row parses a stringified-JSON data object before the relay", async () => {
+  it("add_row parses a stringified-JSON data object before the relay", async () => {
     const upsertAppRow = vi.fn().mockResolvedValue({ row: { key: "milk" } });
-    await tool("upsert_row").handler(fakeClient({ upsertAppRow }), {
+    await tool("add_row").handler(fakeClient({ upsertAppRow }), {
       app_id: "app_1",
       collection: "items",
       data: JSON.stringify({ name: "Milk" }),

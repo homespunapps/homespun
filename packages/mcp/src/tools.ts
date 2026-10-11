@@ -10,7 +10,7 @@
 // app API, and the v1 Template subsystem's template/template_records/trash
 // tools were removed in PR 2c-1; see git history for the prior surfaces):
 //   - v2 app lifecycle + data are DISCRETE tools: deploy_app, list_rows,
-//     get_row, upsert_row, update_row, delete_row, get_feed_events.
+//     get_row, add_row, update_row, delete_row, get_feed_events.
 //   - Multi-verb MANAGEMENT nouns each collapse into ONE tool with a required
 //     `action` enum and per-action fields: apps, members, attachments, taste,
 //     key, feedback, agent.
@@ -1793,12 +1793,12 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: "upsert_row",
+    name: "add_row",
     description:
       "Create a row in a v2 app's collection, or return the existing row when `key` is already present (deduped:true). Row creation goes through this tool; there is no separate strict-create verb. Omit `key` to add a new row with a server-generated key, or pass `key` to ensure a row exists at that key. Passing `key` is also what makes a retry safe: a call unsure whether it already landed can repeat it and get the same row back rather than a duplicate. Without `key`, a retry mints a second row with its own server-generated key, since there is nothing to dedup against. The collection must be declared in the app's manifest with a `write` list that reaches the caller, which is the list that gates creates. An agent acts with its owner's authority, so `owner` covers it; there is no separate 'agent' role, and a manifest that names one is rejected. When `key` matches a row the collection's `read` list does not reach for this caller, the result is row_not_found rather than the row, matching what get_row would return, so this never reads past `read`. Returns { row, deduped? }.",
     inputSchema: upsertRowShape,
     annotations: {
-      title: "Upsert Row",
+      title: "Add Row",
       readOnlyHint: false,
       // Create-or-return-existing. Removes nothing.
       destructiveHint: false,
@@ -2000,7 +2000,10 @@ export const TOOLS: ToolDef[] = [
       // having no additional effect. Matches the `grants` tool, which is the
       // same shape.
       idempotentHint: false,
-      openWorldHint: false,
+      // Open-world: the domain_set, domain_status and domain_remove actions
+      // configure custom hostnames at external DNS and edge providers, so
+      // the tool reaches outside the user's private account.
+      openWorldHint: true,
     },
     handler: async (client, args) => {
       const action = String(args["action"]);
