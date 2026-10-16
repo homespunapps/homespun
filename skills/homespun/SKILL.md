@@ -12,7 +12,7 @@ description: >-
   Drives the `homespun` CLI: deploy, read/write data, watch for changes.
 ---
 
-<!-- homespun skill v1.6.96 -->
+<!-- homespun skill v1.6.97 -->
 
 # homespun
 
@@ -457,6 +457,10 @@ Rules of the road:
   the deploy result saying exactly that. Set the zone with `homespun apps update
   <app> --timezone <IANA zone>` (it then shows up under `homespun apps show`).
   Free apps have a per-day reminder cap and a rule-count cap, both modest by design.
+- **Need a worker on a timer, not an email or webhook relative to a row date?** Use
+  `agentTasks` with `on: "schedule"` (`every` or `cron`). It wakes the owner's
+  `homespun work` worker on a clock and needs no cron on the machine. See the
+  `agentTasks` section and `references/agent-tasks.md`.
 - **The whole feature is gated on the relay's `SCHEDULES_ENABLED`, and a deploy never tells
   you.** It is **enabled on the hosted relay**, so reminders fire there. On a self-hosted relay
   with it off, the scan worker simply never starts: the manifest still validates, the deploy
@@ -2537,6 +2541,34 @@ brings it back before you deploy/read/write against it again.
 `x-homespun-manifest.agentTasks`: a rule that turns a row write into a unit of work for the
 app owner's own agent. The relay queues it and runs nothing itself. Reach for it when the
 work is easier to describe than to implement, like reading a photographed receipt.
+
+A rule fires on a row write (`on: create|update` with a `collection`) or on a clock
+(`on: schedule` with exactly one of `every` or `cron`, an optional `tz`, and an optional
+`contextCollection` whose oldest row rides along). A schedule needs no cron or systemd on the
+worker machine: `homespun work --exec <cmd>` is the whole setup.
+
+```json
+{
+  "on": "schedule",
+  "cron": "0 9,18 * * *",
+  "tz": "Europe/Berlin",
+  "taskType": "check-job-board",
+  "prompt": "The context row holds my search settings. Check the board and write one row into jobs for each posting not yet recorded.",
+  "reads": ["settings"],
+  "writes": ["jobs"],
+  "contextCollection": "settings"
+}
+```
+
+Facts for schedule rules, all detailed in the reference: `every` is `Nm`, `Nh` or `Nd`, from
+`15m` to `30d`, anchored to local midnight (`3h` fires 00:00, 03:00, ...); `m` and `h` must
+divide the day. `cron` is five fields (Vixie rule: day-of-month and day-of-week OR together
+when both are restricted); no `L W # ?` or nicknames. Anything firing more often than every
+15 minutes, an invalid `tz`, or a schedule that never fires is rejected at deploy and by
+`deploy --check`. Schedule rules take no `collection`, `when` or `machineAuthorKinds`. At
+most one task per rule is open at once; missed slots collapse to one; the scheduler ticks
+about every 60 s. The envelope carries `trigger: "schedule"` (row tasks carry `"row"`).
+`leaseSeconds` sets the claim lease and the default extend-lease for row and schedule rules.
 
 > **Read `references/agent-tasks.md` before declaring an `agentTasks` rule**
 > (alongside this SKILL.md). It has the field table, how to write a prompt, what
